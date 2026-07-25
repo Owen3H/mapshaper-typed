@@ -115,6 +115,51 @@ describe('Lee conformal tetrahedral projections', function() {
     assert(southPole[0] > -1 && southPole[0] < 0 && southPole[1] < -0.7);
   });
 
+  // The frame cut is traced by inverting sample points just inside the frame,
+  // and that inset has a narrow safe window (see FRAME_INSET). Below it the
+  // Lee inverse becomes ill-conditioned and silently drops much of the seam,
+  // which once made the traced seam differ between JS engines. The residual
+  // failures are the four facet vertices, which have no inverse.
+  it('resolves the frame cut without dropping samples', function() {
+    ['markley', 'calm'].forEach(function(id) {
+      var dest = api.internal.parseCrsString('+proj=' + id + ' +R=1');
+      var topology = api.internal.getProjectionTopology(dest);
+      var cut = topology.seams.filter(function(o) {
+        return o.type == 'cut';
+      })[0];
+      var stats = cut.trace_stats;
+      assert(stats.sample_count > 1000, id);
+      assert(
+        stats.failed_count < stats.sample_count * 0.01,
+        id + ': ' + stats.failed_count + ' of ' + stats.sample_count +
+          ' frame samples had no inverse'
+      );
+    });
+  });
+
+  // Ties the hand-tuned rotation constants back to their published sources:
+  // Kunimune's CALM aspect places a tetrahedron vertex at 77N 143E, and
+  // Markley's places all four at +/-acos(1/3)/2, away from land.
+  it('places the tetrahedron vertices at the published aspects', function() {
+    var markleyLat = Math.acos(1 / 3) * 0.5 * 180 / Math.PI;
+    assert(hasSourceVertex('calm', [143, 77]));
+    [[-115, -markleyLat], [65, -markleyLat],
+      [-25, markleyLat], [155, markleyLat]].forEach(function(p) {
+      assert(hasSourceVertex('markley', p), String(p));
+    });
+
+    function hasSourceVertex(id, target) {
+      var dest = api.internal.parseCrsString('+proj=' + id + ' +R=1');
+      var topology = api.internal.getProjectionTopology(dest);
+      return topology.raster_source_regions.some(function(region) {
+        return region.boundary.some(function(p) {
+          return Math.abs(p[0] - target[0]) < 1e-6 &&
+            Math.abs(p[1] - target[1]) < 1e-6;
+        });
+      });
+    }
+  });
+
   it('routes every source point through the split-face topology', function() {
     ['markley', 'calm'].forEach(function(id) {
       var dest = api.internal.parseCrsString('+proj=' + id + ' +R=1');

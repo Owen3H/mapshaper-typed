@@ -1,3 +1,29 @@
+/*
+ * Post-projection repair for projections whose layout wraps at a rectangular
+ * frame (currently the Lee tetrahedral pair, the only ones that publish
+ * frame_bounds).
+ *
+ * Why this is needed: such a projection is cut along a curved seam traced in
+ * geographic space, and the seam mask splits any path that crosses it. But
+ * without -densify, a path segment is a straight chord in lon/lat, and a chord
+ * between two vertices either side of the seam can pass on the wrong side of
+ * the curve entirely. The projected path then leaves one edge of the frame and
+ * re-enters at the opposite edge, so the ring closes with a long run along a
+ * frame side, joining two halves that belong on opposite sides of the map.
+ * Densified input curves with the seam and is cut normally, which is why the
+ * artifact only appears without that option.
+ *
+ * The repair looks for a ring that meets the same frame side in two or more
+ * separate runs and splits it there. A ring that legitimately touches a frame
+ * side does so once.
+ *
+ * Note that the jump threshold in getFrameSide is coupled to the resolution of
+ * the seam trace: it recognizes a spurious connection as a single long segment
+ * lying on a frame side. Coarsening the trace breaks the connection into a
+ * chain of shorter segments that fall below the threshold and are missed, so
+ * the two need to be changed together.
+ */
+
 import { DatasetEditor } from '../dataset/mapshaper-dataset-editor';
 
 export function splitPolygonFrameChords(dataset, bounds) {

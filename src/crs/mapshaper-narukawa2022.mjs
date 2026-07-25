@@ -11,6 +11,14 @@
  * equations, not Imago's power-law approximation.
  */
 
+import {
+  clipPolygonAxis,
+  clipRasterPolygonAxis,
+  copyRasterVertex,
+  normalizeLongitude,
+  clamp
+} from './mapshaper-projection-geom';
+
 var D2R = Math.PI / 180;
 var R2D = 180 / Math.PI;
 var HALF_PI = Math.PI / 2;
@@ -416,46 +424,6 @@ function clipRasterOobPolygon(polygon, oobKey) {
   return clipRasterPolygonAxis(polygon, 'y', SQRT3, false);
 }
 
-function clipRasterPolygonAxis(polygon, axis, value, keepGreater) {
-  var output = [];
-  if (polygon.length === 0) return output;
-  var a = polygon[polygon.length - 1];
-  var aInside = keepGreater ?
-    a[axis] >= value - EPS : a[axis] <= value + EPS;
-  polygon.forEach(function(b) {
-    var bInside = keepGreater ?
-      b[axis] >= value - EPS : b[axis] <= value + EPS;
-    if (aInside != bInside) {
-      var t = (value - a[axis]) / (b[axis] - a[axis]);
-      var vertex = {
-        x: a.x + (b.x - a.x) * t,
-        y: a.y + (b.y - a.y) * t,
-        sx: a.sx + (b.sx - a.sx) * t,
-        sy: a.sy + (b.sy - a.sy) * t,
-        lon: a.lon + (b.lon - a.lon) * t,
-        lat: a.lat + (b.lat - a.lat) * t
-      };
-      vertex[axis] = value;
-      output.push(vertex);
-    }
-    if (bInside) output.push(copyRasterVertex(b, b.x, b.y));
-    a = b;
-    aInside = bInside;
-  });
-  return output;
-}
-
-function copyRasterVertex(vertex, x, y) {
-  return {
-    x: x,
-    y: y,
-    sx: vertex.sx,
-    sy: vertex.sy,
-    lon: vertex.lon,
-    lat: vertex.lat
-  };
-}
-
 function applyOobTransform(p, facet, oobKey) {
   if (oobKey == 'xpos' || oobKey == 'xneg') {
     return [2 * facet.x - p[0], -p[1]];
@@ -496,29 +464,6 @@ function clipRectangle(polygon, xmin, ymin, xmax, ymax) {
   polygon = clipPolygonAxis(polygon, 0, xmax, false);
   polygon = clipPolygonAxis(polygon, 1, ymin, true);
   return clipPolygonAxis(polygon, 1, ymax, false);
-}
-
-function clipPolygonAxis(polygon, axis, value, keepGreater) {
-  var output = [];
-  if (polygon.length === 0) return output;
-  var a = polygon[polygon.length - 1];
-  var aInside = keepGreater ? a[axis] >= value - EPS : a[axis] <= value + EPS;
-  polygon.forEach(function(b) {
-    var bInside = keepGreater ? b[axis] >= value - EPS : b[axis] <= value + EPS;
-    if (aInside != bInside) {
-      var t = (value - a[axis]) / (b[axis] - a[axis]);
-      var p = [
-        a[0] + (b[0] - a[0]) * t,
-        a[1] + (b[1] - a[1]) * t
-      ];
-      p[axis] = value;
-      output.push(p);
-    }
-    if (bInside) output.push(b.concat());
-    a = b;
-    aInside = bInside;
-  });
-  return output;
 }
 
 function interpolateSphericalRadians(a, b, interval) {
@@ -902,12 +847,3 @@ function normalizeRadians(lam) {
   return lam;
 }
 
-function normalizeLongitude(lon) {
-  while (lon > 180) lon -= 360;
-  while (lon < -180) lon += 360;
-  return lon;
-}
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}

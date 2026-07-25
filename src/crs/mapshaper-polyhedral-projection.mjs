@@ -5,6 +5,13 @@
  * ISC License: https://github.com/d3/d3-geo-polygon/blob/main/LICENSE
  */
 
+import {
+  applyMatrix,
+  invertMatrix,
+  normalizeLongitude,
+  clamp
+} from './mapshaper-projection-geom';
+
 var D2R = Math.PI / 180;
 var R2D = 180 / Math.PI;
 var EPS = 1e-12;
@@ -488,25 +495,6 @@ function multiplyMatrices(a, b) {
   ];
 }
 
-function applyMatrix(m, p) {
-  return [
-    m[0] * p[0] + m[1] * p[1] + m[2],
-    m[3] * p[0] + m[4] * p[1] + m[5]
-  ];
-}
-
-function invertMatrix(m) {
-  var det = m[0] * m[4] - m[1] * m[3];
-  return [
-    m[4] / det,
-    -m[1] / det,
-    (m[1] * m[5] - m[4] * m[2]) / det,
-    -m[3] / det,
-    m[0] / det,
-    (m[3] * m[2] - m[0] * m[5]) / det
-  ];
-}
-
 function rotateRadians(lam, phi, deltaLam, deltaPhi, deltaGamma, invert) {
   if (invert) {
     var inv = rotatePhiGamma(lam, phi, deltaPhi, deltaGamma, true);
@@ -676,12 +664,3 @@ function normalizeRadians(lam) {
   return lam;
 }
 
-function normalizeLongitude(lon) {
-  while (lon > 180) lon -= 360;
-  while (lon < -180) lon += 360;
-  return lon;
-}
-
-function clamp(val, min, max) {
-  return Math.max(min, Math.min(max, val));
-}

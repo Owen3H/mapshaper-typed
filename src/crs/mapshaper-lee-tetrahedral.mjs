@@ -16,6 +16,17 @@ import {
   createPolyhedralProjection,
   rotateSphericalRadians
 } from './mapshaper-polyhedral-projection';
+import {
+  applyMatrix,
+  invertMatrix,
+  clipPolygonAxis,
+  clipRasterPolygonAxis,
+  copyRasterVertex,
+  normalizeLongitude,
+  clamp
+} from './mapshaper-projection-geom';
+import { profileStart, profileEnd } from '../utils/mapshaper-profile';
+import { error } from '../utils/mapshaper-logging';
 
 var D2R = Math.PI / 180;
 var R2D = 180 / Math.PI;
@@ -32,6 +43,32 @@ var RECT_YMIN = -2 * SQRT3;
 var RECT_YMAX = 0;
 var EPS = 1e-12;
 var MIN_PIECE_AREA = 1e-6;
+
+// Frame-cut tracing parameters (see createFrameCutPaths).
+//
+// FRAME_INSET is how far inside the frame the traced sampling lines run, and it
+// is bounded on both sides. Measured over 18003 samples with a 6000-sample
+// edge, the safe window is about [4e-8, 1.3e-7] and this value is its centre:
+//
+// * Too small and invertLeeRaw becomes ill-conditioned, because the frame edge
+//   coincides with a Lee face boundary. The share of samples that fail to
+//   invert climbs from 0.2% inside the window to 4% at 3e-8 and 14% at 1e-8,
+//   and *which* samples fail depends on last-bit floating-point behaviour, so
+//   different JS engines traced different seams from the same input.
+// * Too large and the strip of sphere between the traced seam and the true
+//   frame edge survives the cut, leaving a hairline connection that shows up as
+//   a long chord running along the frame edge. This appears by 1.6e-7.
+//
+// The 0.2% of samples that fail inside the window are the four facet vertices,
+// which genuinely have no inverse.
+var FRAME_INSET = 8e-8;
+// Guards the lower bound above. Inside the window the failure rate is 0.2%, so
+// this only trips on a regression, and the resulting map would be mis-cut.
+var MAX_FAILED_SAMPLE_RATIO = 0.02;
+// Samples per frame edge. This sets the resolution of the cut along the frame
+// (about 8 km on an Earth-sized map).
+var FRAME_SAMPLES = 6000;
+
 var engines = {};
 
 var TETRAHEDRON_VERTICES = [
@@ -154,14 +191,20 @@ export function createLeeTetrahedralEngine(rotation, layoutPhase) {
 
   // Internal inverse used to trace the geographic cut corresponding to the
   // rectangular frame. The public projection remains forward-only.
+  //
+  // Layout pieces can overlap along their shared edges, so a candidate is only
+  // accepted once it round-trips through forward().
   function inverse(x, y) {
     var q = uncenterOutputPoint([x, y]);
     for (var i = 0; i < rasterPieces.length; i++) {
       var piece = rasterPieces[i];
-      if (!pointInRing(centerOutputPoint(q), piece.boundary)) continue;
-      var p = applyMatrix(invertMatrix(piece.matrix), q);
-      var projected = getLayoutCopy(p);
-      if (projected.id != piece.copy) continue;
+      var bounds = piece.bounds;
+      if (x < bounds[0] || x > bounds[2] || y < bounds[1] || y > bounds[3]) {
+        continue;
+      }
+      if (!pointInRing([x, y], piece.boundary)) continue;
+      var p = applyMatrix(piece.inverse_matrix, q);
+      if (getLayoutCopy(p).id != piece.copy) continue;
       p = denormalizeBasePoint(p, normalization);
       var spherical = base.invertFace(p[0], p[1], piece.face);
       if (!spherical) continue;
@@ -224,9 +267,12 @@ export function createLeeTetrahedralEngine(rotation, layoutPhase) {
               paths: seam.paths
             };
           });
+          var frameCut = createFrameCutPaths(inverse, lon0);
           seams.push({
             type: 'cut',
-            paths: createFrameCutPaths(inverse, lon0)
+            paths: frameCut.paths,
+            // How much of the frame the trace resolved; see FRAME_INSET.
+            trace_stats: frameCut.stats
           });
           seamCache.set(lon0, seams);
         }
@@ -336,13 +382,16 @@ function createLayoutPieces(regions, normalization, layoutPhase) {
         projected = clipPolygonAxis(projected, 1, RECT_YMAX, false);
         if (projected.length < 3 ||
             Math.abs(getRingArea(projected)) < MIN_PIECE_AREA) return;
+        var boundary = projected.map(centerOutputPoint);
         pieces.push({
           id: pieces.length,
           face: region.id,
           source_region: region.id,
           copy: copy.id,
           matrix: matrix,
-          boundary: projected.map(centerOutputPoint)
+          inverse_matrix: invertMatrix(matrix),
+          bounds: getRingBounds(boundary),
+          boundary: boundary
         });
       });
     });
@@ -384,40 +433,59 @@ function copyRasterPiece(piece) {
   };
 }
 
+// Trace the geographic curves that the rectangular frame corresponds to. The
+// repeated tetrahedral net is continuous inside the frame, so its only
+// geographic cuts are the three independent sides of the periodic rectangle.
+//
+// Sampling is uniform in frame coordinates rather than adaptive. The traced
+// curve becomes the centreline of the seam mask, so the polygon edges left
+// behind by the cut inherit this spacing where they run along the frame; the
+// even resolution is what lets splitPolygonFrameChords recognize a run along a
+// frame side. Sampling by geographic curvature instead concentrates vertices
+// where the map curves and leaves the frame edges coarse, which reintroduces
+// the long chords along the frame that the cut is meant to remove.
 function createFrameCutPaths(inverse, lon0) {
-  // The repeated tetrahedral net is continuous inside the frame. Its only
-  // geographic cuts are the three independent sides of the periodic rectangle.
-  var n = 6000;
-  // Stay far enough inside the frame to avoid browser-specific inverse
-  // branches at the exact Lee face boundary.
-  var epsilon = 5e-8;
+  profileStart('lee.traceFrameCuts');
+  var e = FRAME_INSET;
   var xmin = centerOutputPoint([RECT_XMIN, 0])[0];
   var xmax = centerOutputPoint([RECT_XMAX, 0])[0];
   var ymin = centerOutputPoint([0, RECT_YMIN])[1];
   var ymax = centerOutputPoint([0, RECT_YMAX])[1];
   var edges = [
-    [[xmin + epsilon, ymin], [xmin + epsilon, ymax]],
-    [[xmin, ymax - epsilon], [xmax, ymax - epsilon]],
-    [[xmin, ymin + epsilon], [xmax, ymin + epsilon]]
+    [[xmin + e, ymin], [xmin + e, ymax]],
+    [[xmin, ymax - e], [xmax, ymax - e]],
+    [[xmin, ymin + e], [xmax, ymin + e]]
   ];
-  return edges.reduce(function(memo, edge) {
+  var stats = {sample_count: 0, failed_count: 0};
+  var paths = edges.reduce(function(memo, edge) {
     var path = [];
-    for (var i = 0; i <= n; i++) {
-      var t = i / n;
-      var x = edge[0][0] + (edge[1][0] - edge[0][0]) * t;
-      var y = edge[0][1] + (edge[1][1] - edge[0][1]) * t;
-      var p = inverse(x, y);
-      if (!p) continue;
-      path.push([
-        normalizeLongitude(p[0] * R2D + lon0),
-        p[1] * R2D
-      ]);
+    for (var i = 0; i <= FRAME_SAMPLES; i++) {
+      var t = i / FRAME_SAMPLES;
+      var p = inverse(
+        edge[0][0] + (edge[1][0] - edge[0][0]) * t,
+        edge[0][1] + (edge[1][1] - edge[0][1]) * t
+      );
+      stats.sample_count++;
+      // Samples without an inverse occur only at the facet vertices, which
+      // both neighbours converge on, so the chord across the gap is short.
+      if (!p) {
+        stats.failed_count++;
+        continue;
+      }
+      path.push([normalizeLongitude(p[0] * R2D + lon0), p[1] * R2D]);
     }
     return memo.concat(splitPathAtAntimeridian(path));
   }, []).map(function(path) {
     path.mask_width = 4e-5;
     return path;
   });
+  profileEnd('lee.traceFrameCuts');
+  if (stats.failed_count > stats.sample_count * MAX_FAILED_SAMPLE_RATIO) {
+    error('Unable to trace the projection frame: ' + stats.failed_count +
+      ' of ' + stats.sample_count +
+      ' frame samples had no inverse (see FRAME_INSET).');
+  }
+  return {paths: paths, stats: stats};
 }
 
 function splitPathAtAntimeridian(path) {
@@ -523,60 +591,77 @@ function createLeeFaceProjector(face) {
   return project;
 }
 
+// leeRaw runs tens of times per Newton step in invertLeeRaw, so its constant
+// tables and the three cube roots of unity are built once here rather than on
+// every call, and the Horner loops below accumulate into scalars instead of
+// allocating a complex pair per term. The arithmetic is unchanged.
+var LEE_W1 = 1.4021821053254548;
+var LEE_COEFFICIENTS = [
+  1.15470053837925, 0.192450089729875, 0.0481125224324687,
+  0.010309826235529, 3.34114739114366e-4, -1.50351632601465e-3,
+  -1.2304417796231e-3, -6.75190201960282e-4,
+  -2.84084537293856e-4, -8.21205120500051e-5,
+  -1.59257630018706e-6, 1.91691805888369e-5,
+  1.73095888028726e-5, 1.03865580818367e-5,
+  4.70614523937179e-6, 1.4413500104181e-6,
+  1.92757960170179e-8, -3.82869799649063e-7,
+  -3.57526015225576e-7, -2.2175964844211e-7
+];
+var LEE_H0 = [1, 1 / 8, 3 / 56, 1 / 32, 35 / 1664, 63 / 4096, 231 / 19456];
+var LEE_ROTATIONS = [0, 1, 2].map(function(i) {
+  return complexPower([-0.5, SQRT3 / 2], [i, 0]);
+});
+
 function leeRaw(lam, phi) {
-  var w = [-0.5, SQRT3 / 2];
-  var z = complexMultiply(stereographicRaw(lam, phi), [SQRT2, 0]);
-  var powers = [0, 1, 2].map(function(i) {
-    return complexPower(w, [i, 0]);
-  });
+  var s = stereographicRaw(lam, phi);
+  var z = [s[0] * SQRT2, s[1] * SQRT2];
+  var i, j;
+  // Pick the sector whose rotation maximizes the real part of rot * z.
   var sector = 0;
-  for (var i = 1; i < powers.length; i++) {
-    if (complexMultiply(z, powers[i])[0] >
-        complexMultiply(z, powers[sector])[0]) sector = i;
+  var best = z[0] * LEE_ROTATIONS[0][0] - z[1] * LEE_ROTATIONS[0][1];
+  for (i = 1; i < LEE_ROTATIONS.length; i++) {
+    var re = z[0] * LEE_ROTATIONS[i][0] - z[1] * LEE_ROTATIONS[i][1];
+    if (re > best) {
+      best = re;
+      sector = i;
+    }
   }
-  var rot = powers[sector];
+  var rot = LEE_ROTATIONS[sector];
   var n = complexNorm(z);
   var h = [0, 0];
   var k = [0, 0];
 
   if (n > 0.3) {
     var y = complexSubtract([1, 0], complexMultiply(rot, z));
-    var w1 = 1.4021821053254548;
-    var coefficients = [
-      1.15470053837925, 0.192450089729875, 0.0481125224324687,
-      0.010309826235529, 3.34114739114366e-4, -1.50351632601465e-3,
-      -1.2304417796231e-3, -6.75190201960282e-4,
-      -2.84084537293856e-4, -8.21205120500051e-5,
-      -1.59257630018706e-6, 1.91691805888369e-5,
-      1.73095888028726e-5, 1.03865580818367e-5,
-      4.70614523937179e-6, 1.4413500104181e-6,
-      1.92757960170179e-8, -3.82869799649063e-7,
-      -3.57526015225576e-7, -2.2175964844211e-7
-    ];
-    var g = [0, 0];
-    for (i = coefficients.length - 1; i >= 0; i--) {
-      g = complexAdd([coefficients[i], 0], complexMultiply(g, y));
+    var g0 = 0;
+    var g1 = 0;
+    for (i = LEE_COEFFICIENTS.length - 1; i >= 0; i--) {
+      j = g1 * y[0] + g0 * y[1];
+      g0 = LEE_COEFFICIENTS[i] + (g0 * y[0] - g1 * y[1]);
+      g1 = j;
     }
-    k = complexSubtract([w1, 0], complexMultiply(complexPower(y, 0.5), g));
+    k = complexSubtract(
+      [LEE_W1, 0],
+      complexMultiply(complexPower(y, 0.5), [g0, g1]));
     k = complexMultiply(complexMultiply(k, rot), rot);
   }
 
   if (n < 0.5) {
-    var h0 = [1, 1 / 8, 3 / 56, 1 / 32, 35 / 1664, 63 / 4096, 231 / 19456];
     var z3 = complexPower(z, [3, 0]);
-    for (i = h0.length - 1; i >= 0; i--) {
-      h = complexAdd([h0[i], 0], complexMultiply(h, z3));
+    var h0 = 0;
+    var h1 = 0;
+    for (i = LEE_H0.length - 1; i >= 0; i--) {
+      j = h1 * z3[0] + h0 * z3[1];
+      h0 = LEE_H0[i] + (h0 * z3[0] - h1 * z3[1]);
+      h1 = j;
     }
-    h = complexMultiply(h, z);
+    h = complexMultiply([h0, h1], z);
   }
 
   if (n < 0.3) return h;
   if (n > 0.5) return k;
   var t = (n - 0.3) / 0.2;
-  return complexAdd(
-    complexMultiply(k, [t, 0]),
-    complexMultiply(h, [1 - t, 0])
-  );
+  return [k[0] * t + h[0] * (1 - t), k[1] * t + h[1] * (1 - t)];
 }
 
 function invertLeeRaw(x, y) {
@@ -657,13 +742,6 @@ function complexPower(value, exponent) {
   return [magnitude * Math.cos(angle), magnitude * Math.sin(angle)];
 }
 
-function applyMatrix(m, p) {
-  return [
-    m[0] * p[0] + m[1] * p[1] + m[2],
-    m[3] * p[0] + m[4] * p[1] + m[5]
-  ];
-}
-
 function shiftMatrixX(matrix, offset) {
   var shifted = matrix.concat();
   shifted[2] += offset;
@@ -676,84 +754,15 @@ function wrapLayoutX(x) {
   return x;
 }
 
-function invertMatrix(m) {
-  var det = m[0] * m[4] - m[1] * m[3];
-  return [
-    m[4] / det,
-    -m[1] / det,
-    (m[1] * m[5] - m[4] * m[2]) / det,
-    -m[3] / det,
-    m[0] / det,
-    (m[3] * m[2] - m[0] * m[5]) / det
-  ];
-}
-
-function clipPolygonAxis(polygon, axis, value, keepGreater) {
-  var output = [];
-  if (!polygon.length) return output;
-  var a = polygon[polygon.length - 1];
-  var aInside = keepGreater ? a[axis] >= value - EPS : a[axis] <= value + EPS;
-  polygon.forEach(function(b) {
-    var bInside = keepGreater ? b[axis] >= value - EPS : b[axis] <= value + EPS;
-    if (aInside != bInside) {
-      var t = (value - a[axis]) / (b[axis] - a[axis]);
-      var p = [
-        a[0] + (b[0] - a[0]) * t,
-        a[1] + (b[1] - a[1]) * t
-      ];
-      p[axis] = value;
-      output.push(p);
-    }
-    if (bInside) output.push(b.concat());
-    a = b;
-    aInside = bInside;
+function getRingBounds(ring) {
+  var bounds = [Infinity, Infinity, -Infinity, -Infinity];
+  ring.forEach(function(p) {
+    if (p[0] < bounds[0]) bounds[0] = p[0];
+    if (p[1] < bounds[1]) bounds[1] = p[1];
+    if (p[0] > bounds[2]) bounds[2] = p[0];
+    if (p[1] > bounds[3]) bounds[3] = p[1];
   });
-  return output;
-}
-
-function clipRasterPolygonAxis(polygon, axis, value, keepGreater) {
-  var output = [];
-  if (!polygon.length) return output;
-  var a = polygon[polygon.length - 1];
-  var aInside = keepGreater ? a[axis] >= value - EPS : a[axis] <= value + EPS;
-  polygon.forEach(function(b) {
-    var bInside = keepGreater ? b[axis] >= value - EPS : b[axis] <= value + EPS;
-    if (aInside != bInside) {
-      var t = (value - a[axis]) / (b[axis] - a[axis]);
-      var vertex = {
-        x: a.x + (b.x - a.x) * t,
-        y: a.y + (b.y - a.y) * t,
-        sx: a.sx + (b.sx - a.sx) * t,
-        sy: a.sy + (b.sy - a.sy) * t,
-        lon: interpolateLongitude(a.lon, b.lon, t),
-        lat: a.lat + (b.lat - a.lat) * t
-      };
-      vertex[axis] = value;
-      output.push(vertex);
-    }
-    if (bInside) output.push(copyRasterVertex(b, b.x, b.y));
-    a = b;
-    aInside = bInside;
-  });
-  return output;
-}
-
-function copyRasterVertex(vertex, x, y) {
-  return {
-    x: x,
-    y: y,
-    sx: vertex.sx,
-    sy: vertex.sy,
-    lon: vertex.lon,
-    lat: vertex.lat
-  };
-}
-
-function interpolateLongitude(a, b, t) {
-  var delta = b - a;
-  if (delta > 180) delta -= 360;
-  if (delta < -180) delta += 360;
-  return normalizeLongitude(a + delta * t);
+  return bounds;
 }
 
 function getRingArea(ring) {
@@ -807,14 +816,4 @@ function getPieceKey(face, copy) {
 
 function pointsEqual(a, b) {
   return Math.abs(a[0] - b[0]) < EPS && Math.abs(a[1] - b[1]) < EPS;
-}
-
-function normalizeLongitude(lon) {
-  lon = (lon + 180) % 360;
-  if (lon < 0) lon += 360;
-  return lon - 180;
-}
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
 }
