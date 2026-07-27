@@ -195,6 +195,14 @@ export function requirePathLayer(lyr, msg) {
     stop(layerTypeMessage(lyr, "Expected a polygon or polyline layer", msg));
 }
 
+// Guard for vector commands that would otherwise replace a raster layer with
+// a geometry-less result, silently discarding its pixels.
+export function requireNotRasterLayer(lyr, msg) {
+  if (layerHasRaster(lyr)) {
+    stop(msg || 'This command does not support raster layers');
+  }
+}
+
 // Used by info command and gui layer menu
 export function getLayerSourceFile(lyr, dataset) {
   var inputs = dataset.info && dataset.info.input_files;

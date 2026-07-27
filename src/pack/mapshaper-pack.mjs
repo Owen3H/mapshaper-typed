@@ -170,6 +170,9 @@ function exportRasterData(raster) {
     if (raster.grid.samples) {
       copy.grid.samples = typedArrayToBuffer(raster.grid.samples);
     }
+    if (raster.grid.coverage) {
+      copy.grid.coverage = typedArrayToBuffer(raster.grid.coverage);
+    }
   }
   if (raster.view) {
     copy.view = Object.assign({}, raster.view);

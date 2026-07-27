@@ -1,3 +1,8 @@
+v0.7.49 (unreleased)
+* Added `-i raster-type=continuous` for measurement rasters like elevation models, which use bilinear resampling but keep the source nodata value instead of a fill color when projected.
+* Fixed loss of precision when projecting a floating point raster: bilinear resampling was rounding every sample to a whole number.
+* Fixed bilinear resampling averaging nodata samples together with real values along the edges of a raster's valid data.
+
 v0.7.48
 * Fixes for `markley` and `calm` projections
 

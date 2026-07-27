@@ -94,9 +94,11 @@ The `raster` object distinguishes:
   current truth for clipping and future raster operations.
 - `grid.coverage`: optional mask used by projected rasters to distinguish
   covered pixels from nodata fill pixels. This is separate from pixel color.
-- `interpretation`: semantic raster type, currently `image` or `categorical`.
-  Import defaults to `image`; `-i raster-type=categorical` marks class/code
+- `interpretation`: semantic raster type, one of `image`, `categorical` or
+  `continuous`. Import defaults to `image`. `categorical` marks class/code
   rasters so later reprojection defaults to nearest-neighbor resampling.
+  `continuous` marks measurement rasters such as elevation models, which need
+  bilinear resampling but a numeric rather than color nodata fill.
 - `view.recipe`: display/export rendering recipe, including band selection and
   scaling options.
 - `view.preview`: derived RGBA display pixels used by GUI rendering. Preview
@@ -191,10 +193,20 @@ intensity, and `percentile-range=2,98` for percentile scaling. The default is
 raw/type-range display for 8-bit data and percentile scaling for non-8-bit
 integer and floating point data.
 
-`raster-type=image|categorical` records whether the raster should be treated as
-a display image or a categorical class/code raster. The default is `image`,
-matching Mapshaper's current raster scope. `categorical` affects later command
-defaults such as `-proj` resampling; it does not change the pixel storage type.
+`raster-type=image|categorical|continuous` records whether the raster should be
+treated as a display image, a categorical class/code raster, or continuous
+measurements. The default is `image`. The setting affects later command defaults
+such as `-proj` resampling and nodata fill; it does not change the pixel storage
+type.
+
+Resampling and nodata fill are two independent axes, which is why three values
+are needed rather than a single image/categorical switch:
+
+| `raster-type=` | Default resampling | Uncovered pixels |
+| --- | --- | --- |
+| `image` | bilinear | fill color (white) |
+| `categorical` | nearest | `grid.nodata` |
+| `continuous` | bilinear | `grid.nodata` |
 
 ## Source Storage
 
@@ -320,9 +332,14 @@ per-pixel inverse projection:
   bilinear for image-style rasters; use nearest-neighbor for categorical rasters
   or exact cell values. If raster metadata marks a layer as categorical or
   palette-based, reprojection defaults to nearest.
+- Bilinear sampling skips invalid source pixels (uncovered or nodata) and
+  renormalizes the remaining corner weights, so nodata is never averaged into a
+  real value. Nearest sampling copies a nodata sample through unchanged.
+- Interpolated values are rounded only when the destination sample array holds
+  integers. Rounding a float array would quantize elevation data to whole units.
 - Fill uncovered output pixels with `nodata-color=`. When the option is omitted,
-  image rasters default to white and categorical rasters use `grid.nodata` when
-  available.
+  image rasters default to white, and categorical and continuous rasters use
+  `grid.nodata` when available.
 
 Projected output grids include a `coverage` mask. The mask records which output
 pixels received source content, independently of the nodata fill color. Later

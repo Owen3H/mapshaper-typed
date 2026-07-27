@@ -1,4 +1,5 @@
 import { Bounds } from '../geom/mapshaper-bounds';
+import { samplesAreNodataAtOffset } from './mapshaper-raster-grid';
 import utils from '../utils/mapshaper-utils';
 import { stop, warn } from '../utils/mapshaper-logging';
 import { runningInBrowser } from '../mapshaper-env';
@@ -79,6 +80,9 @@ export function copyRasterData(raster) {
 export function copyRasterGrid(grid) {
   var copy = utils.extend({}, grid);
   if (grid.samples) copy.samples = copyTypedArray(grid.samples);
+  // The coverage mask is mutated in place by the reprojection code, so an
+  // undo snapshot that shared it would track later edits.
+  if (grid.coverage) copy.coverage = copyTypedArray(grid.coverage);
   if (grid.sampleBands) copy.sampleBands = grid.sampleBands.concat();
   if (grid.bbox) copy.bbox = grid.bbox.concat();
   if (grid.transform) copy.transform = copyObjectOrArray(grid.transform);
@@ -428,10 +432,22 @@ function getPreviewSourceOffset(grid, sourceBbox, x, y, width, height, bands) {
   return (sy * grid.width + sx) * bands;
 }
 
+// A grid is north-up when its affine transform has no rotation/skew terms.
+// Cropping and reprojection both index pixels through the axis-aligned bbox,
+// so they can only handle north-up grids.
+export function rasterGridIsRotated(grid) {
+  var t = grid && grid.transform;
+  return !!t && (t[1] !== 0 || t[3] !== 0);
+}
+
 export function clipRasterToBBox(lyr, bbox, opts) {
   var raster = lyr.raster;
   var grid = getRasterGrid(raster);
-  var clipBbox = intersectBboxes(grid.bbox, bbox);
+  var clipBbox;
+  if (rasterGridIsRotated(grid)) {
+    stop('Clipping a rotated or skewed raster is not supported');
+  }
+  clipBbox = intersectBboxes(grid.bbox, bbox);
   if (!clipBbox) {
     warn('Raster clipping rectangle does not intersect the raster layer');
     return false;
@@ -492,9 +508,28 @@ export function cropRasterGrid(grid, crop, bbox) {
     width: crop.width,
     height: crop.height,
     samples: samples,
+    coverage: cropRasterCoverage(grid, crop),
     bbox: bbox,
     transform: updateTransformForBBox(grid.transform, bbox, crop.width, crop.height)
   });
+}
+
+// The coverage mask is one byte per pixel (not per sample), and must be
+// cropped alongside the samples -- consumers index it with the cropped
+// grid's dimensions.
+function cropRasterCoverage(grid, crop) {
+  var coverage = grid.coverage;
+  var cropped, src, dest, x, y;
+  if (!coverage) return coverage;
+  cropped = new Uint8Array(crop.width * crop.height);
+  for (y = 0; y < crop.height; y++) {
+    src = (crop.y + y) * grid.width + crop.x;
+    dest = y * crop.width;
+    for (x = 0; x < crop.width; x++) {
+      cropped[dest + x] = coverage[src + x];
+    }
+  }
+  return cropped;
 }
 
 export function getRasterLayerBounds(lyr) {
@@ -757,11 +792,7 @@ function getPercentileRank(count, pct) {
 }
 
 function allSamplesAreNoData(data, offset, bands, noData) {
-  var n = Math.min(bands, 3);
-  for (var i = 0; i < n; i++) {
-    if (data[offset + i] != noData) return false;
-  }
-  return true;
+  return samplesAreNodataAtOffset(data, offset, bands, noData);
 }
 
 function copyObjectOrArray(obj) {

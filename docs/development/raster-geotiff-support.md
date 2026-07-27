@@ -216,7 +216,7 @@ caches. The display recipe supports these compact import options:
 scaling=none|minmax|percentile
 scale-range=0,100
 percentile-range=2,98
-raster-type=image|categorical
+raster-type=image|categorical|continuous
 ```
 
 `scale-range` is a normalized output intensity range in percent. The default is
@@ -239,12 +239,13 @@ Defaults:
 
 - 8-bit layers use `scaling=none`.
 - Non-8-bit integer and floating point layers use `scaling=percentile`.
-- Rasters use `raster-type=image` unless the user passes
-  `raster-type=categorical`.
+- Rasters use `raster-type=image` unless the user passes another value.
 
 `raster-type=` records semantic intent, not storage type. Image rasters default
 to bilinear resampling in later reprojection commands. Categorical rasters
 default to nearest-neighbor resampling so class/code values are not blended.
+Continuous rasters, such as elevation models, use bilinear resampling but keep
+the source nodata value instead of filling uncovered pixels with a color.
 
 Percentile calculation avoids sorting all pixel values. For small integer ranges
 such as 8-bit and 16-bit data, Mapshaper uses an exact histogram. For larger

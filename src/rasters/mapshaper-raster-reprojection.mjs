@@ -4,9 +4,14 @@ import {
   parseCrsString
 } from '../crs/mapshaper-projections';
 import { getProjectionTopology } from '../crs/mapshaper-projection-topology';
-import { getRasterGrid } from './mapshaper-raster-utils';
+import { getRasterGrid, rasterGridIsRotated } from './mapshaper-raster-utils';
+import {
+  getRasterValidityMask,
+  rasterPixelIsCovered,
+  rasterSamplesAreFloat
+} from './mapshaper-raster-grid';
 import { parseColor } from '../color/color-utils';
-import { stop } from '../utils/mapshaper-logging';
+import { stop, warnOnce } from '../utils/mapshaper-logging';
 
 var DEFAULT_MESH_INTERVAL = 32;
 var DEFAULT_MAX_EDGE_FACTOR = 20;
@@ -74,6 +79,16 @@ function rasterAppearsCategorical(raster) {
     recipe.type == 'categorical' ||
     derivation.type == 'palette' ||
     derivation.type == 'categorical';
+}
+
+// Whether uncovered output pixels should get the source's numeric nodata
+// value instead of a fill color. This is a separate question from the
+// resampling method: elevation data (raster-type=continuous) wants numeric
+// nodata AND bilinear resampling, a combination that a single
+// image/categorical switch could not express.
+function rasterUsesNumericNodataFill(raster) {
+  return !!raster && raster.interpretation == 'continuous' ||
+    rasterAppearsCategorical(raster);
 }
 
 export function getProjectedRasterGridBBox(raster, srcCRS, destCRS, optsArg) {
@@ -754,9 +769,8 @@ function getProjectedMeshMaxEdge(lengths, opts) {
 }
 
 function validateRasterGridForProjection(grid) {
-  var t = grid && grid.transform;
   if (!grid || !grid.samples || !grid.bbox) stop('Raster layer is missing required projection data');
-  if (t && (t[1] !== 0 || t[3] !== 0)) {
+  if (rasterGridIsRotated(grid)) {
     stop('Raster reprojection does not support rotated or skewed rasters');
   }
 }
@@ -888,18 +902,35 @@ function fillProjectedRasterSamples(samples, bands, grid, raster, opts) {
   var color = getNoDataColor(raster, opts);
   var noData = grid.nodata;
   if (color) {
+    warnIfPaintingOverContinuousData(samples, grid, raster, opts);
     fillProjectedRasterColor(samples, bands, color);
     return;
   }
-  if (noData === null || noData === undefined || !isFinite(noData)) return;
+  if (noData === null || noData === undefined || !isFinite(noData)) {
+    if (raster && raster.interpretation == 'continuous') {
+      warnOnce('This raster has no nodata value, so uncovered pixels will be 0');
+    }
+    return;
+  }
   samples.fill(noData);
+}
+
+// Painting a color into a float grid means writing a color value into what
+// are probably measurements. Flag it, since raster-type=continuous is
+// usually what the user wanted.
+function warnIfPaintingOverContinuousData(samples, grid, raster, opts) {
+  if (opts.nodata_color || opts.nodataColor) return; // explicit user choice
+  if (!rasterSamplesAreFloat(samples)) return;
+  if (grid.nodata === null || grid.nodata === undefined) return;
+  warnOnce('Filling uncovered pixels of a floating-point raster with a color. ' +
+    'Use -i raster-type=continuous to preserve its nodata value instead.');
 }
 
 function getNoDataColor(raster, opts) {
   var arg = opts.nodata_color || opts.nodataColor;
   var color;
   if (arg == null || arg === '') {
-    return rasterAppearsCategorical(raster) ? null : {r: 255, g: 255, b: 255, a: 1};
+    return rasterUsesNumericNodataFill(raster) ? null : {r: 255, g: 255, b: 255, a: 1};
   }
   if (String(arg).toLowerCase() == 'transparent') {
     return {r: 0, g: 0, b: 0, a: 0};
@@ -924,7 +955,8 @@ function fillProjectedRasterColor(samples, bands, color) {
   }
 }
 
-function rasterizeProjectedMesh(srcGrid, destGrid, mesh, sampleMethod) {
+function rasterizeProjectedMesh(srcGrid, destGrid, mesh, sampleMethodArg) {
+  var sampleMethod = getRasterSamplerContext(srcGrid, destGrid, sampleMethodArg);
   var regionData = mesh.projectedRegions ?
     createProjectedRegionMask(
       destGrid, mesh.projectedRegions, mesh.fillRegionMask) :
@@ -1121,9 +1153,24 @@ function mapXYToRasterPixel(grid, x, y) {
   ];
 }
 
-function copyRasterSample(srcGrid, destGrid, sx, sy, dx, dy, sampleMethod, wrapX) {
-  if (sampleMethod == 'bilinear') {
-    copyBilinearRasterSample(srcGrid, destGrid, sx, sy, dx, dy, wrapX);
+// Per-projection sampling context, built once so the inner rasterizing loop
+// does not repeat type or metadata tests for every output pixel.
+function getRasterSamplerContext(srcGrid, destGrid, method) {
+  return {
+    bilinear: method == 'bilinear',
+    // Integer sample arrays truncate on assignment, so interpolated values
+    // have to be rounded explicitly. Float arrays must NOT be rounded, or
+    // elevation data loses its sub-unit precision.
+    round: !rasterSamplesAreFloat(destGrid.samples),
+    // Resolved once for the whole source grid; null means every pixel is
+    // valid and the sampler can skip validity testing altogether.
+    validity: getRasterValidityMask(srcGrid)
+  };
+}
+
+function copyRasterSample(srcGrid, destGrid, sx, sy, dx, dy, sampler, wrapX) {
+  if (sampler.bilinear) {
+    copyBilinearRasterSample(srcGrid, destGrid, sx, sy, dx, dy, sampler, wrapX);
   } else {
     copyNearestRasterSample(srcGrid, destGrid, sx, sy, dx, dy, wrapX);
   }
@@ -1136,7 +1183,9 @@ function copyNearestRasterSample(srcGrid, destGrid, sx, sy, dx, dy, wrapX) {
   var srcY = clamp(Math.floor(sy), 0, srcGrid.height - 1);
   var src = (srcY * srcGrid.width + srcX) * srcGrid.bands;
   var dest = (dy * destGrid.width + dx) * destGrid.bands;
-  if (!rasterSourcePixelIsCovered(srcGrid, srcX, srcY)) return;
+  // Nearest sampling copies a nodata sample through unchanged, rather than
+  // skipping it, so nodata areas survive a round trip.
+  if (!rasterPixelIsCovered(srcGrid, srcY * srcGrid.width + srcX)) return;
   for (var band = 0; band < srcGrid.bands; band++) {
     destGrid.samples[dest + band] = srcGrid.samples[src + band];
   }
@@ -1144,7 +1193,7 @@ function copyNearestRasterSample(srcGrid, destGrid, sx, sy, dx, dy, wrapX) {
   if (destGrid.coverage) destGrid.coverage[dy * destGrid.width + dx] = 1;
 }
 
-function copyBilinearRasterSample(srcGrid, destGrid, sx, sy, dx, dy, wrapX) {
+function copyBilinearRasterSample(srcGrid, destGrid, sx, sy, dx, dy, sampler, wrapX) {
   if (wrapX) sx = modulo(sx, srcGrid.width);
   var srcX = wrapX ?
     modulo(Math.floor(sx - 0.5), srcGrid.width) :
@@ -1160,77 +1209,79 @@ function copyBilinearRasterSample(srcGrid, destGrid, sx, sy, dx, dy, wrapX) {
   var src01 = (srcY2 * srcGrid.width + srcX) * srcGrid.bands;
   var src11 = (srcY2 * srcGrid.width + srcX2) * srcGrid.bands;
   var dest = (dy * destGrid.width + dx) * destGrid.bands;
-  if (!srcGrid.coverage) {
-    copyBilinearRasterSampleFast(srcGrid, destGrid, src00, src10, src01, src11, dest, tx, ty);
+  if (!sampler.validity) {
+    copyBilinearRasterSampleFast(srcGrid, destGrid, src00, src10, src01, src11, dest, tx, ty, sampler.round);
     if (destGrid.coverage) destGrid.coverage[dy * destGrid.width + dx] = 1;
     return;
   }
-  if (copyBilinearRasterSampleWithCoverage(srcGrid, destGrid, srcX, srcY, srcX2, srcY2, src00, src10, src01, src11, dest, tx, ty)) {
+  if (copyBilinearRasterSampleChecked(srcGrid, destGrid, sampler.validity, srcX, srcY, srcX2, srcY2, src00, src10, src01, src11, dest, tx, ty, sampler.round)) {
     if (destGrid.coverage) destGrid.coverage[dy * destGrid.width + dx] = 1;
   }
 }
 
-function copyBilinearRasterSampleFast(srcGrid, destGrid, src00, src10, src01, src11, dest, tx, ty) {
+function copyBilinearRasterSampleFast(srcGrid, destGrid, src00, src10, src01, src11, dest, tx, ty, round) {
   if (srcGrid.bands == 3) {
-    copyBilinearRgbSample(srcGrid.samples, destGrid.samples, src00, src10, src01, src11, dest, tx, ty);
+    copyBilinearRgbSample(srcGrid.samples, destGrid.samples, src00, src10, src01, src11, dest, tx, ty, round);
   } else if (srcGrid.bands == 4) {
-    copyBilinearRgbaSample(srcGrid.samples, destGrid.samples, src00, src10, src01, src11, dest, tx, ty);
+    copyBilinearRgbaSample(srcGrid.samples, destGrid.samples, src00, src10, src01, src11, dest, tx, ty, round);
   } else {
-    copyBilinearGenericSample(srcGrid.samples, destGrid.samples, srcGrid.bands, src00, src10, src01, src11, dest, tx, ty);
+    copyBilinearGenericSample(srcGrid.samples, destGrid.samples, srcGrid.bands, src00, src10, src01, src11, dest, tx, ty, round);
   }
   if (destGrid.bands > srcGrid.bands) destGrid.samples[dest + 3] = 255;
 }
 
-function copyBilinearRgbSample(src, destArr, src00, src10, src01, src11, dest, tx, ty) {
-  copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, 0, tx, ty);
-  copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, 1, tx, ty);
-  copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, 2, tx, ty);
+function copyBilinearRgbSample(src, destArr, src00, src10, src01, src11, dest, tx, ty, round) {
+  copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, 0, tx, ty, round);
+  copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, 1, tx, ty, round);
+  copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, 2, tx, ty, round);
 }
 
-function copyBilinearRgbaSample(src, destArr, src00, src10, src01, src11, dest, tx, ty) {
-  copyBilinearRgbSample(src, destArr, src00, src10, src01, src11, dest, tx, ty);
-  copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, 3, tx, ty);
+function copyBilinearRgbaSample(src, destArr, src00, src10, src01, src11, dest, tx, ty, round) {
+  copyBilinearRgbSample(src, destArr, src00, src10, src01, src11, dest, tx, ty, round);
+  copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, 3, tx, ty, round);
 }
 
-function copyBilinearGenericSample(src, destArr, bands, src00, src10, src01, src11, dest, tx, ty) {
+function copyBilinearGenericSample(src, destArr, bands, src00, src10, src01, src11, dest, tx, ty, round) {
   for (var band = 0; band < bands; band++) {
-    copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, band, tx, ty);
+    copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, band, tx, ty, round);
   }
 }
 
-function copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, band, tx, ty) {
+function copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, band, tx, ty, round) {
   var a = src[src00 + band] * (1 - tx) + src[src10 + band] * tx;
   var b = src[src01 + band] * (1 - tx) + src[src11 + band] * tx;
-  destArr[dest + band] = Math.round(a * (1 - ty) + b * ty);
+  var val = a * (1 - ty) + b * ty;
+  destArr[dest + band] = round ? Math.round(val) : val;
 }
 
-function copyBilinearRasterSampleWithCoverage(srcGrid, destGrid, srcX, srcY, srcX2, srcY2, src00, src10, src01, src11, dest, tx, ty) {
-  var coords = [
-    [srcX, srcY, src00, (1 - tx) * (1 - ty)],
-    [srcX2, srcY, src10, tx * (1 - ty)],
-    [srcX, srcY2, src01, (1 - tx) * ty],
-    [srcX2, srcY2, src11, tx * ty]
-  ];
-  var total = 0;
-  var val, item;
+// Bilinear sampling that skips invalid source pixels and renormalizes the
+// remaining weights, so nodata is never blended into a real value. Validity
+// is resolved once per output pixel rather than once per band.
+function copyBilinearRasterSampleChecked(srcGrid, destGrid, validity, srcX, srcY, srcX2, srcY2, src00, src10, src01, src11, dest, tx, ty, round) {
+  var w00 = (1 - tx) * (1 - ty);
+  var w10 = tx * (1 - ty);
+  var w01 = (1 - tx) * ty;
+  var w11 = tx * ty;
+  var width = srcGrid.width;
+  var samples = srcGrid.samples;
+  var ok00 = w00 > 0 && validity[srcY * width + srcX] > 0;
+  var ok10 = w10 > 0 && validity[srcY * width + srcX2] > 0;
+  var ok01 = w01 > 0 && validity[srcY2 * width + srcX] > 0;
+  var ok11 = w11 > 0 && validity[srcY2 * width + srcX2] > 0;
+  var total = (ok00 ? w00 : 0) + (ok10 ? w10 : 0) + (ok01 ? w01 : 0) + (ok11 ? w11 : 0);
+  var val;
+  if (total <= 0) return false;
   for (var band = 0; band < srcGrid.bands; band++) {
     val = 0;
-    total = 0;
-    for (var i = 0; i < coords.length; i++) {
-      item = coords[i];
-      if (item[3] <= 0 || !rasterSourcePixelIsCovered(srcGrid, item[0], item[1])) continue;
-      val += srcGrid.samples[item[2] + band] * item[3];
-      total += item[3];
-    }
-    if (total <= 0) return false;
-    destGrid.samples[dest + band] = Math.round(val / total);
+    if (ok00) val += samples[src00 + band] * w00;
+    if (ok10) val += samples[src10 + band] * w10;
+    if (ok01) val += samples[src01 + band] * w01;
+    if (ok11) val += samples[src11 + band] * w11;
+    val /= total;
+    destGrid.samples[dest + band] = round ? Math.round(val) : val;
   }
   if (destGrid.bands > srcGrid.bands) destGrid.samples[dest + 3] = 255;
   return true;
-}
-
-function rasterSourcePixelIsCovered(grid, x, y) {
-  return !grid.coverage || grid.coverage[y * grid.width + x] > 0;
 }
 
 function timeStart(timing, name) {

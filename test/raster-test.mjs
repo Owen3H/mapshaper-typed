@@ -242,8 +242,25 @@ describe('raster layers', function () {
   });
 
   it('imports categorical raster layers with raster-type=categorical', async function () {
-    var dataset = await api.internal.importContentAsync(getPngImportGroup(), {raster_type: 'categorical'});
+    var dataset = await api.internal.importContentAsync(getPngImportGroup(), {interpretation: 'categorical'});
     assert.equal(dataset.layers[0].raster.interpretation, 'categorical');
+  });
+
+  it('parses raster-type= into the interpretation option', function () {
+    var cmd = api.internal.parseCommands('-i in.tif raster-type=categorical')[0];
+    assert.equal(cmd.options.interpretation, 'categorical');
+    assert.equal(cmd.options.raster_type, undefined);
+  });
+
+  it('accepts raster-type=continuous', function () {
+    var cmd = api.internal.parseCommands('-i in.tif raster-type=continuous')[0];
+    assert.equal(cmd.options.interpretation, 'continuous');
+  });
+
+  it('rejects an unsupported raster-type= value', function () {
+    assert.throws(function () {
+      api.internal.parseCommands('-i in.tif raster-type=elevation');
+    }, /Unsupported raster-type/);
   });
 
   it('imports PNG raster sidecars from local files', async function () {
@@ -663,6 +680,112 @@ describe('raster layers', function () {
     });
   });
 
+  it('keeps fractional values when reprojecting a float raster', function () {
+    var crs = api.internal.parseCrsString('wgs84');
+    var grid = api.internal.projectRasterGridForward(getFloatDemRaster('continuous'), crs, crs, {
+      raster_mesh_interval: 1,
+      output_bbox: [0, 0, 4, 1],
+      output_width: 4,
+      output_height: 1
+    });
+    var vals = Array.from(grid.samples);
+    assert(grid.samples instanceof Float32Array);
+    assert(vals.some(function(v) { return v !== Math.round(v); }),
+      'elevations were rounded to whole units: ' + vals.join(', '));
+  });
+
+  it('does not interpolate nodata into real values when reprojecting', function () {
+    var crs = api.internal.parseCrsString('wgs84');
+    var grid = api.internal.projectRasterGridForward(getFloatDemRaster('continuous'), crs, crs, {
+      raster_mesh_interval: 1,
+      output_bbox: [0, 0, 4, 1],
+      output_width: 7,
+      output_height: 1
+    });
+    // Every sample must be either the nodata sentinel or a real elevation --
+    // anything in between could only come from blending the two.
+    Array.from(grid.samples).forEach(function(v) {
+      assert(v === -9999 || v >= 1000,
+        'nodata was blended into a real value: ' + v);
+    });
+  });
+
+  it('fills uncovered pixels with nodata for raster-type=continuous', function () {
+    var crs = api.internal.parseCrsString('wgs84');
+    var grid = api.internal.projectRasterGridForward(getFloatDemRaster('continuous'), crs, crs, {
+      raster_mesh_interval: 1,
+      output_bbox: [1e6, 1e6, 1e6 + 1, 1e6 + 1],
+      output_width: 1,
+      output_height: 1
+    });
+    assert.deepEqual(Array.from(grid.samples), [-9999]);
+  });
+
+  it('still fills uncovered pixels with a color for raster-type=image', function () {
+    var crs = api.internal.parseCrsString('wgs84');
+    var grid = api.internal.projectRasterGridForward(getFloatDemRaster('image'), crs, crs, {
+      raster_mesh_interval: 1,
+      output_bbox: [1e6, 1e6, 1e6 + 1, 1e6 + 1],
+      output_width: 1,
+      output_height: 1
+    });
+    assert.deepEqual(Array.from(grid.samples), [255]);
+  });
+
+  it('defaults to bilinear resampling for raster-type=continuous', function () {
+    var crs = api.internal.parseCrsString('wgs84');
+    function project(interpretation, method) {
+      var opts = {
+        raster_mesh_interval: 1,
+        output_bbox: [0, 0, 4, 1],
+        output_width: 7,
+        output_height: 1
+      };
+      if (method) opts.sample_method = method;
+      return Array.from(api.internal.projectRasterGridForward(
+        getFloatDemRaster(interpretation), crs, crs, opts).samples);
+    }
+    assert.deepEqual(project('continuous'), project('continuous', 'bilinear'));
+    assert.notDeepEqual(project('continuous'), project('continuous', 'nearest'));
+    // categorical keeps its nearest-neighbour default
+    assert.deepEqual(project('categorical'), project('categorical', 'nearest'));
+  });
+
+  it('treats coverage and nodata as a single pixel validity rule', function () {
+    var grid = {
+      width: 2,
+      height: 1,
+      bands: 1,
+      samples: new Float32Array([-9999, 5]),
+      nodata: -9999
+    };
+    assert.equal(api.internal.rasterPixelIsValid(grid, 0), false);
+    assert.equal(api.internal.rasterPixelIsValid(grid, 1), true);
+    grid.coverage = new Uint8Array([1, 0]);
+    assert.equal(api.internal.rasterPixelIsValid(grid, 1), false);
+    assert.equal(api.internal.rasterGridHasInvalidPixels(grid), true);
+    assert.equal(api.internal.rasterGridHasInvalidPixels({nodata: null}), false);
+  });
+
+  it('builds a validity mask combining coverage and nodata', function () {
+    var grid = {
+      width: 3,
+      height: 1,
+      bands: 1,
+      samples: new Float32Array([-9999, 5, 6]),
+      coverage: new Uint8Array([1, 1, 0]),
+      nodata: -9999
+    };
+    assert.deepEqual(Array.from(api.internal.getRasterValidityMask(grid)), [0, 1, 0]);
+    // With no nodata value the coverage mask already answers the question,
+    // so it is reused rather than copied.
+    delete grid.nodata;
+    assert.strictEqual(api.internal.getRasterValidityMask(grid), grid.coverage);
+    // A grid with neither needs no mask at all.
+    delete grid.coverage;
+    assert.strictEqual(api.internal.getRasterValidityMask(grid), null);
+  });
+
   it('promotes projected RGB rasters to RGBA for transparent nodata-color', function () {
     var raster = getRasterDataset().layers[0].raster;
     var src = api.internal.parseCrsString('wgs84');
@@ -715,6 +838,72 @@ describe('raster layers', function () {
       raster_component_filter: true
     });
     assert.deepEqual(bbox, [0, 0, 2, 1]);
+  });
+
+  it('crops the coverage mask along with the samples when clipping', function () {
+    var lyr = getCoverageRasterLayer();
+    api.internal.clipRasterToBBox(lyr, [2, 0, 4, 2], {});
+    var grid = lyr.raster.grid;
+    assert.equal(grid.width, 2);
+    assert.equal(grid.height, 2);
+    assert.deepEqual(Array.from(grid.samples), [30, 40, 70, 80]);
+    // Must be cropped to the new dimensions and stay aligned with the samples:
+    // the uncovered pixel is the second one in the cropped grid.
+    assert.equal(grid.coverage.length, grid.width * grid.height);
+    assert.deepEqual(Array.from(grid.coverage), [1, 0, 1, 1]);
+  });
+
+  it('leaves the coverage mask alone when clipping a raster that has none', function () {
+    var lyr = getCoverageRasterLayer();
+    delete lyr.raster.grid.coverage;
+    api.internal.clipRasterToBBox(lyr, [2, 0, 4, 2], {});
+    assert.equal(lyr.raster.grid.coverage, undefined);
+  });
+
+  it('rejects clipping a rotated raster', function () {
+    var lyr = getCoverageRasterLayer();
+    lyr.raster.grid.transform = [1, 0.5, 0, 0.5, -1, 2];
+    assert.throws(function () {
+      api.internal.clipRasterToBBox(lyr, [2, 0, 4, 2], {});
+    }, /rotated or skewed/);
+  });
+
+  it('deep-copies the coverage mask, so undo snapshots do not alias it', function () {
+    var lyr = getCoverageRasterLayer();
+    var copy = api.internal.copyRasterData(lyr.raster);
+    assert.notStrictEqual(copy.grid.coverage, lyr.raster.grid.coverage);
+    lyr.raster.grid.coverage[0] = 0;
+    assert.equal(copy.grid.coverage[0], 1);
+  });
+
+  it('packs and unpacks the coverage mask', async function () {
+    var dataset = {
+      info: {crs_string: 'wgs84'},
+      layers: [getCoverageRasterLayer()]
+    };
+    var file = (await api.internal.exportPackedDatasets([dataset], {}))[0];
+    var session = await api.internal.unpackSessionData(file.content);
+    var grid = session.datasets[0].layers[0].raster.grid;
+    assert(grid.coverage instanceof Uint8Array);
+    assert.deepEqual(Array.from(grid.coverage), [1, 1, 1, 0, 1, 1, 1, 1]);
+  });
+
+  it('rejects merging raster layers', function () {
+    var layers = [getCoverageRasterLayer(), {
+      name: 'points',
+      geometry_type: 'point',
+      shapes: [[[0, 0]]]
+    }];
+    assert.throws(function () {
+      api.cmd.mergeLayers(layers, {});
+    }, /cannot be merged/);
+  });
+
+  it('rejects dissolving raster layers', function () {
+    var lyr = getCoverageRasterLayer();
+    assert.throws(function () {
+      api.cmd.dissolve([lyr], {layers: [lyr]}, {});
+    }, /cannot be dissolved/);
   });
 
   it('keeps overlapping projected mesh components from antimeridian wrapping', function () {
@@ -780,6 +969,60 @@ function getJpegImportGroup() {
     world: {
       filename: 'image.jgw',
       content: WORLD_FILE
+    }
+  };
+}
+
+// A single-band float32 elevation raster with a nodata sample, standing in
+// for a DEM.
+function getFloatDemRaster(interpretation) {
+  return {
+    sourceId: 'dem',
+    interpretation: interpretation || 'image',
+    grid: {
+      width: 4,
+      height: 1,
+      bands: 1,
+      pixelType: 'float32',
+      samples: new Float32Array([-9999, 1000.25, 1000.75, 1001.5]),
+      sampleBands: [0],
+      nodata: -9999,
+      bbox: [0, 0, 4, 1],
+      transform: [1, 0, 0, 0, -1, 1]
+    },
+    derivation: {type: 'gray', sourceId: 'dem', bands: [0]},
+    view: {recipe: {type: 'gray', bands: [0]}}
+  };
+}
+
+// A 4x2 single-band raster carrying a coverage mask, as produced by -proj.
+// Pixel (3, 0) -- the last one in the top row -- is uncovered.
+function getCoverageRasterLayer() {
+  return {
+    name: 'raster',
+    raster_type: 'grid',
+    raster: {
+      sourceId: 'raster',
+      grid: {
+        width: 4,
+        height: 2,
+        bands: 1,
+        pixelType: 'uint8',
+        samples: new Uint8Array([
+          10, 20, 30, 40,
+          50, 60, 70, 80
+        ]),
+        sampleBands: [0],
+        nodata: null,
+        coverage: new Uint8Array([
+          1, 1, 1, 0,
+          1, 1, 1, 1
+        ]),
+        bbox: [0, 0, 4, 2],
+        transform: [1, 0, 0, 0, -1, 2]
+      },
+      derivation: {type: 'gray', sourceId: 'raster', bands: [0]},
+      view: {recipe: {type: 'gray', bands: [0]}}
     }
   };
 }

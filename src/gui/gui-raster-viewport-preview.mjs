@@ -36,10 +36,6 @@ export function scheduleRasterViewportPreview(layer, ext, onReady) {
   }, 0);
 }
 
-export function invalidateRasterViewportPreview(layer) {
-  cache.delete(layer);
-}
-
 export function getRasterViewportPreviewParams(layer, ext) {
   var raster = layer && layer.raster;
   var grid = internal.getRasterGrid(raster);
@@ -49,7 +45,7 @@ export function getRasterViewportPreviewParams(layer, ext) {
   var preview = internal.getRasterPreview(raster);
   var recipe, pixelRatio, t, p1, p2, displayWidth, displayHeight, crop, width, height, scale, key, needed;
   if (!grid || !grid.samples || !visibleBbox || !grid.bbox) return null;
-  if (!supportsNorthUpRaster(grid)) return null;
+  if (internal.rasterGridIsRotated(grid)) return null;
   crop = getRasterSourceWindow(grid, visibleBbox);
   if (!crop) return null;
   visibleBbox = crop.bbox;
@@ -153,11 +149,6 @@ function getTimer() {
 
 function formatMs(ms) {
   return Math.round(ms * 10) / 10 + 'ms';
-}
-
-function supportsNorthUpRaster(grid) {
-  var t = grid.transform;
-  return !t || t[1] === 0 && t[3] === 0;
 }
 
 function getRasterSourcePixelSize(grid, bbox) {

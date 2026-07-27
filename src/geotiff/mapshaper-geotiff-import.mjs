@@ -122,7 +122,7 @@ async function importGeoTIFFImage(importImage, input, opts, sourceImage) {
 }
 
 function getRasterInterpretation(opts) {
-  return opts.raster_type || opts.rasterType || 'image';
+  return opts.interpretation || 'image';
 }
 
 async function selectGeoTIFFImportImage(tiff, sourceImage, opts) {

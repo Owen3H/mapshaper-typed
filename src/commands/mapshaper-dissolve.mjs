@@ -1,4 +1,4 @@
-import { layerHasPaths } from '../dataset/mapshaper-layer-utils';
+import { layerHasPaths, requireNotRasterLayer } from '../dataset/mapshaper-layer-utils';
 import { cloneShapes } from '../paths/mapshaper-shape-utils';
 import { dissolvePointGeometry } from '../dissolve/mapshaper-point-dissolve';
 import { dissolvePolylineGeometry } from '../dissolve/mapshaper-polyline-dissolve';
@@ -36,10 +36,18 @@ var INTERSECTION_SAMPLE_LIMIT = 10;
 //
 cmd.dissolve = function(arg1, arg2, opts) {
   if (Array.isArray(arg1)) {
+    arg1.forEach(requireDissolvableLayer);
     return dissolveLayers(arg1, arg2, opts);
   }
+  requireDissolvableLayer(arg1);
   return dissolveSingleLayer(arg1, arg2, opts);
 };
+
+// Without this guard a raster layer takes the tabular branch of
+// dissolveOneLayer() and is replaced by a geometry-less aggregate.
+function requireDissolvableLayer(lyr) {
+  requireNotRasterLayer(lyr, 'Raster layers cannot be dissolved');
+}
 
 function dissolveLayers(layers, dataset, optsArg) {
   var opts = utils.extend({}, optsArg);

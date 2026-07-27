@@ -63,7 +63,7 @@ export async function importImageRaster(input, optsArg) {
 }
 
 function getRasterInterpretation(opts) {
-  return opts.raster_type || opts.rasterType || 'image';
+  return opts.interpretation || 'image';
 }
 
 async function decodeImage(input, imageType) {

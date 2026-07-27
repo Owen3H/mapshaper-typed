@@ -1,6 +1,6 @@
 import { getColumnType } from '../datatable/mapshaper-data-utils';
 import { fixInconsistentFields } from '../datatable/mapshaper-data-utils';
-import { getFeatureCount, requirePolygonLayer } from '../dataset/mapshaper-layer-utils';
+import { getFeatureCount, requireNotRasterLayer, requirePolygonLayer } from '../dataset/mapshaper-layer-utils';
 import { message, stop, error } from '../utils/mapshaper-logging';
 import { DataTable } from '../datatable/mapshaper-data-table';
 import { cleanLayers } from '../commands/mapshaper-clean';
@@ -28,9 +28,12 @@ cmd.mergeAndFlattenLayers = function(layers, dataset, opts) {
 // Assumes that input layers are members of the same dataset (and therefore
 // share the same ArcCollection, if layers have paths).
 cmd.mergeLayers = function(layersArg, opts) {
-  var layers = layersArg.filter(getFeatureCount); // ignore empty layers
-  var merged = {};
+  var layers, merged = {};
   opts = opts || {};
+  layersArg.forEach(function(lyr) {
+    requireNotRasterLayer(lyr, 'Raster layers cannot be merged');
+  });
+  layers = layersArg.filter(getFeatureCount); // ignore empty layers
   if (!layers.length && layersArg.length > 1) {
     layers = layersArg; // merge all-empty layer sets
   }

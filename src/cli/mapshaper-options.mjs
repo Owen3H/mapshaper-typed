@@ -186,8 +186,15 @@ export function getOptionParser() {
     .option('percentile-range', {
       describe: '[raster] input percentile range for percentile scaling, e.g. 2,98'
     })
+    // The user-facing spelling is raster-type=; the parsed option is named
+    // interpretation to keep it distinct from layer.raster_type, which is a
+    // storage tag, not a semantic one.
+    .option('interpretation', {
+      label: 'raster-type=',
+      describe: '[raster] image, categorical or continuous (default is image)'
+    })
     .option('raster-type', {
-      describe: '[raster] image or categorical (default is image)'
+      alias_to: 'interpretation'
     })
     .option('rendition', {
       describe: '[GeoTIFF] import a GeoTIFF rendition: full,overview-1,etc.'

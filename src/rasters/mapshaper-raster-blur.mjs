@@ -1,4 +1,10 @@
 import { getRasterGrid } from './mapshaper-raster-utils';
+import {
+  getSampleArrayRange,
+  rasterGridHasInvalidPixels,
+  rasterPixelIsValid,
+  rasterSamplesAreFloat
+} from './mapshaper-raster-grid';
 import { stop } from '../utils/mapshaper-logging';
 
 var BOX_BLUR_PASSES = 3;
@@ -192,8 +198,8 @@ function copyPremultipliedBandToChannel(grid, band, channel) {
 
 function copyUnpremultipliedChannelToBand(channel, alpha, samples, grid, band) {
   var bands = grid.bands;
-  var isFloat = samples instanceof Float32Array || samples instanceof Float64Array;
-  var range = isFloat ? null : getTypedArrayRange(samples);
+  var isFloat = rasterSamplesAreFloat(samples);
+  var range = isFloat ? null : getSampleArrayRange(samples);
   var maxAlpha = getAlphaMaxValue(samples);
   var val, a;
   for (var i = 0, j = band; i < channel.length; i++, j += bands) {
@@ -205,8 +211,8 @@ function copyUnpremultipliedChannelToBand(channel, alpha, samples, grid, band) {
 
 function copyChannelToBand(channel, samples, grid, band) {
   var bands = grid.bands;
-  var isFloat = samples instanceof Float32Array || samples instanceof Float64Array;
-  var range = isFloat ? null : getTypedArrayRange(samples);
+  var isFloat = rasterSamplesAreFloat(samples);
+  var range = isFloat ? null : getSampleArrayRange(samples);
   var val;
   for (var i = 0, j = band; i < channel.length; i++, j += bands) {
     val = channel[i];
@@ -215,39 +221,17 @@ function copyChannelToBand(channel, samples, grid, band) {
 }
 
 function getRasterBlurWeights(grid) {
-  if (!grid.coverage && grid.nodata == null) return null;
+  if (!rasterGridHasInvalidPixels(grid)) return null;
   var weights = new Float32Array(grid.width * grid.height);
   for (var i = 0; i < weights.length; i++) {
-    weights[i] = rasterBlurPixelIsValid(grid, i) ? 1 : 0;
+    weights[i] = rasterPixelIsValid(grid, i) ? 1 : 0;
   }
   return weights;
 }
 
-function rasterBlurPixelIsValid(grid, pixelId) {
-  var off, n;
-  if (grid.coverage && grid.coverage[pixelId] === 0) return false;
-  if (grid.nodata == null) return true;
-  off = pixelId * grid.bands;
-  n = Math.min(grid.bands, 3);
-  for (var i = 0; i < n; i++) {
-    if (grid.samples[off + i] != grid.nodata) return true;
-  }
-  return false;
-}
-
 function getAlphaMaxValue(samples) {
-  if (samples instanceof Float32Array || samples instanceof Float64Array) return 1;
-  return getTypedArrayRange(samples).max;
-}
-
-function getTypedArrayRange(arr) {
-  if (arr instanceof Uint8Array || arr instanceof Uint8ClampedArray) return {min: 0, max: 255};
-  if (arr instanceof Int8Array) return {min: -128, max: 127};
-  if (arr instanceof Uint16Array) return {min: 0, max: 65535};
-  if (arr instanceof Int16Array) return {min: -32768, max: 32767};
-  if (arr instanceof Uint32Array) return {min: 0, max: 4294967295};
-  if (arr instanceof Int32Array) return {min: -2147483648, max: 2147483647};
-  return {min: -Infinity, max: Infinity};
+  if (rasterSamplesAreFloat(samples)) return 1;
+  return getSampleArrayRange(samples).max;
 }
 
 function clamp(val, min, max) {

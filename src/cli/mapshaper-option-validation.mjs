@@ -23,8 +23,9 @@ export function validateInputOpts(cmd) {
     error('precision= option should be a positive number');
   }
 
-  if (o.raster_type && o.raster_type != 'image' && o.raster_type != 'categorical') {
-    error('Unsupported raster-type:', o.raster_type);
+  if (o.interpretation && o.interpretation != 'image' &&
+      o.interpretation != 'categorical' && o.interpretation != 'continuous') {
+    error('Unsupported raster-type:', o.interpretation);
   }
 
   if (o.encoding) {

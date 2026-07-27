@@ -120,6 +120,9 @@ function importRasterData(raster) {
     if (raster.grid.samples) {
       copy.grid.samples = restoreRasterSamples(raster.grid.samples, raster.grid.pixelType);
     }
+    if (raster.grid.coverage) {
+      copy.grid.coverage = new Uint8Array(BinArray.copyToArrayBuffer(raster.grid.coverage));
+    }
   }
   if (raster.view) {
     copy.view = Object.assign({}, raster.view);

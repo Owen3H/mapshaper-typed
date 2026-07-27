@@ -206,7 +206,7 @@ mapshaper -i 'lat,lon,label\n48.86,2.35,Paris\n51.51,-0.13,London' \
 
 `percentile-range=` [Raster] Input percentile range used with `scaling=percentile`. The default is `2,98`.
 
-`raster-type=image|categorical` [Raster] Semantic raster type. This sets the default resampling method for later raster reprojection: `image` (the default) uses bilinear resampling, while `categorical` uses nearest-neighbor resampling to preserve class/code values.
+`raster-type=image|categorical|continuous` [Raster] Semantic raster type. This sets the default resampling method for later raster reprojection, and how uncovered pixels are filled. `image` (the default) uses bilinear resampling and fills with a color. `categorical` uses nearest-neighbor resampling to preserve class/code values, and fills with the source nodata value. `continuous` is for measurement rasters such as elevation models: it uses bilinear resampling like `image` but fills with the source nodata value like `categorical`, so uncovered pixels do not become a color value mixed in with the data.
 
 `rendition=` [GeoTIFF] Import a specific GeoTIFF rendition, using a slug such as `full` or `overview-1`. When a GeoTIFF has internal overviews, Mapshaper lists the available slugs during import. By default, large GeoTIFFs are imported from the best available reduced-resolution overview under Mapshaper's import size limit, or resampled during import if no suitable overview is available. Use `rendition=full` to force full-resolution import.
 
@@ -1148,11 +1148,11 @@ Project a dataset using a PROJ string, EPSG code or alias. This command affects 
 
 `init=` Define the pre-projected coordinate system, if unknown. This option is not needed if the source coordinate system is defined by a .prj file, or if the source CRS is WGS84. As with `crs`, you can pass a Proj4 string enclosed in quotes if the selected projection requires extra parameters, for example `init='+proj=utm +zone=33'`.
 
-`nodata-color=` (raster) Color for output pixels that do not receive source raster content after reprojection. The default is white for image rasters and the source nodata value, when available, for categorical rasters. Use `transparent` for transparent output.
+`nodata-color=` (raster) Color for output pixels that do not receive source raster content after reprojection. The default is white for image rasters and the source nodata value, when available, for categorical and continuous rasters. Use `transparent` for transparent output.
 
 `background=` (raster) Alias for `nodata-color=`.
 
-`resampling=nearest|bilinear` (raster) Resampling method for raster reprojection. Overrides the default set by `-i raster-type=`. Use `bilinear` for smooth continuous-tone imagery and `nearest` for categorical rasters or exact cell values.
+`resampling=nearest|bilinear` (raster) Resampling method for raster reprojection. Overrides the default set by `-i raster-type=`. Use `bilinear` for smooth continuous-tone imagery and elevation data, and `nearest` for categorical rasters or exact cell values. Bilinear resampling skips nodata source pixels and renormalizes the remaining weights, so a nodata value is never averaged into a real one.
 
 `target=` Layer(s) to target. All layers belonging to the same dataset as a targeted layer will be reprojected. To reproject all datasets, use `target=*`.
 
