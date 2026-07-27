@@ -1,4 +1,5 @@
 v0.7.49 (unreleased)
+* `-blur` now accepts a real-world distance as well as a pixel count (e.g. `-blur 500m`), takes its radius as a bare argument (e.g. `-blur 5px`), and appears in the command list printed by `mapshaper -h`.
 * Added `-contours` command for tracing contour lines from a raster layer, with `interval=`, `levels=`, `base=`, `band=` and `field=` options. Traced lines are smoothed at an auto-selected one-pixel interval; use `no-smoothing` to skip that step.
 * Added `-i raster-type=continuous` for measurement rasters like elevation models, which use bilinear resampling but keep the source nodata value instead of a fill color when projected.
 * Fixed loss of precision when projecting a floating point raster: bilinear resampling was rounding every sample to a whole number.

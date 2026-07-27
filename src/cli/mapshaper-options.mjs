@@ -641,9 +641,11 @@ export function getOptionParser() {
     .option('no-replace', noReplaceOpt);
 
   parser.command('blur')
-    // .describe('apply a Gaussian-like blur to projected raster layers')
+    .describe('apply a Gaussian-like blur to a projected raster layer')
     .option('radius', {
-      describe: '[raster] blur amount in pixels, corresponding to 2 * sigma (e.g. 10 or 10px)'
+      DEFAULT: true,
+      type: 'distance',
+      describe: 'blur amount as pixels or a distance (e.g. 5px, 20m)'
     })
     .option('target', targetOpt);
 

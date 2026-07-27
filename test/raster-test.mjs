@@ -333,7 +333,85 @@ describe('raster layers', function () {
     var dataset = getProjectedBlurDataset();
     assert.throws(function() {
       api.internal.blurRasterLayers(dataset.layers, dataset, {radius: 0});
-    }, /radius=/);
+    }, /positive blur radius/);
+  });
+
+  it('blurs by a real-world distance', function () {
+    // The test grid is 5x1 pixels covering 5x1 meters, so 4m == 4px.
+    var byDistance = getProjectedBlurDataset().layers[0];
+    var byPixels = getProjectedBlurDataset().layers[0];
+    api.internal.blurRasterLayers([byDistance], getProjectedBlurDataset(), {radius: '4m'});
+    api.internal.blurRasterLayers([byPixels], getProjectedBlurDataset(), {radius: '4px'});
+    assert.deepEqual(
+      Array.from(byDistance.raster.grid.samples),
+      Array.from(byPixels.raster.grid.samples));
+  });
+
+  describe('blur radius parsing', function () {
+    // 100x50 pixels covering 1000x500 coordinate units, so 10 units per pixel
+    var grid = {width: 100, height: 50, bands: 1, bbox: [0, 0, 1000, 500]};
+    var mercator = api.internal.parseCrsString('webmercator');
+
+    function radius(arg, crs) {
+      return api.internal.getBlurRadius(grid, {radius: arg}, crs || mercator);
+    }
+
+    it('reads a bare number as pixels', function () {
+      assert.equal(radius(3), 3);
+      assert.equal(radius('3'), 3);
+    });
+
+    it('reads a px suffix as pixels', function () {
+      assert.equal(radius('3px'), 3);
+      assert.equal(radius('2.5PX'), 2.5);
+    });
+
+    it('converts a distance to pixels', function () {
+      assert.equal(radius('20m'), 2);
+      assert.equal(radius('1km'), 100);
+    });
+
+    it('converts a distance into the coordinate units of the CRS', function () {
+      // 20m is 65.6ft, and a pixel is 10 coordinate units (feet) wide
+      var feet = api.internal.parseCrsString('+proj=utm +zone=18 +units=ft');
+      assert(Math.abs(radius('20m', feet) - 6.5617) < 0.001);
+    });
+
+    it('averages the two resolutions of a non-square grid', function () {
+      // dx is 10 units and dy is 20 units, so a pixel measures sqrt(200) units
+      var wide = {width: 100, height: 50, bands: 1, bbox: [0, 0, 1000, 1000]};
+      var px = api.internal.getBlurRadius(wide, {radius: '28.2843m'}, mercator);
+      assert(Math.abs(px - 2) < 0.001);
+    });
+
+    it('rejects an area, a missing value and unparsable text', function () {
+      assert.throws(function() { radius('20m2'); }, /received an area/);
+      assert.throws(function() { radius(undefined); }, /Missing blur radius/);
+      assert.throws(function() { radius(''); }, /Missing blur radius/);
+      assert.throws(function() { radius('wide'); }, /Invalid parameter/);
+      assert.throws(function() { radius('px'); }, /positive blur radius/);
+      assert.throws(function() { radius('-3m'); }, /positive blur radius/);
+    });
+
+    it('rejects a distance when the CRS is unknown', function () {
+      assert.throws(function() {
+        api.internal.getBlurRadius(grid, {radius: '20m'}, null);
+      }, /unknown coordinates/);
+      // pixels do not depend on the CRS, so they are still accepted
+      assert.equal(api.internal.getBlurRadius(grid, {radius: '3px'}, null), 3);
+    });
+
+    it('rejects a distance when the grid is not georeferenced', function () {
+      assert.throws(function() {
+        api.internal.getBlurRadius({width: 4, height: 4, bands: 1}, {radius: '20m'}, mercator);
+      }, /georeferencing/);
+    });
+
+    it('accepts a bare radius on the command line', function () {
+      assert.equal(api.internal.parseCommands('-blur 5px')[0].options.radius, '5px');
+      assert.equal(api.internal.parseCommands('-blur 20m')[0].options.radius, '20m');
+      assert.equal(api.internal.parseCommands('-blur radius=3')[0].options.radius, '3');
+    });
   });
 
   it('clips raster samples and bbox to an intersecting rectangle', function () {

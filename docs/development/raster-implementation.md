@@ -382,8 +382,16 @@ numerical gaps left by triangle clipping.
 
 `-blur radius=` applies a Gaussian-like blur to projected raster layers. The
 implementation uses three passes of separable box blur to approximate a Gaussian
-in linear time. `radius=` is measured in pixels and corresponds to `2 * sigma`;
-the parser currently accepts plain numbers and strings such as `10px`.
+in linear time. The kernel is sized in pixels and corresponds to `2 * sigma`.
+
+`getBlurRadius()` resolves the user's `radius=` into that pixel count. Plain
+numbers and `px` strings pass through unchanged; a measure with units (`500m`,
+`2km`) is converted to the dataset's coordinate units with
+`convertIntervalParam()` and then divided by the size of a pixel, taken from
+`grid.bbox` and the grid dimensions. Because the blur is isotropic in pixel
+space, a grid with non-square pixels uses the geometric mean of its two
+resolutions. A distance therefore needs both a known CRS and a georeferenced
+grid, and errors without them; a pixel radius needs neither.
 
 The blur operates on interleaved `grid.samples` one band at a time, so it works
 with grayscale, RGB, RGBA, and non-8-bit GeoTIFF sample arrays without changing

@@ -5,14 +5,15 @@ import {
   rasterPixelIsValid,
   rasterSamplesAreFloat
 } from './mapshaper-raster-grid';
+import { convertIntervalParam, parseMeasure } from '../geom/mapshaper-units';
 import { stop } from '../utils/mapshaper-logging';
 
 var BOX_BLUR_PASSES = 3;
 
-export function blurRasterGrid(raster, optsArg) {
+export function blurRasterGrid(raster, optsArg, crs) {
   var opts = optsArg || {};
   var grid = getRasterGrid(raster);
-  var radius = getBlurRadius(opts);
+  var radius = getBlurRadius(grid, opts, crs);
   var sigma = radius / 2;
   var boxes = getGaussianBoxWidths(sigma, BOX_BLUR_PASSES);
   var samples = new grid.samples.constructor(grid.samples.length);
@@ -36,18 +37,46 @@ export function blurRasterGrid(raster, optsArg) {
   });
 }
 
-function getBlurRadius(opts) {
+// The blur kernel works in pixels, but the radius may be given either in pixels
+// (a bare number or a px suffix) or as a real-world distance (e.g. 20m), which
+// is converted using the size of a pixel on the ground.
+export function getBlurRadius(grid, opts, crs) {
   var arg = opts.radius;
-  var radius;
-  if (arg == null || arg === '') stop('Missing blur radius');
-  if (typeof arg == 'string') {
-    arg = arg.trim().replace(/px$/i, '');
+  var measure, radius;
+  if (arg === null || arg === undefined || arg === '') {
+    stop('Missing blur radius');
   }
-  radius = Number(arg);
+  if (typeof arg == 'string' && /px$/i.test(arg.trim())) {
+    radius = Number(arg.trim().replace(/px$/i, ''));
+  } else {
+    measure = parseMeasure(arg);
+    radius = measure.units ?
+      convertDistanceToPixels(arg, grid, crs) :
+      measure.value;
+  }
   if (!(radius > 0 && isFinite(radius))) {
-    stop('Expected radius= to be a positive pixel value');
+    stop('Expected a positive blur radius, received:', arg);
   }
   return radius;
+}
+
+function convertDistanceToPixels(arg, grid, crs) {
+  // convertIntervalParam() gives the distance in the coordinate units of the
+  // dataset, which is what the grid's bbox is measured in.
+  return convertIntervalParam(arg, crs) / getPixelSize(grid);
+}
+
+// Blurring is isotropic in pixel space, so a distance has to map to a single
+// pixel count; use the geometric mean when the pixels are not square.
+function getPixelSize(grid) {
+  var bbox = grid.bbox;
+  var dx, dy;
+  if (!bbox) {
+    stop('Raster layer is missing the georeferencing needed to blur by a distance');
+  }
+  dx = Math.abs(bbox[2] - bbox[0]) / grid.width;
+  dy = Math.abs(bbox[3] - bbox[1]) / grid.height;
+  return Math.sqrt(dx * dy);
 }
 
 function validateBlurGrid(grid) {

@@ -355,9 +355,13 @@ Common options: `target=`
 Apply a Gaussian-like blur to raster layers. The command only works on projected
 rasters; unprojected lat-long rasters should be reprojected first with `-proj`.
 
-`radius=` Blur amount in pixels. This value corresponds to `2 * sigma` of a
-Gaussian curve. Pixel values can be written as plain numbers or with a `px`
-suffix, for example `radius=10` or `radius=10px`.
+`<radius>` Blur amount, given either in pixels or as a real-world distance. This
+value corresponds to `2 * sigma` of a Gaussian curve. Pixels can be written as
+plain numbers or with a `px` suffix (`radius=10`, `radius=10px`); distances carry
+units (`radius=500m`, `radius=2km`) and are converted using the size of a pixel
+on the ground, so the same command gives a comparable amount of blur on rasters
+of differing resolution. The radius can be given without the `radius=` prefix,
+for example `-blur 5px` or `-blur 500m`.
 
 Common options: `target=`
 
