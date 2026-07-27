@@ -51,7 +51,9 @@ export function Console(gui) {
   this.runCommand = function(str) {
     str = str.trim();
     if (!str) return;
-    gui.toggleSidebarPanel('console');
+    if (!gui.consoleIsOpen()) {
+      gui.toggleSidebarPanel('console');
+    }
     submit(str);
   };
 
