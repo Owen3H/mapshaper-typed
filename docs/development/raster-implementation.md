@@ -391,6 +391,57 @@ the internal raster model. It preserves raster metadata and `grid.coverage`.
 When coverage or nodata is present, invalid pixels are excluded from the blur
 window and weights are renormalized.
 
+## Raster Contours
+
+`-contours` converts a raster layer into a polyline layer of isolines, using
+marching squares over `grid.samples`.
+
+It reads the working store rather than the source pixels, so contours reflect
+whatever the layer currently holds. That is the same rule every other command
+follows: `-blur` or `-clip` earlier in the pipeline changes what gets contoured.
+It also means contours inherit the resolution of the working store, which import
+may have decimated (see Import Flow).
+
+Samples are treated as point measurements at pixel centers, so a `W x H` grid
+contours over a lattice of `W x H` values and `(W-1) x (H-1)` cells. Contour
+vertices therefore stop half a pixel inside `grid.bbox`, matching gdal_contour.
+Only north-up grids are supported, the same restriction as clipping and
+reprojection.
+
+Implementation notes:
+
+- Cells are visited once, and each is marched for only the levels that fall
+  inside its own value range, found by binary search on the sorted level list.
+  Scanning the whole grid once per level would cost levels times more.
+- Cells with an invalid corner are skipped, using the shared
+  `rasterPixelIsValid` mask, so contours stop at nodata and at the edge of a
+  projected coverage area rather than crossing them. NaN samples are skipped
+  too, since some float rasters use NaN as nodata and it does not compare equal
+  to `grid.nodata`.
+- Ambiguous saddle cells are resolved with the average of the four corners.
+- Segments are stitched into long polylines by edge id, not by comparing
+  coordinates. Each crossing is identified by the lattice edge it lies on, which
+  neighboring cells number identically, so joins are exact rather than
+  tolerance-based. This relies on the case table being consistently oriented:
+  every crossing is the exit of one cell and the entry of the next.
+- Open contours are traced before closed ones, so a line running between two
+  grid boundaries is not entered part way along and split in two.
+
+Traced lines are then smoothed through `cmd.smooth` with `no_corners` and
+`no_prefilter` set: the staircase is an artifact, so there are no real corners
+to pin and no sub-pixel detail worth prefiltering. `no-smoothing` skips the step.
+
+Two details matter here. Smoothing runs on the standalone contour dataset
+*before* it is merged into the target, because `-smooth` rewrites every arc in
+the ArcCollection it is given; merging first would smooth any vector layer
+already sharing the target dataset. And the interval is returned by
+`getContourSmoothingDistance()` in the units `-smooth` expects from a plain
+`distance=` number, which is meters when the CRS is known (including for
+lat-long datasets, where a pixel's ground size is derived with a cosine
+correction at the raster's middle latitude) and raw coordinate units when it is
+not. The interval is one pixel; see the constant's comment for the measurements
+behind that choice.
+
 ## Commands And Validation
 
 Most existing commands are vector commands and should reject raster targets
@@ -403,6 +454,7 @@ with clear errors. Early raster-aware commands should be limited to:
 - `-blur radius=` for projected raster blur.
 - `-proj` for raster reprojection, with `nodata-color=` and
   `resampling=nearest|bilinear` support.
+- `-contours` for tracing isolines into a new polyline layer.
 - SVG export.
 - Session snapshot export/import.
 

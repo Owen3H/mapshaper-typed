@@ -584,6 +584,73 @@ mapshaper data.json \
   -o output.svg
 ```
 
+### -contours
+
+Convert a raster layer to a polyline layer of contour lines (isolines). This is
+most often used to trace elevation contours from a digital elevation model, but
+it works on any continuous raster.
+
+Contours are traced from the layer's current pixel values, so they reflect any
+earlier edits in the command sequence. Running `-blur` before `-contours`, for
+example, produces smoother lines than contouring the raw data.
+
+Values are read at pixel centers, so contour lines span from the center of the
+first pixel to the center of the last, half a pixel inside the raster's bounds.
+Pixels marked as nodata, and pixels left uncovered by a previous `-proj`, are
+excluded: contours stop at the edge of the valid data instead of crossing it.
+
+Traced contours carry a one-pixel staircase, which is most visible on quantized
+data such as an elevation model recorded in whole meters. `-contours` therefore
+finishes by smoothing the lines, using an interval of one pixel that it works
+out from the raster's resolution and reports on the console. Smoothing also
+reduces the vertex count substantially. Use `no-smoothing` to skip the step and
+keep the raw traced geometry, which you can then smooth yourself with `-smooth`.
+
+By default the contour layer replaces the raster layer. Use `+` to keep the
+raster as well, which is useful for drawing the contours over the image.
+
+`interval=` Spacing between contour levels. Levels are multiples of this value,
+so `interval=100` gives levels at 100, 200, 300 and so on. If neither
+`interval=` nor `levels=` is given, mapshaper picks a round interval that
+divides the raster's value range into roughly fifteen steps.
+
+`levels=` Explicit comma-separated list of contour levels, for example
+`levels=0,100,500,1000`. Overrides `interval=`.
+
+`base=` Value to align `interval=` to (the default is 0). For example
+`interval=100 base=50` gives levels at 50, 150, 250 and so on.
+
+`band=` Index of the band to read values from (the default is 0). Elevation
+models normally have a single band.
+
+`field=` Name of the output field holding each line's contour value. The default
+is `value`.
+
+`no-smoothing` Skip the smoothing step and output the raw traced lines.
+
+Common options: `name=`, `no-replace`, `target=`
+
+```bash
+# Trace 100-meter contours from an elevation model
+mapshaper dem.tif -contours interval=100 -o contours.json
+
+# Blur the data first, then label the output field ELEV
+mapshaper dem.tif raster-type=continuous \
+  -proj webmercator \
+  -blur radius=3 \
+  -contours interval=50 field=ELEV \
+  -o contours.json
+
+# Keep the raster and draw specific contours over it
+mapshaper dem.tif -contours levels=500,1000,1500 + name=contours \
+  -o output.svg
+
+# Trace raw lines, then smooth them by hand
+mapshaper dem.tif -contours interval=100 no-smoothing \
+  -smooth 40 no-corners no-prefilter \
+  -o contours.json
+```
+
 ### -dashlines
 
 Split lines into sections, with or without a gap.

@@ -864,6 +864,35 @@ export function getOptionParser() {
       type: 'number'
     });
 
+  parser.command('contours')
+    .describe('convert a raster layer to contour lines')
+    .option('interval', {
+      describe: 'spacing between contour levels (default is a round interval)',
+      type: 'number'
+    })
+    .option('levels', {
+      describe: 'explicit contour levels, instead of interval= (e.g. 0,100,500)',
+      type: 'numbers'
+    })
+    .option('base', {
+      describe: 'value to align interval= to (default is 0)',
+      type: 'number'
+    })
+    .option('band', {
+      describe: '[raster] band to read values from (default is 0)',
+      type: 'number'
+    })
+    .option('field', {
+      describe: 'name of field to hold contour values (default is "value")'
+    })
+    .option('no-smoothing', {
+      describe: 'skip smoothing away the one-pixel contour staircase',
+      type: 'flag'
+    })
+    .option('name', nameOpt)
+    .option('target', targetOpt)
+    .option('no-replace', noReplaceOpt);
+
   parser.command('dashlines')
     .describe('split lines into sections, with or without a gap')
     .oldAlias('split-lines')

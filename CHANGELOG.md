@@ -1,4 +1,5 @@
 v0.7.49 (unreleased)
+* Added `-contours` command for tracing contour lines from a raster layer, with `interval=`, `levels=`, `base=`, `band=` and `field=` options. Traced lines are smoothed at an auto-selected one-pixel interval; use `no-smoothing` to skip that step.
 * Added `-i raster-type=continuous` for measurement rasters like elevation models, which use bilinear resampling but keep the source nodata value instead of a fill color when projected.
 * Fixed loss of precision when projecting a floating point raster: bilinear resampling was rounding every sample to a whole number.
 * Fixed bilinear resampling averaging nodata samples together with real values along the edges of a raster's valid data.

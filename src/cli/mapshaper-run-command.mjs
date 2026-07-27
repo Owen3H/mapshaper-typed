@@ -31,6 +31,7 @@ import '../commands/mapshaper-clip-erase';
 import '../commands/mapshaper-cluster';
 import '../commands/mapshaper-colorizer';
 import '../commands/mapshaper-comment';
+import '../commands/mapshaper-contours';
 import '../commands/mapshaper-dashlines';
 import '../commands/mapshaper-data-fill';
 import '../commands/mapshaper-define';
@@ -116,7 +117,7 @@ function commandRunsPerTargetDataset(name, opts) {
   }
   return [
     'affine', 'alpha-shapes', 'blur', 'buffer', 'calc', 'check-geometry',
-    'classify', 'clean', 'clip', 'cluster', 'dashlines', 'data-fill',
+    'classify', 'clean', 'clip', 'cluster', 'contours', 'dashlines', 'data-fill',
     'densify', 'dissolve', 'dissolve2', 'divide', 'dots', 'each', 'erase',
     'explode', 'filter',
     'filter-detail', 'filter-fields', 'filter-geom', 'filter-islands',
@@ -292,6 +293,9 @@ export async function runCommand(command, job) {
 
     // } else if (name == 'comment') {
     //   // no-op
+
+    } else if (name == 'contours') {
+      outputLayers = applyCommandToEachLayer(cmd.contours, targetLayers, targetDataset, opts);
 
     } else if (name == 'dashlines') {
       applyCommandToEachLayer(cmd.dashlines, targetLayers, targetDataset, opts);
