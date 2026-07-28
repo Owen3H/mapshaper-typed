@@ -67,12 +67,14 @@
 <li>If you want to drop layers from the snapshot rather than just hide them, run an explicit step like <code>-filter-layers</code> or <code>-target b -drop</code> before <code>-o foo.msx</code>.</li>
 </ul>
 <h3 id="in-the-web-app">In the web app</h3>
-<p>The ribbon icon in the layer panel opens the <strong>snapshot menu</strong>. From there you can:</p>
+<p>The <strong>History</strong> button in the header opens the snapshot menu. From there you can:</p>
 <ul>
-<li><strong>Create a snapshot</strong> &mdash; saves to in-browser storage. These are session-scoped and intended to be temporary; Mapshaper tries to clean them up when the tab closes or the page reloads. For anything you want to keep, <strong>Save snapshot to file</strong> writes a <code>.msx</code> file you can re-open later.</li>
-<li><strong>Export</strong> a stored snapshot to a <code>.msx</code> file on disk. Persisted <code>.msx</code> files survive browser restarts and can be re-imported by drag-drop, the <strong>Add files</strong> button, or the <code>?files=</code> URL parameter.</li>
+<li><strong>Create snapshot</strong> &mdash; saves to in-browser storage. These are session-scoped and intended to be temporary; Mapshaper tries to clean them up when the tab closes or the page reloads. For anything you want to keep, export it to a file.</li>
+<li><strong>Export</strong> a stored snapshot to a <code>.msx</code> file on disk. Files on disk survive browser restarts and can be re-imported by drag-drop, the <strong>Add files</strong> button, or the <code>?files=</code> URL parameter. Choosing <strong>Snapshot file</strong> in the Export panel does the same thing for the current state.</li>
 <li><strong>Restore</strong> a stored snapshot into the current session.</li>
+<li><strong>Remove</strong> a stored snapshot from the browser.</li>
 </ul>
+<p>See <a href="/docs/essentials/web-app.html#history-undo-and-snapshots">History, undo and snapshots</a> for the rest of the History menu.</p>
 <h2 id="external-resources">External resources</h2>
 <ul>
 <li><a href="https://msgpack.org/">msgpack.org</a> &mdash; the binary serialization format used inside <code>.msx</code> (via the <a href="https://github.com/kriszyp/msgpackr">msgpackr</a> library).</li>

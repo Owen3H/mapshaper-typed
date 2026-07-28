@@ -206,7 +206,7 @@ mapshaper -i 'lat,lon,label\n48.86,2.35,Paris\n51.51,-0.13,London' \
 
 `percentile-range=` [Raster] Input percentile range used with `scaling=percentile`. The default is `2,98`.
 
-`raster-type=image|categorical` [Raster] Semantic raster type. This sets the default resampling method for later raster reprojection: `image` (the default) uses bilinear resampling, while `categorical` uses nearest-neighbor resampling to preserve class/code values.
+`raster-type=image|categorical|continuous` [Raster] Semantic raster type. This sets the default resampling method for later raster reprojection, and how uncovered pixels are filled. `image` (the default) uses bilinear resampling and fills with a color. `categorical` uses nearest-neighbor resampling to preserve class/code values, and fills with the source nodata value. `continuous` is for measurement rasters such as elevation models: it uses bilinear resampling like `image` but fills with the source nodata value like `categorical`, so uncovered pixels do not become a color value mixed in with the data.
 
 `rendition=` [GeoTIFF] Import a specific GeoTIFF rendition, using a slug such as `full` or `overview-1`. When a GeoTIFF has internal overviews, Mapshaper lists the available slugs during import. By default, large GeoTIFFs are imported from the best available reduced-resolution overview under Mapshaper's import size limit, or resampled during import if no suitable overview is available. Use `rendition=full` to force full-resolution import.
 
@@ -355,9 +355,13 @@ Common options: `target=`
 Apply a Gaussian-like blur to raster layers. The command only works on projected
 rasters; unprojected lat-long rasters should be reprojected first with `-proj`.
 
-`radius=` Blur amount in pixels. This value corresponds to `2 * sigma` of a
-Gaussian curve. Pixel values can be written as plain numbers or with a `px`
-suffix, for example `radius=10` or `radius=10px`.
+`<radius>` Blur amount, given either in pixels or as a real-world distance. This
+value corresponds to `2 * sigma` of a Gaussian curve. Pixels can be written as
+plain numbers or with a `px` suffix (`radius=10`, `radius=10px`); distances carry
+units (`radius=500m`, `radius=2km`) and are converted using the size of a pixel
+on the ground, so the same command gives a comparable amount of blur on rasters
+of differing resolution. The radius can be given without the `radius=` prefix,
+for example `-blur 5px` or `-blur 500m`.
 
 Common options: `target=`
 
@@ -582,6 +586,73 @@ mapshaper data.json \
     categories='Republican,Democrat,Other' \
   -style fill='calcFill(PARTY)' \
   -o output.svg
+```
+
+### -contours
+
+Convert a raster layer to a polyline layer of contour lines (isolines). This is
+most often used to trace elevation contours from a digital elevation model, but
+it works on any continuous raster.
+
+Contours are traced from the layer's current pixel values, so they reflect any
+earlier edits in the command sequence. Running `-blur` before `-contours`, for
+example, produces smoother lines than contouring the raw data.
+
+Values are read at pixel centers, so contour lines span from the center of the
+first pixel to the center of the last, half a pixel inside the raster's bounds.
+Pixels marked as nodata, and pixels left uncovered by a previous `-proj`, are
+excluded: contours stop at the edge of the valid data instead of crossing it.
+
+Traced contours carry a one-pixel staircase, which is most visible on quantized
+data such as an elevation model recorded in whole meters. `-contours` therefore
+finishes by smoothing the lines, using an interval of one pixel that it works
+out from the raster's resolution and reports on the console. Smoothing also
+reduces the vertex count substantially. Use `no-smoothing` to skip the step and
+keep the raw traced geometry, which you can then smooth yourself with `-smooth`.
+
+By default the contour layer replaces the raster layer. Use `+` to keep the
+raster as well, which is useful for drawing the contours over the image.
+
+`interval=` Spacing between contour levels. Levels are multiples of this value,
+so `interval=100` gives levels at 100, 200, 300 and so on. If neither
+`interval=` nor `levels=` is given, mapshaper picks a round interval that
+divides the raster's value range into roughly fifteen steps.
+
+`levels=` Explicit comma-separated list of contour levels, for example
+`levels=0,100,500,1000`. Overrides `interval=`.
+
+`base=` Value to align `interval=` to (the default is 0). For example
+`interval=100 base=50` gives levels at 50, 150, 250 and so on.
+
+`band=` Index of the band to read values from (the default is 0). Elevation
+models normally have a single band.
+
+`field=` Name of the output field holding each line's contour value. The default
+is `value`.
+
+`no-smoothing` Skip the smoothing step and output the raw traced lines.
+
+Common options: `name=`, `no-replace`, `target=`
+
+```bash
+# Trace 100-meter contours from an elevation model
+mapshaper dem.tif -contours interval=100 -o contours.json
+
+# Blur the data first, then label the output field ELEV
+mapshaper dem.tif raster-type=continuous \
+  -proj webmercator \
+  -blur radius=3 \
+  -contours interval=50 field=ELEV \
+  -o contours.json
+
+# Keep the raster and draw specific contours over it
+mapshaper dem.tif -contours levels=500,1000,1500 + name=contours \
+  -o output.svg
+
+# Trace raw lines, then smooth them by hand
+mapshaper dem.tif -contours interval=100 no-smoothing \
+  -smooth 40 no-corners no-prefilter \
+  -o contours.json
 ```
 
 ### -dashlines
@@ -1148,11 +1219,11 @@ Project a dataset using a PROJ string, EPSG code or alias. This command affects 
 
 `init=` Define the pre-projected coordinate system, if unknown. This option is not needed if the source coordinate system is defined by a .prj file, or if the source CRS is WGS84. As with `crs`, you can pass a Proj4 string enclosed in quotes if the selected projection requires extra parameters, for example `init='+proj=utm +zone=33'`.
 
-`nodata-color=` (raster) Color for output pixels that do not receive source raster content after reprojection. The default is white for image rasters and the source nodata value, when available, for categorical rasters. Use `transparent` for transparent output.
+`nodata-color=` (raster) Color for output pixels that do not receive source raster content after reprojection. The default is white for image rasters and the source nodata value, when available, for categorical and continuous rasters. Use `transparent` for transparent output.
 
 `background=` (raster) Alias for `nodata-color=`.
 
-`resampling=nearest|bilinear` (raster) Resampling method for raster reprojection. Overrides the default set by `-i raster-type=`. Use `bilinear` for smooth continuous-tone imagery and `nearest` for categorical rasters or exact cell values.
+`resampling=nearest|bilinear` (raster) Resampling method for raster reprojection. Overrides the default set by `-i raster-type=`. Use `bilinear` for smooth continuous-tone imagery and elevation data, and `nearest` for categorical rasters or exact cell values. Bilinear resampling skips nodata source pixels and renormalizes the remaining weights, so a nodata value is never averaged into a real one.
 
 `target=` Layer(s) to target. All layers belonging to the same dataset as a targeted layer will be reprojected. To reproject all datasets, use `target=*`.
 

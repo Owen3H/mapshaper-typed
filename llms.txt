@@ -12,7 +12,7 @@ When in doubt about a command's behavior, the [command reference](https://mapsha
 ## Getting started
 
 - [The command-line tool](https://mapshaper.org/docs/essentials/command-line.html.md): Install the mapshaper CLI, run your first commands and learn how Mapshaper organizes data into layers.
-- [The web app](https://mapshaper.org/docs/essentials/web-app.html.md): A tour of Mapshaper's web interface, including loading data, the console, the right-click menu, snapshots, browser support and running it locally.
+- [The web app](https://mapshaper.org/docs/essentials/web-app.html.md): A tour of Mapshaper's web interface, including loading data, the console, the right-click menu, display options and basemaps, undo, snapshots, browser support and running it locally.
 
 ## Examples
 

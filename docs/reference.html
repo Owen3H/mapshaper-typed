@@ -161,7 +161,7 @@ mapshaper states.geojson \
 <a href="#-verbose">-verbose</a>
 <a href="#-version">-version</a></p>
 <h2 id="i-o-commands" class="cmd-category">I/O Commands</h2>
-<section class="cmd-section" data-id="-i-input" data-name="-i (input)" data-options="mapshaper combine-files batch-mode files merge-files snap snap-interval precision no-topology encoding id-field string-fields field-types csv-skip-lines csv-lines csv-field-names csv-fields decimal-comma csv-dedup-fields csv-filter json-path layers none percentile scale-range percentile-range image categorical rendition full overview-1 name"><h3 id="-i-input">-i (input)</h3>
+<section class="cmd-section" data-id="-i-input" data-name="-i (input)" data-options="mapshaper combine-files batch-mode files merge-files snap snap-interval precision no-topology encoding id-field string-fields field-types csv-skip-lines csv-lines csv-field-names csv-fields decimal-comma csv-dedup-fields csv-filter json-path layers none percentile scale-range percentile-range image categorical continuous rendition full overview-1 name"><h3 id="-i-input">-i (input)</h3>
 <p>Input one or more files in a supported vector, table, or raster data format. Supported file types include: Shapefile, GeoJSON, TopoJSON, GeoPackage, FlatGeobuf, GeoParquet, KML, JSON data records, DBF, CSV/TSV, GeoTIFF, PNG and JPEG images with world files.</p>
 <p>The <code>-i</code> command is assumed if <code>mapshaper</code> is followed by the path of an input data file.</p>
 <p>Mapshaper does not fully support M and Z type Shapefiles. The M and Z data is lost when these files are imported.</p>
@@ -200,7 +200,7 @@ mapshaper states.geojson \
 <p><code>scaling=none|minmax|percentile</code> [Raster] Display scaling method for raster imports. The default is <code>none</code> for 8-bit rasters and <code>percentile</code> for non-8-bit rasters.</p>
 <p><code>scale-range=</code> [Raster] Output intensity range for raster display scaling, as normalized percentages. The default is <code>0,100</code>.</p>
 <p><code>percentile-range=</code> [Raster] Input percentile range used with <code>scaling=percentile</code>. The default is <code>2,98</code>.</p>
-<p><code>raster-type=image|categorical</code> [Raster] Semantic raster type. This sets the default resampling method for later raster reprojection: <code>image</code> (the default) uses bilinear resampling, while <code>categorical</code> uses nearest-neighbor resampling to preserve class/code values.</p>
+<p><code>raster-type=image|categorical|continuous</code> [Raster] Semantic raster type. This sets the default resampling method for later raster reprojection, and how uncovered pixels are filled. <code>image</code> (the default) uses bilinear resampling and fills with a color. <code>categorical</code> uses nearest-neighbor resampling to preserve class/code values, and fills with the source nodata value. <code>continuous</code> is for measurement rasters such as elevation models: it uses bilinear resampling like <code>image</code> but fills with the source nodata value like <code>categorical</code>, so uncovered pixels do not become a color value mixed in with the data.</p>
 <p><code>rendition=</code> [GeoTIFF] Import a specific GeoTIFF rendition, using a slug such as <code>full</code> or <code>overview-1</code>. When a GeoTIFF has internal overviews, Mapshaper lists the available slugs during import. By default, large GeoTIFFs are imported from the best available reduced-resolution overview under Mapshaper&#39;s import size limit, or resampled during import if no suitable overview is available. Use <code>rendition=full</code> to force full-resolution import.</p>
 <p><code>name=</code>  Rename the imported layer (or layers).</p>
 <p><strong>Example</strong> </p>
@@ -277,12 +277,16 @@ mapshaper -i shapefiles/*.shp batch-mode -o geojson/ format=geojson
 <p><code>where=</code>  Use a JS expression to select a subset of features.</p>
 <p>Common options: <code>target=</code></p>
 </section>
-<section class="cmd-section" data-id="-blur" data-name="-blur" data-options="radius px target"><h3 id="-blur">-blur</h3>
+<section class="cmd-section" data-id="-blur" data-name="-blur" data-options="px radius target"><h3 id="-blur">-blur</h3>
 <p>Apply a Gaussian-like blur to raster layers. The command only works on projected
 rasters; unprojected lat-long rasters should be reprojected first with <code>-proj</code>.</p>
-<p><code>radius=</code> Blur amount in pixels. This value corresponds to <code>2 * sigma</code> of a
-Gaussian curve. Pixel values can be written as plain numbers or with a <code>px</code>
-suffix, for example <code>radius=10</code> or <code>radius=10px</code>.</p>
+<p><code>&lt;radius&gt;</code> Blur amount, given either in pixels or as a real-world distance. This
+value corresponds to <code>2 * sigma</code> of a Gaussian curve. Pixels can be written as
+plain numbers or with a <code>px</code> suffix (<code>radius=10</code>, <code>radius=10px</code>); distances carry
+units (<code>radius=500m</code>, <code>radius=2km</code>) and are converted using the size of a pixel
+on the ground, so the same command gives a comparable amount of blur on rasters
+of differing resolution. The radius can be given without the <code>radius=</code> prefix,
+for example <code>-blur 5px</code> or <code>-blur 500m</code>.</p>
 <p>Common options: <code>target=</code></p>
 </section>
 <section class="cmd-section" data-id="-buffer" data-name="-buffer" data-options="radius tolerance vertices quad-segs round topological fill-gaps max-widening merge-islands geodesic name target"><h3 id="-buffer">-buffer</h3>
@@ -422,6 +426,59 @@ mapshaper data.json \
     categories=<span class="hljs-string">&#x27;Republican,Democrat,Other&#x27;</span> \
   -style fill=<span class="hljs-string">&#x27;calcFill(PARTY)&#x27;</span> \
   -o output.svg
+</code></pre>
+</section>
+<section class="cmd-section" data-id="-contours" data-name="-contours" data-options="no-smoothing interval levels base band field value name no-replace target"><h3 id="-contours">-contours</h3>
+<p>Convert a raster layer to a polyline layer of contour lines (isolines). This is
+most often used to trace elevation contours from a digital elevation model, but
+it works on any continuous raster.</p>
+<p>Contours are traced from the layer&#39;s current pixel values, so they reflect any
+earlier edits in the command sequence. Running <code>-blur</code> before <code>-contours</code>, for
+example, produces smoother lines than contouring the raw data.</p>
+<p>Values are read at pixel centers, so contour lines span from the center of the
+first pixel to the center of the last, half a pixel inside the raster&#39;s bounds.
+Pixels marked as nodata, and pixels left uncovered by a previous <code>-proj</code>, are
+excluded: contours stop at the edge of the valid data instead of crossing it.</p>
+<p>Traced contours carry a one-pixel staircase, which is most visible on quantized
+data such as an elevation model recorded in whole meters. <code>-contours</code> therefore
+finishes by smoothing the lines, using an interval of one pixel that it works
+out from the raster&#39;s resolution and reports on the console. Smoothing also
+reduces the vertex count substantially. Use <code>no-smoothing</code> to skip the step and
+keep the raw traced geometry, which you can then smooth yourself with <code>-smooth</code>.</p>
+<p>By default the contour layer replaces the raster layer. Use <code>+</code> to keep the
+raster as well, which is useful for drawing the contours over the image.</p>
+<p><code>interval=</code> Spacing between contour levels. Levels are multiples of this value,
+so <code>interval=100</code> gives levels at 100, 200, 300 and so on. If neither
+<code>interval=</code> nor <code>levels=</code> is given, mapshaper picks a round interval that
+divides the raster&#39;s value range into roughly fifteen steps.</p>
+<p><code>levels=</code> Explicit comma-separated list of contour levels, for example
+<code>levels=0,100,500,1000</code>. Overrides <code>interval=</code>.</p>
+<p><code>base=</code> Value to align <code>interval=</code> to (the default is 0). For example
+<code>interval=100 base=50</code> gives levels at 50, 150, 250 and so on.</p>
+<p><code>band=</code> Index of the band to read values from (the default is 0). Elevation
+models normally have a single band.</p>
+<p><code>field=</code> Name of the output field holding each line&#39;s contour value. The default
+is <code>value</code>.</p>
+<p><code>no-smoothing</code> Skip the smoothing step and output the raw traced lines.</p>
+<p>Common options: <code>name=</code>, <code>no-replace</code>, <code>target=</code></p>
+<pre><code class="hljs language-bash"><span class="hljs-comment"># Trace 100-meter contours from an elevation model</span>
+mapshaper dem.tif -contours interval=100 -o contours.json
+
+<span class="hljs-comment"># Blur the data first, then label the output field ELEV</span>
+mapshaper dem.tif raster-type=continuous \
+  -proj webmercator \
+  -blur radius=3 \
+  -contours interval=50 field=ELEV \
+  -o contours.json
+
+<span class="hljs-comment"># Keep the raster and draw specific contours over it</span>
+mapshaper dem.tif -contours levels=500,1000,1500 + name=contours \
+  -o output.svg
+
+<span class="hljs-comment"># Trace raw lines, then smooth them by hand</span>
+mapshaper dem.tif -contours interval=100 no-smoothing \
+  -smooth 40 no-corners no-prefilter \
+  -o contours.json
 </code></pre>
 </section>
 <section class="cmd-section" data-id="-dashlines" data-name="-dashlines" data-options="dash-length gap-length scaled planar where"><h3 id="-dashlines">-dashlines</h3>
@@ -777,9 +834,9 @@ mapshaper counties.shp \
 <p><code>densify</code> Interpolate vertices along long line segments as needed to approximate curved lines.</p>
 <p><code>match=</code> Match the projection of the given layer or .prj file.</p>
 <p><code>init=</code> Define the pre-projected coordinate system, if unknown. This option is not needed if the source coordinate system is defined by a .prj file, or if the source CRS is WGS84. As with <code>crs</code>, you can pass a Proj4 string enclosed in quotes if the selected projection requires extra parameters, for example <code>init=&#39;+proj=utm +zone=33&#39;</code>.</p>
-<p><code>nodata-color=</code> (raster) Color for output pixels that do not receive source raster content after reprojection. The default is white for image rasters and the source nodata value, when available, for categorical rasters. Use <code>transparent</code> for transparent output.</p>
+<p><code>nodata-color=</code> (raster) Color for output pixels that do not receive source raster content after reprojection. The default is white for image rasters and the source nodata value, when available, for categorical and continuous rasters. Use <code>transparent</code> for transparent output.</p>
 <p><code>background=</code> (raster) Alias for <code>nodata-color=</code>.</p>
-<p><code>resampling=nearest|bilinear</code> (raster) Resampling method for raster reprojection. Overrides the default set by <code>-i raster-type=</code>. Use <code>bilinear</code> for smooth continuous-tone imagery and <code>nearest</code> for categorical rasters or exact cell values.</p>
+<p><code>resampling=nearest|bilinear</code> (raster) Resampling method for raster reprojection. Overrides the default set by <code>-i raster-type=</code>. Use <code>bilinear</code> for smooth continuous-tone imagery and elevation data, and <code>nearest</code> for categorical rasters or exact cell values. Bilinear resampling skips nodata source pixels and renormalizes the remaining weights, so a nodata value is never averaged into a real one.</p>
 <p><code>target=</code> Layer(s) to target. All layers belonging to the same dataset as a targeted layer will be reprojected. To reproject all datasets, use <code>target=*</code>.</p>
 <p><strong>Examples</strong></p>
 <pre><code class="hljs language-bash"><span class="hljs-comment"># Convert a GeoJSON file to New York Long Island state plane CRS,</span>
@@ -1429,7 +1486,7 @@ mapshaper -vars YEAR=2030 -run build.txt
   </main>
 
   <aside class="docs-toc">
-    <div class="docs-toc-title">On this page</div><ul><li class="lvl-2"><a href="#command-line-syntax">Command line syntax</a></li><li class="lvl-3"><a href="#command-options-can-take-three-forms">Command options can take three forms:</a></li><li class="lvl-3"><a href="#common-options">Common options</a></li><li class="lvl-2"><a href="#index-of-commands">Index of commands</a></li><li class="lvl-2"><a href="#i-o-commands">I/O Commands</a></li><li class="lvl-3"><a href="#-i-input">-i (input)</a></li><li class="lvl-3"><a href="#-o-output">-o (output)</a></li><li class="lvl-2"><a href="#editing-commands">Editing Commands</a></li><li class="lvl-3"><a href="#-affine">-affine</a></li><li class="lvl-3"><a href="#-blur">-blur</a></li><li class="lvl-3"><a href="#-buffer">-buffer</a></li><li class="lvl-3"><a href="#-classify">-classify</a></li><li class="lvl-3"><a href="#-clean">-clean</a></li><li class="lvl-3"><a href="#-clip">-clip</a></li><li class="lvl-3"><a href="#-colorizer">-colorizer</a></li><li class="lvl-3"><a href="#-dashlines">-dashlines</a></li><li class="lvl-3"><a href="#-densify">-densify</a></li><li class="lvl-3"><a href="#-dissolve">-dissolve</a></li><li class="lvl-3"><a href="#-dissolve2">-dissolve2</a></li><li class="lvl-3"><a href="#-divide">-divide</a></li><li class="lvl-3"><a href="#-dots">-dots</a></li><li class="lvl-3"><a href="#-drop">-drop</a></li><li class="lvl-3"><a href="#-each">-each</a></li><li class="lvl-3"><a href="#-erase">-erase</a></li><li class="lvl-3"><a href="#-explode">-explode</a></li><li class="lvl-3"><a href="#-filter">-filter</a></li><li class="lvl-3"><a href="#-filter-fields">-filter-fields</a></li><li class="lvl-3"><a href="#-filter-islands">-filter-islands</a></li><li class="lvl-3"><a href="#-filter-slivers">-filter-slivers</a></li><li class="lvl-3"><a href="#-frame">-frame</a></li><li class="lvl-3"><a href="#-graticule">-graticule</a></li><li class="lvl-3"><a href="#-grid">-grid</a></li><li class="lvl-3"><a href="#-include">-include</a></li><li class="lvl-3"><a href="#-inlay">-inlay</a></li><li class="lvl-3"><a href="#-innerlines">-innerlines</a></li><li class="lvl-3"><a href="#-join">-join</a></li><li class="lvl-3"><a href="#-lines">-lines</a></li><li class="lvl-3"><a href="#-merge-layers">-merge-layers</a></li><li class="lvl-3"><a href="#-mosaic">-mosaic</a></li><li class="lvl-3"><a href="#-point-grid">-point-grid</a></li><li class="lvl-3"><a href="#-points">-points</a></li><li class="lvl-3"><a href="#-polygons">-polygons</a></li><li class="lvl-3"><a href="#-proj">-proj</a></li><li class="lvl-3"><a href="#-rectangle">-rectangle</a></li><li class="lvl-3"><a href="#-rectangles">-rectangles</a></li><li class="lvl-3"><a href="#-rename-fields">-rename-fields</a></li><li class="lvl-3"><a href="#-rename-layers">-rename-layers</a></li><li class="lvl-3"><a href="#-require">-require</a></li><li class="lvl-3"><a href="#-run">-run</a></li><li class="lvl-3"><a href="#-scalebar">-scalebar</a></li><li class="lvl-3"><a href="#-shape">-shape</a></li><li class="lvl-3"><a href="#-simplify">-simplify</a></li><li class="lvl-3"><a href="#-smooth">-smooth</a></li><li class="lvl-3"><a href="#-snap">-snap</a></li><li class="lvl-3"><a href="#-sort">-sort</a></li><li class="lvl-3"><a href="#-split">-split</a></li><li class="lvl-3"><a href="#-split-on-grid">-split-on-grid</a></li><li class="lvl-3"><a href="#-subdivide">-subdivide</a></li><li class="lvl-3"><a href="#-style">-style</a></li><li class="lvl-3"><a href="#-symbols">-symbols</a></li><li class="lvl-3"><a href="#-union">-union</a></li><li class="lvl-3"><a href="#-uniq">-uniq</a></li><li class="lvl-2"><a href="#control-flow-commands">Control Flow Commands</a></li><li class="lvl-3"><a href="#-if">-if</a></li><li class="lvl-3"><a href="#-elif">-elif</a></li><li class="lvl-3"><a href="#-else">-else</a></li><li class="lvl-3"><a href="#-endif">-endif</a></li><li class="lvl-3"><a href="#-stop">-stop</a></li><li class="lvl-3"><a href="#-target">-target</a></li><li class="lvl-2"><a href="#informational-commands">Informational Commands</a></li><li class="lvl-3"><a href="#-calc">-calc</a></li><li class="lvl-3"><a href="#-colors">-colors</a></li><li class="lvl-3"><a href="#-comment">-comment</a></li><li class="lvl-3"><a href="#-encodings">-encodings</a></li><li class="lvl-3"><a href="#-help">-help</a></li><li class="lvl-3"><a href="#-info">-info</a></li><li class="lvl-3"><a href="#-inspect">-inspect</a></li><li class="lvl-3"><a href="#-print">-print</a></li><li class="lvl-3"><a href="#-projections">-projections</a></li><li class="lvl-3"><a href="#-quiet">-quiet</a></li><li class="lvl-3"><a href="#-vars">-vars</a></li><li class="lvl-3"><a href="#-defaults">-defaults</a></li><li class="lvl-3"><a href="#-verbose">-verbose</a></li><li class="lvl-3"><a href="#-version">-version</a></li></ul>
+    <div class="docs-toc-title">On this page</div><ul><li class="lvl-2"><a href="#command-line-syntax">Command line syntax</a></li><li class="lvl-3"><a href="#command-options-can-take-three-forms">Command options can take three forms:</a></li><li class="lvl-3"><a href="#common-options">Common options</a></li><li class="lvl-2"><a href="#index-of-commands">Index of commands</a></li><li class="lvl-2"><a href="#i-o-commands">I/O Commands</a></li><li class="lvl-3"><a href="#-i-input">-i (input)</a></li><li class="lvl-3"><a href="#-o-output">-o (output)</a></li><li class="lvl-2"><a href="#editing-commands">Editing Commands</a></li><li class="lvl-3"><a href="#-affine">-affine</a></li><li class="lvl-3"><a href="#-blur">-blur</a></li><li class="lvl-3"><a href="#-buffer">-buffer</a></li><li class="lvl-3"><a href="#-classify">-classify</a></li><li class="lvl-3"><a href="#-clean">-clean</a></li><li class="lvl-3"><a href="#-clip">-clip</a></li><li class="lvl-3"><a href="#-colorizer">-colorizer</a></li><li class="lvl-3"><a href="#-contours">-contours</a></li><li class="lvl-3"><a href="#-dashlines">-dashlines</a></li><li class="lvl-3"><a href="#-densify">-densify</a></li><li class="lvl-3"><a href="#-dissolve">-dissolve</a></li><li class="lvl-3"><a href="#-dissolve2">-dissolve2</a></li><li class="lvl-3"><a href="#-divide">-divide</a></li><li class="lvl-3"><a href="#-dots">-dots</a></li><li class="lvl-3"><a href="#-drop">-drop</a></li><li class="lvl-3"><a href="#-each">-each</a></li><li class="lvl-3"><a href="#-erase">-erase</a></li><li class="lvl-3"><a href="#-explode">-explode</a></li><li class="lvl-3"><a href="#-filter">-filter</a></li><li class="lvl-3"><a href="#-filter-fields">-filter-fields</a></li><li class="lvl-3"><a href="#-filter-islands">-filter-islands</a></li><li class="lvl-3"><a href="#-filter-slivers">-filter-slivers</a></li><li class="lvl-3"><a href="#-frame">-frame</a></li><li class="lvl-3"><a href="#-graticule">-graticule</a></li><li class="lvl-3"><a href="#-grid">-grid</a></li><li class="lvl-3"><a href="#-include">-include</a></li><li class="lvl-3"><a href="#-inlay">-inlay</a></li><li class="lvl-3"><a href="#-innerlines">-innerlines</a></li><li class="lvl-3"><a href="#-join">-join</a></li><li class="lvl-3"><a href="#-lines">-lines</a></li><li class="lvl-3"><a href="#-merge-layers">-merge-layers</a></li><li class="lvl-3"><a href="#-mosaic">-mosaic</a></li><li class="lvl-3"><a href="#-point-grid">-point-grid</a></li><li class="lvl-3"><a href="#-points">-points</a></li><li class="lvl-3"><a href="#-polygons">-polygons</a></li><li class="lvl-3"><a href="#-proj">-proj</a></li><li class="lvl-3"><a href="#-rectangle">-rectangle</a></li><li class="lvl-3"><a href="#-rectangles">-rectangles</a></li><li class="lvl-3"><a href="#-rename-fields">-rename-fields</a></li><li class="lvl-3"><a href="#-rename-layers">-rename-layers</a></li><li class="lvl-3"><a href="#-require">-require</a></li><li class="lvl-3"><a href="#-run">-run</a></li><li class="lvl-3"><a href="#-scalebar">-scalebar</a></li><li class="lvl-3"><a href="#-shape">-shape</a></li><li class="lvl-3"><a href="#-simplify">-simplify</a></li><li class="lvl-3"><a href="#-smooth">-smooth</a></li><li class="lvl-3"><a href="#-snap">-snap</a></li><li class="lvl-3"><a href="#-sort">-sort</a></li><li class="lvl-3"><a href="#-split">-split</a></li><li class="lvl-3"><a href="#-split-on-grid">-split-on-grid</a></li><li class="lvl-3"><a href="#-subdivide">-subdivide</a></li><li class="lvl-3"><a href="#-style">-style</a></li><li class="lvl-3"><a href="#-symbols">-symbols</a></li><li class="lvl-3"><a href="#-union">-union</a></li><li class="lvl-3"><a href="#-uniq">-uniq</a></li><li class="lvl-2"><a href="#control-flow-commands">Control Flow Commands</a></li><li class="lvl-3"><a href="#-if">-if</a></li><li class="lvl-3"><a href="#-elif">-elif</a></li><li class="lvl-3"><a href="#-else">-else</a></li><li class="lvl-3"><a href="#-endif">-endif</a></li><li class="lvl-3"><a href="#-stop">-stop</a></li><li class="lvl-3"><a href="#-target">-target</a></li><li class="lvl-2"><a href="#informational-commands">Informational Commands</a></li><li class="lvl-3"><a href="#-calc">-calc</a></li><li class="lvl-3"><a href="#-colors">-colors</a></li><li class="lvl-3"><a href="#-comment">-comment</a></li><li class="lvl-3"><a href="#-encodings">-encodings</a></li><li class="lvl-3"><a href="#-help">-help</a></li><li class="lvl-3"><a href="#-info">-info</a></li><li class="lvl-3"><a href="#-inspect">-inspect</a></li><li class="lvl-3"><a href="#-print">-print</a></li><li class="lvl-3"><a href="#-projections">-projections</a></li><li class="lvl-3"><a href="#-quiet">-quiet</a></li><li class="lvl-3"><a href="#-vars">-vars</a></li><li class="lvl-3"><a href="#-defaults">-defaults</a></li><li class="lvl-3"><a href="#-verbose">-verbose</a></li><li class="lvl-3"><a href="#-version">-version</a></li></ul>
   </aside>
 
 </div>

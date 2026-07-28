@@ -1,6 +1,6 @@
 ---
 title: The web app
-description: A tour of Mapshaper's web interface, including loading data, the console, the right-click menu, snapshots, browser support and running it locally.
+description: A tour of Mapshaper's web interface, including loading data, the console, the right-click menu, display options and basemaps, undo, snapshots, browser support and running it locally.
 ---
 
 # The web app
@@ -23,17 +23,16 @@ A few less-obvious behaviors:
 
 ### Tips for importing Shapefiles
 
-- Drag-drop or select the `.shp`, `.dbf` and `.prj` files together. Without `.dbf` you'll have geometry but no attributes; without `.prj`, projection-dependent commands won't know what to do.
+- Drag-drop or select component files of a Shapefile together. `.shp`, `.dbf` and `.prj` are the most essential, others can generally be skipped. 
 - If you see a warning about an unknown text encoding, re-import using the **with advanced options** checkbox and set `encoding=` (for example, `encoding=big5` for Big-5).
 
 ## The console
 
-The Console (top-right of the header, or **space bar** to toggle) is the most powerful part of the UI. Most [CLI](/docs/reference.html.md) commands are available here, except file-loading commands like `-i`, `-include` and `-require`, which are disabled in the browser console.
+The Console (**space bar** to toggle) is the most powerful part of the UI. Most [CLI](/docs/reference.html.md) commands are available here, except file-loading commands like `-i`, `-include` and `-require`, which are disabled in the browser console.
 
 ### Keyboard
 
 - **Space** &mdash; open or close the console (only when you're not typing in another text field).
-- **Esc** &mdash; close the console, or close any open panel.
 - **Up / Down** &mdash; cycle through previous commands. The history persists across page reloads.
 - **Backslash `\` at end of line** &mdash; continue a long command on the next line. The Enter key adds the wrap; another **Enter** runs the full command.
 
@@ -43,44 +42,12 @@ The Console (top-right of the header, or **space bar** to toggle) is the most po
 - When entering a sequence of commands, include the leading `-` before each command after the first. The examples in these docs include leading `-` prefixes because that style works in both the web console and the CLI.
 - Commands run on the **currently-selected layer** by default. Switch layers in the layer panel before issuing a command, or pass `target=` to be explicit (`target=*` runs against every layer).
 
-### Using CLI examples in the web console
-
-Many Mapshaper examples are written for the command line. To run them in the web app, first load your data by dragging it onto the page or using **Add files**, then type only the editing commands in the Console.
-
-For example, this command-line example:
-
-```bash
-mapshaper counties.shp -filter 'STATE == "CA"' -simplify 10% keep-shapes -o california.geojson
-```
-
-becomes this in the web console:
-
-```text
--filter 'STATE == "CA"' \
-  -simplify 10% keep-shapes
-```
-
-Use the **Export** button when you're ready to save the result.
-
-The general rules are:
-
-- Drop the initial `mapshaper` command.
-- Drop input filenames such as `counties.shp` after your data has been loaded.
-- Don't use file-loading commands like `-i`, `-include` or `-require`; they are disabled in the browser console.
-- Keep the leading `-` on command names when copying examples from the docs. It works in the web console and avoids confusion in command sequences.
-- Use `target=` when you want a command to operate on a layer other than the currently selected layer.
-- Export from the web UI instead of copying the CLI `-o output.geojson` part of an example.
-
 ### Magic words at the prompt
 
-These are recognized directly by the console, not by Mapshaper:
+These are recognized directly by the console, but not by the `mapshaper` CLI program:
 
 - `history` &mdash; print the current session as a single command-line string. Handy for reproducing an interactive workflow as a script.
-- `layers` &mdash; print the list of loaded layers.
-- `context` &mdash; print the current runtime context as JSON. This is the metadata that can be shared with debugging tools or a help bot: layer names, field names/types, counts, CRS, recent commands and recent messages, but not geometry or attribute records.
-- `context download` &mdash; save the same runtime context JSON to a local file.
 - `clear` &mdash; clear the console buffer.
-- `close` / `exit` / `quit` &mdash; close the console.
 
 ### Discovering commands
 
@@ -92,11 +59,14 @@ These are recognized directly by the console, not by Mapshaper:
 
 ### Right-click menu
 
-The right-click menu adapts to what's under the cursor:
+<img class="ui-screenshot" width="234" src="/docs/images/web-app-right-click-menu.png" alt="The right-click menu over a satellite image, showing longitude and latitude, red, green and blue band values, and a color tile beside a hex color">
 
-- **Copy lon, lat** &mdash; copy the WGS84 coordinates of the click point to the clipboard.
-- **Copy x, y** &mdash; copy the projected coordinates of the click point.
-- **Copy as GeoJSON** &mdash; copy the selected feature(s) to the clipboard as GeoJSON. Useful for snipping out one polygon for use elsewhere.
+The right-click menu adapts to what's under the cursor. Clicking a value copies it to the clipboard. Click anywhere else to dismiss the menu.
+
+- **Longitude, latitude** &mdash; the WGS84 coordinates of the click point.
+- **X, y** &mdash; the same point in the layer's own coordinates, when the data is projected.
+- **Band values** &mdash; on a raster layer, the sample values of the pixel under the cursor, labelled `red, green, blue` (plus `alpha`) for a color image. A pixel with no data is labelled as such. Color images also get a **color** entry, showing a tile of the pixel's color next to its hex value, so it can be copied into a style command.
+- **Copy as GeoJSON** &mdash; copies the selected feature(s) as GeoJSON. Useful for snipping out one polygon for use elsewhere.
 - **Delete vertex** / **delete point** / **delete feature** &mdash; available in the corresponding edit modes.
 
 ### Layer navigation
@@ -105,16 +75,53 @@ The right-click menu adapts to what's under the cursor:
 
 ## Display options
 
-The **Display** button at the top right opens the display options panel.
+<img class="ui-screenshot" width="279" src="/docs/images/web-app-display-options.png" alt="The Display options panel, with checkboxes for detect line intersections and compare with original, and a Basemaps section listing Reference map and Satellite image">
 
-- **Detect line intersections** &mdash; highlights self-intersections in red as you simplify or edit. The quickest way to spot simplification damage. The setting is remembered between sessions.
+The **Display** button in the header opens the display options panel. Both checkboxes are remembered between sessions.
 
-## Snapshots and session history
+- **Detect line intersections** &mdash; highlights self-intersections in red as you simplify or edit, with a running count at the top of the map. The quickest way to spot simplification damage. In Simplify mode a **repair** link appears next to the count, which tries to fix intersections caused by simplifying.
+- **Compare with original** &mdash; draws the shapes as they were before your last edit, as a magenta outline on top of the current ones. It applies to the `-buffer`, `-smooth` and `-simplify` commands and to the Simplify slider, so you can see exactly what an edit changed without toggling layers on and off. The overlay clears when you make an unrelated edit or turn the checkbox off.
 
-The ribbon icon in the layer panel opens the snapshot menu. Snapshots save the current state of a session so you can return to it. They also record the **session history** that produced the snapshot, so when you re-open one the full history is available too.
+### Basemaps
 
-- **Create a snapshot** &mdash; saves to in-browser storage. These are session-scoped and intended to be temporary; Mapshaper tries to clean them up when the tab closes or the page reloads. For anything you want to keep, **Save snapshot to file** writes a `.msx` file you can re-open later.
-- **View session history** &mdash; a shortcut for typing `history` in the console: prints the full sequence of commands that produced the current state.
+Turning on a basemap draws map tiles behind your data. Click the eye icon next to **Reference map** or **Satellite image** to switch one on; the same two are also available as thumbnail buttons in the top-right corner of the map.
+
+Basemaps are in the Mercator projection, so switching one on displays your data in Mercator too. If your data can't be shown that way &mdash; it has no geographic coordinates, or its projection is unknown &mdash; the panel says so instead of listing the basemaps.
+
+**Add** adds your own basemap, either from a Mapbox style URL (`mapbox://...`, with an optional access key) or from a raster tile URL template, with a checkbox for TMS tiles that count their y-index from the bottom. Basemaps you add are kept in the browser and can be removed from the list later.
+
+Basemap tiles are fetched over the network. Everything else in Mapshaper stays on your machine &mdash; see [Privacy](#privacy) below.
+
+## History, undo and snapshots
+
+<img class="ui-screenshot" width="237" src="/docs/images/web-app-history-menu.png" alt="The History menu, with an enable undo checkbox, a line reading restore data stored on-disk: 0 KB, and links to clear undo history, view command history and create snapshot">
+
+The **History** button in the header covers three things: undo, the command history, and snapshots.
+
+### Undo and redo
+
+Undo is **off by default**. Tick **enable undo** to turn it on; the setting is remembered between sessions, and applies from that point on rather than retroactively.
+
+- **Ctrl+Z** (**⌘Z** on a Mac) undoes and **Shift+Ctrl+Z** (**⇧⌘Z**) redoes. The same buttons appear in a small toolbar at the bottom of the map whenever there's anything to undo. Keyboard shortcuts are ignored while you're typing in a text field.
+- The first import of a session isn't undoable, and neither is restoring a snapshot. Both are treated as starting points rather than edits.
+- Mapshaper keeps the last ten steps, dropping older ones as you work &mdash; though while you're inside an editing mode, every change you've made since entering it can be undone, however many there are. Editing very large datasets can push older steps out sooner, and a step too big to store isn't undoable at all: the command still runs, and a warning appears in the messages panel.
+- The data needed to reverse a step is stored in the browser. **Restore data stored on-disk** shows how much space that is currently taking, and **clear undo history** discards it.
+
+### Command history
+
+**View command history** opens the console and prints the sequence of commands that produced the current state, as one command line you can paste into a terminal or save as a [command file](/docs/essentials/command-line.html.md#command-files). It's the same as typing `history` in the console. Undoing a step removes it from this list, so the history always describes what's on screen now.
+
+### Snapshots
+
+Snapshots save the state of a session so you can return to it. They also record the command history behind them, so re-opening a snapshot brings back its history too.
+
+**Create snapshot** saves to in-browser storage. Each snapshot appears in a list under the button, with three links:
+
+- **restore** &mdash; go back to that state. This replaces the loaded layers and clears the undo history.
+- **export** &mdash; download the snapshot as an `.msx` file.
+- **remove** &mdash; delete it from the browser.
+
+In-browser snapshots are meant to be temporary; Mapshaper tries to clean them up when the tab closes or the page reloads. For anything you want to keep, use **export**, or choose **Snapshot file** as the format in the Export panel.
 
 See the [Mapshaper snapshot format page](/docs/formats/snapshot.html.md) for more on what a `.msx` file contains and how to use it from the CLI.
 

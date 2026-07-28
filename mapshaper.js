@@ -78,7 +78,7 @@
     return obj === Object(obj); // via underscore
   }
 
-  function clamp$5(val, min, max) {
+  function clamp$3(val, min, max) {
     return val < min ? min : (val > max ? max : val);
   }
 
@@ -721,7 +721,7 @@
   function findValueByRank(arr, rank) {
     if (!arr.length || rank < 1 || rank > arr.length) error$1("[findValueByRank()] invalid input");
 
-    rank = clamp$5(rank | 0, 1, arr.length);
+    rank = clamp$3(rank | 0, 1, arr.length);
     var k = rank - 1, // conv. rank to array index
         n = arr.length,
         l = 0,
@@ -1095,7 +1095,7 @@
   // self-import and the resulting Rollup circular-dependency warning.
   var utils = {
     addThousandsSep, addslashes, arrayToIndex,
-    clamp: clamp$5, cleanNumericString, contains, copyElements, countValues, createBuffer,
+    clamp: clamp$3, cleanNumericString, contains, copyElements, countValues, createBuffer,
     defaults, difference,
     endsWith, every, expandoBuffer, extend: extend$1, extendBuffer,
     find: find$1, findMedian, findQuantile, findRankByValue, findStringPrefix,
@@ -4740,6 +4740,89 @@
     pathIsRectangle: pathIsRectangle
   });
 
+  // Low-level access to raster grid samples, shared by the code that reads or
+  // rewrites pixels (-proj, -blur, clipping and preview rendering). These used
+  // to be reimplemented per module, which let the nodata and coverage rules
+  // drift apart.
+  //
+  // Samples are band-interleaved: pixel i occupies
+  // samples[i * bands] through samples[i * bands + bands - 1].
+
+  // A pixel is nodata only when every one of its color-carrying bands matches
+  // the nodata value. An alpha band is ignored, so a transparent pixel whose
+  // color channels hold real values is still treated as data.
+  function samplesAreNodataAtOffset(samples, offset, bands, nodata) {
+    var n = Math.min(bands, 3);
+    if (nodata === null || nodata === undefined) return false;
+    for (var i = 0; i < n; i++) {
+      if (samples[offset + i] != nodata) return false;
+    }
+    return true;
+  }
+
+  function rasterPixelIsNodata(grid, pixelId) {
+    return samplesAreNodataAtOffset(grid.samples, pixelId * grid.bands, grid.bands, grid.nodata);
+  }
+
+  // The coverage mask is set by reprojection to record which output pixels
+  // received source content, independently of the nodata fill value.
+  function rasterPixelIsCovered(grid, pixelId) {
+    return !grid.coverage || grid.coverage[pixelId] > 0;
+  }
+
+  function rasterPixelIsValid(grid, pixelId) {
+    return rasterPixelIsCovered(grid, pixelId) && !rasterPixelIsNodata(grid, pixelId);
+  }
+
+  // False when every pixel is known to be valid, so callers can skip
+  // per-pixel validity testing entirely.
+  function rasterGridHasInvalidPixels(grid) {
+    return !!grid.coverage || grid.nodata !== null && grid.nodata !== undefined;
+  }
+
+  // One byte per pixel, so that code sampling a grid repeatedly can test
+  // validity with a single lookup instead of re-reading every band. Returns
+  // the coverage mask itself when there is no nodata value to fold in, and
+  // null when every pixel is valid.
+  function getRasterValidityMask(grid) {
+    var n = grid.width * grid.height;
+    var mask, i;
+    if (grid.nodata === null || grid.nodata === undefined) return grid.coverage || null;
+    mask = new Uint8Array(n);
+    for (i = 0; i < n; i++) {
+      mask[i] = rasterPixelIsValid(grid, i) ? 1 : 0;
+    }
+    return mask;
+  }
+
+  function rasterSamplesAreFloat(samples) {
+    return samples instanceof Float32Array || samples instanceof Float64Array;
+  }
+
+  // Value range of a sample array, used to clamp computed values before
+  // writing them back into an integer array.
+  function getSampleArrayRange(samples) {
+    if (samples instanceof Uint8Array || samples instanceof Uint8ClampedArray) return {min: 0, max: 255};
+    if (samples instanceof Int8Array) return {min: -128, max: 127};
+    if (samples instanceof Uint16Array) return {min: 0, max: 65535};
+    if (samples instanceof Int16Array) return {min: -32768, max: 32767};
+    if (samples instanceof Uint32Array) return {min: 0, max: 4294967295};
+    if (samples instanceof Int32Array) return {min: -2147483648, max: 2147483647};
+    return {min: -Infinity, max: Infinity};
+  }
+
+  var RasterGrid = /*#__PURE__*/Object.freeze({
+    __proto__: null,
+    getRasterValidityMask: getRasterValidityMask,
+    getSampleArrayRange: getSampleArrayRange,
+    rasterGridHasInvalidPixels: rasterGridHasInvalidPixels,
+    rasterPixelIsCovered: rasterPixelIsCovered,
+    rasterPixelIsNodata: rasterPixelIsNodata,
+    rasterPixelIsValid: rasterPixelIsValid,
+    rasterSamplesAreFloat: rasterSamplesAreFloat,
+    samplesAreNodataAtOffset: samplesAreNodataAtOffset
+  });
+
   function runningInBrowser() {
     return typeof window !== 'undefined' && typeof window.document !== 'undefined';
   }
@@ -4821,6 +4904,9 @@
   function copyRasterGrid(grid) {
     var copy = utils.extend({}, grid);
     if (grid.samples) copy.samples = copyTypedArray(grid.samples);
+    // The coverage mask is mutated in place by the reprojection code, so an
+    // undo snapshot that shared it would track later edits.
+    if (grid.coverage) copy.coverage = copyTypedArray(grid.coverage);
     if (grid.sampleBands) copy.sampleBands = grid.sampleBands.concat();
     if (grid.bbox) copy.bbox = grid.bbox.concat();
     if (grid.transform) copy.transform = copyObjectOrArray(grid.transform);
@@ -4926,6 +5012,69 @@
       };
     }
     return stats;
+  }
+
+  // Returns the band values and display color of the pixel containing a map
+  // coordinate, for readouts like the GUI's right-click menu, or null if the point
+  // falls outside the raster. Rotated grids are not supported, because pixels can
+  // only be located through the axis-aligned bbox.
+  // x, y: a point in the coordinate system of the raster's bbox
+  function getRasterPixelAtMapXY(raster, x, y) {
+    var grid = getRasterGrid(raster);
+    var col, row, pixelId, offset, values, valid, isColor, band;
+    if (!grid || !grid.samples || !grid.bbox || rasterGridIsRotated(grid)) return null;
+    col = Math.floor(mapXToRasterPixel(grid, x));
+    row = Math.floor(mapYToRasterPixel(grid, y));
+    if (col < 0 || col >= grid.width || row < 0 || row >= grid.height) return null;
+    pixelId = row * grid.width + col;
+    offset = pixelId * grid.bands;
+    values = [];
+    for (band = 0; band < grid.bands; band++) {
+      values.push(grid.samples[offset + band]);
+    }
+    // The renderer reads interleaved bands in display order, so three or more
+    // bands are shown as R, G, B and (if present) alpha.
+    isColor = grid.bands >= 3;
+    valid = rasterPixelIsValid(grid, pixelId);
+    return {
+      col: col,
+      row: row,
+      values: values,
+      isColor: isColor,
+      isFloat: rasterSamplesAreFloat(grid.samples),
+      valid: valid,
+      // Only color images get a color, so that inspecting a measurement raster
+      // does not trigger a scaling-stats scan of the whole grid.
+      // [r, g, b, a] in the 0-255 range, for formatColor() or a canvas.
+      color: isColor && valid ? getRasterPixelDisplayColor(raster, grid, pixelId) : null
+    };
+  }
+
+  // Returns [r, g, b, a] in the 0-255 range, using the same recipe and scaling as
+  // the preview renderer, so that a readout agrees with how the pixel is drawn.
+  function getRasterPixelDisplayColor(raster, grid, pixelId) {
+    var view = getRasterView(raster);
+    var recipe = getRasterViewRecipe(grid, view && view.recipe);
+    var stats = getRasterViewScalingStats(raster, recipe);
+    var sourceRange = recipe.scaling == 'none' ? getPixelTypeRange(grid.pixelType) : null;
+    var displayRange = getDisplayRange(recipe.scaleRange);
+    var offset = pixelId * grid.bands;
+    var color = [0, 1, 2].map(function(band) {
+      return scaleSample(grid.samples[offset + band], stats && stats[band], sourceRange, displayRange);
+    });
+    color.push(grid.bands >= 4 ?
+      scaleSample(grid.samples[offset + 3], stats && stats[3], sourceRange, [0, 255]) : 255);
+    return color;
+  }
+
+  // Float samples print with binary noise at full precision (a Float32 holding
+  // 1234.5678 prints as 1234.5677490234375), so they are rounded to the number of
+  // digits that the type can actually represent.
+  function formatRasterSampleValue(val, isFloat) {
+    if (val === null || val === undefined) return '';
+    if (!isFinite(val)) return String(val); // NaN, Infinity
+    if (!isFloat) return String(val);
+    return String(+val.toPrecision(7));
   }
 
   function renderRasterGridPreview(grid, recipe, width, height, statsArg, sourceBbox, resamplingMethod) {
@@ -5170,10 +5319,22 @@
     return (sy * grid.width + sx) * bands;
   }
 
+  // A grid is north-up when its affine transform has no rotation/skew terms.
+  // Cropping and reprojection both index pixels through the axis-aligned bbox,
+  // so they can only handle north-up grids.
+  function rasterGridIsRotated(grid) {
+    var t = grid && grid.transform;
+    return !!t && (t[1] !== 0 || t[3] !== 0);
+  }
+
   function clipRasterToBBox(lyr, bbox, opts) {
     var raster = lyr.raster;
     var grid = getRasterGrid(raster);
-    var clipBbox = intersectBboxes(grid.bbox, bbox);
+    var clipBbox;
+    if (rasterGridIsRotated(grid)) {
+      stop$1('Clipping a rotated or skewed raster is not supported');
+    }
+    clipBbox = intersectBboxes(grid.bbox, bbox);
     if (!clipBbox) {
       warn('Raster clipping rectangle does not intersect the raster layer');
       return false;
@@ -5234,9 +5395,28 @@
       width: crop.width,
       height: crop.height,
       samples: samples,
+      coverage: cropRasterCoverage(grid, crop),
       bbox: bbox,
       transform: updateTransformForBBox(grid.transform, bbox, crop.width, crop.height)
     });
+  }
+
+  // The coverage mask is one byte per pixel (not per sample), and must be
+  // cropped alongside the samples -- consumers index it with the cropped
+  // grid's dimensions.
+  function cropRasterCoverage(grid, crop) {
+    var coverage = grid.coverage;
+    var cropped, src, dest, x, y;
+    if (!coverage) return coverage;
+    cropped = new Uint8Array(crop.width * crop.height);
+    for (y = 0; y < crop.height; y++) {
+      src = (crop.y + y) * grid.width + crop.x;
+      dest = y * crop.width;
+      for (x = 0; x < crop.width; x++) {
+        cropped[dest + x] = coverage[src + x];
+      }
+    }
+    return cropped;
   }
 
   function getRasterLayerBounds(lyr) {
@@ -5499,11 +5679,7 @@
   }
 
   function allSamplesAreNoData(data, offset, bands, noData) {
-    var n = Math.min(bands, 3);
-    for (var i = 0; i < n; i++) {
-      if (data[offset + i] != noData) return false;
-    }
-    return true;
+    return samplesAreNodataAtOffset(data, offset, bands, noData);
   }
 
   function copyObjectOrArray(obj) {
@@ -5520,12 +5696,14 @@
     copyTypedArray: copyTypedArray,
     createRasterPreview: createRasterPreview,
     cropRasterGrid: cropRasterGrid,
+    formatRasterSampleValue: formatRasterSampleValue,
     getRasterBBox: getRasterBBox,
     getRasterBandCount: getRasterBandCount,
     getRasterCrop: getRasterCrop,
     getRasterGrid: getRasterGrid,
     getRasterHeight: getRasterHeight,
     getRasterLayerBounds: getRasterLayerBounds,
+    getRasterPixelAtMapXY: getRasterPixelAtMapXY,
     getRasterPixelType: getRasterPixelType,
     getRasterPreview: getRasterPreview,
     getRasterScalingStats: getRasterScalingStats,
@@ -5536,6 +5714,7 @@
     getRasterViewScalingStats: getRasterViewScalingStats,
     getRasterWidth: getRasterWidth,
     intersectBboxes: intersectBboxes,
+    rasterGridIsRotated: rasterGridIsRotated,
     renderRasterExportPreview: renderRasterExportPreview,
     renderRasterPreview: renderRasterPreview,
     renderRasterViewportPreview: renderRasterViewportPreview,
@@ -5710,6 +5889,14 @@
   function requirePathLayer(lyr, msg) {
     if (!lyr || !layerHasPaths(lyr))
       stop$1(layerTypeMessage(lyr, "Expected a polygon or polyline layer", msg));
+  }
+
+  // Guard for vector commands that would otherwise replace a raster layer with
+  // a geometry-less result, silently discarding its pixels.
+  function requireNotRasterLayer(lyr, msg) {
+    if (layerHasRaster(lyr)) {
+      stop$1(msg || 'This command does not support raster layers');
+    }
   }
 
   // Used by info command and gui layer menu
@@ -5913,6 +6100,7 @@
     layerTypeMessage: layerTypeMessage,
     requireDataField: requireDataField,
     requireDataFields: requireDataFields,
+    requireNotRasterLayer: requireNotRasterLayer,
     requirePathLayer: requirePathLayer,
     requirePointLayer: requirePointLayer,
     requirePolygonLayer: requirePolygonLayer,
@@ -6258,11 +6446,130 @@
   });
 
   /*
+   * Small geometric helpers shared by the polyhedral projection modules
+   * (mapshaper-polyhedral-projection, mapshaper-lee-tetrahedral,
+   * mapshaper-narukawa2022). These projections all unfold a polyhedral net into
+   * affine layout copies and clip the copies to a rectangular frame, so they need
+   * the same 2x3 affine arithmetic and the same half-plane polygon clipping.
+   */
+
+  var EPS$4 = 1e-12;
+
+  // A 2x3 affine matrix, stored as [a, b, tx, c, d, ty].
+  function applyMatrix(m, p) {
+    return [
+      m[0] * p[0] + m[1] * p[1] + m[2],
+      m[3] * p[0] + m[4] * p[1] + m[5]
+    ];
+  }
+
+  function invertMatrix(m) {
+    var det = m[0] * m[4] - m[1] * m[3];
+    return [
+      m[4] / det,
+      -m[1] / det,
+      (m[1] * m[5] - m[4] * m[2]) / det,
+      -m[3] / det,
+      m[0] / det,
+      (m[3] * m[2] - m[0] * m[5]) / det
+    ];
+  }
+
+  // Sutherland-Hodgman clip of a [x, y] ring against one axis-aligned half-plane.
+  function clipPolygonAxis(polygon, axis, value, keepGreater) {
+    var output = [];
+    if (!polygon.length) return output;
+    var a = polygon[polygon.length - 1];
+    var aInside = isInside(a[axis], value, keepGreater);
+    polygon.forEach(function(b) {
+      var bInside = isInside(b[axis], value, keepGreater);
+      if (aInside != bInside) {
+        var t = (value - a[axis]) / (b[axis] - a[axis]);
+        var p = [
+          a[0] + (b[0] - a[0]) * t,
+          a[1] + (b[1] - a[1]) * t
+        ];
+        p[axis] = value;
+        output.push(p);
+      }
+      if (bInside) output.push(b.concat());
+      a = b;
+      aInside = bInside;
+    });
+    return output;
+  }
+
+  // As clipPolygonAxis, but for raster mesh vertices, which carry the source
+  // grid position (sx, sy) and geographic position (lon, lat) alongside the
+  // projected position. The axis argument is a property name ('x' or 'y').
+  function clipRasterPolygonAxis(polygon, axis, value, keepGreater) {
+    var output = [];
+    if (!polygon.length) return output;
+    var a = polygon[polygon.length - 1];
+    var aInside = isInside(a[axis], value, keepGreater);
+    polygon.forEach(function(b) {
+      var bInside = isInside(b[axis], value, keepGreater);
+      if (aInside != bInside) {
+        var t = (value - a[axis]) / (b[axis] - a[axis]);
+        var vertex = {
+          x: a.x + (b.x - a.x) * t,
+          y: a.y + (b.y - a.y) * t,
+          sx: a.sx + (b.sx - a.sx) * t,
+          sy: a.sy + (b.sy - a.sy) * t,
+          lon: interpolateLongitude(a.lon, b.lon, t),
+          lat: a.lat + (b.lat - a.lat) * t
+        };
+        vertex[axis] = value;
+        output.push(vertex);
+      }
+      if (bInside) output.push(copyRasterVertex(b, b.x, b.y));
+      a = b;
+      aInside = bInside;
+    });
+    return output;
+  }
+
+  function copyRasterVertex(vertex, x, y) {
+    return {
+      x: x,
+      y: y,
+      sx: vertex.sx,
+      sy: vertex.sy,
+      lon: vertex.lon,
+      lat: vertex.lat
+    };
+  }
+
+  // Interpolate along the shorter of the two arcs, so a cell straddling the
+  // antimeridian does not interpolate the long way around the globe.
+  function interpolateLongitude(a, b, t) {
+    var delta = b - a;
+    if (delta > 180) delta -= 360;
+    if (delta < -180) delta += 360;
+    return normalizeLongitude$1(a + delta * t);
+  }
+
+  function normalizeLongitude$1(lon) {
+    while (lon > 180) lon -= 360;
+    while (lon < -180) lon += 360;
+    return lon;
+  }
+
+  function clamp$2(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function isInside(coord, value, keepGreater) {
+    return keepGreater ? coord >= value - EPS$4 : coord <= value + EPS$4;
+  }
+
+  /*
    * Polyhedral unfolding code adapted from d3-geo-polygon.
    *
    * Copyright 2017-2024 Mike Bostock
    * ISC License: https://github.com/d3/d3-geo-polygon/blob/main/LICENSE
    */
+
 
   var D2R$7 = Math.PI / 180;
   var R2D$6 = 180 / Math.PI;
@@ -6378,7 +6685,7 @@
 
     function projectFacePoint(face, lam, phi) {
       var p = face.project(lam, phi);
-      p = applyMatrix$1(face.transform, p);
+      p = applyMatrix(face.transform, p);
       p = transformOutputPoint(p);
       p[0] -= centerX;
       p[1] -= centerY;
@@ -6390,7 +6697,7 @@
       var p, rotated;
       if (!face || !face.project.invert) return null;
       p = inverseTransformOutputPoint([x + centerX, y + centerY]);
-      p = applyMatrix$1(invertMatrix$1(face.transform), p);
+      p = applyMatrix(invertMatrix(face.transform), p);
       rotated = face.project.invert(p[0], p[1]);
       if (!rotated) return null;
       return rotateRadians(
@@ -6483,7 +6790,7 @@
             config.rotation[2] * D2R$7,
             true
           );
-          return [normalizeLongitude$3(q[0] * R2D$6 + lon0), q[1] * R2D$6];
+          return [normalizeLongitude$1(q[0] * R2D$6 + lon0), q[1] * R2D$6];
         });
         var paths = splitPathAtAntimeridian$3(
           interpolateGreatCircle(endpoints[0], endpoints[1], 0.05)
@@ -6513,15 +6820,15 @@
         }),
         seams: seams,
         findRegion: function(lon, lat) {
-          var lam = normalizeLongitude$3(lon - lon0) * D2R$7;
+          var lam = normalizeLongitude$1(lon - lon0) * D2R$7;
           return findFace(lam, lat * D2R$7);
         },
         findTransitionRegion: function(lon, lat) {
-          var lam = normalizeLongitude$3(lon - lon0) * D2R$7;
+          var lam = normalizeLongitude$1(lon - lon0) * D2R$7;
           return findTransitionRegion(lam, lat * D2R$7);
         },
         projectRegion: function(lon, lat, regionId) {
-          var lam = normalizeLongitude$3(lon - lon0) * D2R$7;
+          var lam = normalizeLongitude$1(lon - lon0) * D2R$7;
           return forwardFace(lam, lat * D2R$7, regionId);
         },
         regionsAreAttached: function(a, b) {
@@ -6629,8 +6936,8 @@
         var adjacent = findAdjacentFace(faces, face.id, a, b);
         if (adjacent >= 0 && attachedPairs.has(pairKey(face.id, adjacent))) continue;
         edges.push([
-          applyMatrix$1(face.transform, face.project(a[0] * D2R$7, a[1] * D2R$7)),
-          applyMatrix$1(face.transform, face.project(b[0] * D2R$7, b[1] * D2R$7))
+          applyMatrix(face.transform, face.project(a[0] * D2R$7, a[1] * D2R$7)),
+          applyMatrix(face.transform, face.project(b[0] * D2R$7, b[1] * D2R$7))
         ]);
       }
     });
@@ -6747,25 +7054,6 @@
     ];
   }
 
-  function applyMatrix$1(m, p) {
-    return [
-      m[0] * p[0] + m[1] * p[1] + m[2],
-      m[3] * p[0] + m[4] * p[1] + m[5]
-    ];
-  }
-
-  function invertMatrix$1(m) {
-    var det = m[0] * m[4] - m[1] * m[3];
-    return [
-      m[4] / det,
-      -m[1] / det,
-      (m[1] * m[5] - m[4] * m[2]) / det,
-      -m[3] / det,
-      m[0] / det,
-      (m[3] * m[2] - m[0] * m[5]) / det
-    ];
-  }
-
   function rotateRadians(lam, phi, deltaLam, deltaPhi, deltaGamma, invert) {
     if (invert) {
       var inv = rotatePhiGamma$1(lam, phi, deltaPhi, deltaGamma, true);
@@ -6791,21 +7079,21 @@
       return [
         Math.atan2(y * cosDeltaGamma + z * sinDeltaGamma,
           x * cosDeltaPhi + k * sinDeltaPhi),
-        Math.asin(clamp$4(k * cosDeltaPhi - x * sinDeltaPhi, -1, 1))
+        Math.asin(clamp$2(k * cosDeltaPhi - x * sinDeltaPhi, -1, 1))
       ];
     }
     k = z * cosDeltaPhi + x * sinDeltaPhi;
     return [
       Math.atan2(y * cosDeltaGamma - k * sinDeltaGamma,
         x * cosDeltaPhi - z * sinDeltaPhi),
-      Math.asin(clamp$4(k * cosDeltaGamma + y * sinDeltaGamma, -1, 1))
+      Math.asin(clamp$2(k * cosDeltaGamma + y * sinDeltaGamma, -1, 1))
     ];
   }
 
   function interpolateGreatCircle(a, b, interval) {
     var av = degreesToVector$2(a[0], a[1]);
     var bv = degreesToVector$2(b[0], b[1]);
-    var angle = Math.acos(clamp$4(dot$2(av, bv), -1, 1));
+    var angle = Math.acos(clamp$2(dot$2(av, bv), -1, 1));
     var n = Math.max(1, Math.ceil(angle * R2D$6 / interval));
     var sinAngle = Math.sin(angle);
     var points = [];
@@ -6864,7 +7152,7 @@
   }
 
   function angularDistance(a, b) {
-    return Math.acos(clamp$4(dot$2(degreesToVector$2(a[0], a[1]),
+    return Math.acos(clamp$2(dot$2(degreesToVector$2(a[0], a[1]),
       degreesToVector$2(b[0], b[1])), -1, 1));
   }
 
@@ -6880,7 +7168,7 @@
   function vectorToDegrees$2(p) {
     return [
       Math.atan2(p[1], p[0]) * R2D$6,
-      Math.asin(clamp$4(p[2], -1, 1)) * R2D$6
+      Math.asin(clamp$2(p[2], -1, 1)) * R2D$6
     ];
   }
 
@@ -6933,16 +7221,6 @@
     while (lam > Math.PI) lam -= Math.PI * 2;
     while (lam < -Math.PI) lam += Math.PI * 2;
     return lam;
-  }
-
-  function normalizeLongitude$3(lon) {
-    while (lon > 180) lon -= 360;
-    while (lon < -180) lon += 360;
-    return lon;
-  }
-
-  function clamp$4(val, min, max) {
-    return Math.max(min, Math.min(max, val));
   }
 
   /*
@@ -8150,6 +8428,7 @@
    * equations, not Imago's power-law approximation.
    */
 
+
   var D2R$2 = Math.PI / 180;
   var R2D$2 = 180 / Math.PI;
   var HALF_PI = Math.PI / 2;
@@ -8298,7 +8577,7 @@
             boundary: sector.sphericalBoundary.map(function(p) {
               var q = fromCanonical(p[0], p[1], orientation);
               return [
-                normalizeLongitude$2(q[0] * R2D$2 + lon0),
+                normalizeLongitude$1(q[0] * R2D$2 + lon0),
                 q[1] * R2D$2
               ];
             })
@@ -8378,7 +8657,7 @@
             return applyOobTransform(p, facet, oobKey);
           });
           [0, 1].forEach(function(folded) {
-            var foldedPolygon = clipPolygonAxis$1(oobPolygon, 0, 0, folded == 0);
+            var foldedPolygon = clipPolygonAxis(oobPolygon, 0, 0, folded == 0);
             if (foldedPolygon.length < 3) return;
             foldedPolygon = foldedPolygon.map(function(p) {
               return applyFoldTransform(p, folded);
@@ -8507,26 +8786,26 @@
     var polygon = clipRasterOobPolygon(vertices, piece.oobKey);
     polygon = polygon.map(function(vertex) {
       var p = applyOobTransform([vertex.x, vertex.y], facet, piece.oobKey);
-      return copyRasterVertex$1(vertex, p[0], p[1]);
+      return copyRasterVertex(vertex, p[0], p[1]);
     });
-    polygon = clipRasterPolygonAxis$1(
+    polygon = clipRasterPolygonAxis(
       polygon, 'x', 0, piece.folded == 0);
     polygon = polygon.map(function(vertex) {
       var p = applyFoldTransform([vertex.x, vertex.y], piece.folded);
-      return copyRasterVertex$1(vertex, p[0], p[1]);
+      return copyRasterVertex(vertex, p[0], p[1]);
     });
     polygon = polygon.map(function(vertex) {
-      return copyRasterVertex$1(
+      return copyRasterVertex(
         vertex,
         vertex.x + LAYOUT_SHIFT +
           piece.wrap * 2 * BLOCK_HEIGHT - BLOCK_HEIGHT,
         vertex.y + 1.5
       );
     });
-    polygon = clipRasterPolygonAxis$1(polygon, 'x', XMIN, true);
-    polygon = clipRasterPolygonAxis$1(polygon, 'x', XMAX, false);
-    polygon = clipRasterPolygonAxis$1(polygon, 'y', YMIN, true);
-    polygon = clipRasterPolygonAxis$1(polygon, 'y', YMAX, false);
+    polygon = clipRasterPolygonAxis(polygon, 'x', XMIN, true);
+    polygon = clipRasterPolygonAxis(polygon, 'x', XMAX, false);
+    polygon = clipRasterPolygonAxis(polygon, 'y', YMIN, true);
+    polygon = clipRasterPolygonAxis(polygon, 'y', YMAX, false);
     polygon.forEach(function(vertex) {
       vertex.x *= EDGE_SCALE;
       vertex.y *= EDGE_SCALE;
@@ -8536,62 +8815,22 @@
 
   function clipRasterOobPolygon(polygon, oobKey) {
     if (oobKey == 'xpos') {
-      return clipRasterPolygonAxis$1(polygon, 'x', 3, true);
+      return clipRasterPolygonAxis(polygon, 'x', 3, true);
     }
     if (oobKey == 'xneg') {
-      return clipRasterPolygonAxis$1(polygon, 'x', -3, false);
+      return clipRasterPolygonAxis(polygon, 'x', -3, false);
     }
     if (oobKey == 'ypos' || oobKey == 'yneg') {
-      polygon = clipRasterPolygonAxis$1(polygon, 'x', -3, true);
-      polygon = clipRasterPolygonAxis$1(polygon, 'x', 3, false);
-      return clipRasterPolygonAxis$1(
+      polygon = clipRasterPolygonAxis(polygon, 'x', -3, true);
+      polygon = clipRasterPolygonAxis(polygon, 'x', 3, false);
+      return clipRasterPolygonAxis(
         polygon, 'y', oobKey == 'ypos' ? SQRT3$1 : -SQRT3$1,
         oobKey == 'ypos');
     }
-    polygon = clipRasterPolygonAxis$1(polygon, 'x', -3, true);
-    polygon = clipRasterPolygonAxis$1(polygon, 'x', 3, false);
-    polygon = clipRasterPolygonAxis$1(polygon, 'y', -SQRT3$1, true);
-    return clipRasterPolygonAxis$1(polygon, 'y', SQRT3$1, false);
-  }
-
-  function clipRasterPolygonAxis$1(polygon, axis, value, keepGreater) {
-    var output = [];
-    if (polygon.length === 0) return output;
-    var a = polygon[polygon.length - 1];
-    var aInside = keepGreater ?
-      a[axis] >= value - EPS$1 : a[axis] <= value + EPS$1;
-    polygon.forEach(function(b) {
-      var bInside = keepGreater ?
-        b[axis] >= value - EPS$1 : b[axis] <= value + EPS$1;
-      if (aInside != bInside) {
-        var t = (value - a[axis]) / (b[axis] - a[axis]);
-        var vertex = {
-          x: a.x + (b.x - a.x) * t,
-          y: a.y + (b.y - a.y) * t,
-          sx: a.sx + (b.sx - a.sx) * t,
-          sy: a.sy + (b.sy - a.sy) * t,
-          lon: a.lon + (b.lon - a.lon) * t,
-          lat: a.lat + (b.lat - a.lat) * t
-        };
-        vertex[axis] = value;
-        output.push(vertex);
-      }
-      if (bInside) output.push(copyRasterVertex$1(b, b.x, b.y));
-      a = b;
-      aInside = bInside;
-    });
-    return output;
-  }
-
-  function copyRasterVertex$1(vertex, x, y) {
-    return {
-      x: x,
-      y: y,
-      sx: vertex.sx,
-      sy: vertex.sy,
-      lon: vertex.lon,
-      lat: vertex.lat
-    };
+    polygon = clipRasterPolygonAxis(polygon, 'x', -3, true);
+    polygon = clipRasterPolygonAxis(polygon, 'x', 3, false);
+    polygon = clipRasterPolygonAxis(polygon, 'y', -SQRT3$1, true);
+    return clipRasterPolygonAxis(polygon, 'y', SQRT3$1, false);
   }
 
   function applyOobTransform(p, facet, oobKey) {
@@ -8612,57 +8851,34 @@
   }
 
   function clipOobPolygon(polygon, oobKey) {
-    if (oobKey == 'xpos') return clipPolygonAxis$1(polygon, 0, 3, true);
-    if (oobKey == 'xneg') return clipPolygonAxis$1(polygon, 0, -3, false);
+    if (oobKey == 'xpos') return clipPolygonAxis(polygon, 0, 3, true);
+    if (oobKey == 'xneg') return clipPolygonAxis(polygon, 0, -3, false);
     if (oobKey == 'ypos') {
-      return clipPolygonAxis$1(
-        clipPolygonAxis$1(
-          clipPolygonAxis$1(polygon, 0, -3, true), 0, 3, false),
+      return clipPolygonAxis(
+        clipPolygonAxis(
+          clipPolygonAxis(polygon, 0, -3, true), 0, 3, false),
         1, SQRT3$1, true);
     }
     if (oobKey == 'yneg') {
-      return clipPolygonAxis$1(
-        clipPolygonAxis$1(
-          clipPolygonAxis$1(polygon, 0, -3, true), 0, 3, false),
+      return clipPolygonAxis(
+        clipPolygonAxis(
+          clipPolygonAxis(polygon, 0, -3, true), 0, 3, false),
         1, -SQRT3$1, false);
     }
     return clipRectangle(polygon, -3, -SQRT3$1, 3, SQRT3$1);
   }
 
   function clipRectangle(polygon, xmin, ymin, xmax, ymax) {
-    polygon = clipPolygonAxis$1(polygon, 0, xmin, true);
-    polygon = clipPolygonAxis$1(polygon, 0, xmax, false);
-    polygon = clipPolygonAxis$1(polygon, 1, ymin, true);
-    return clipPolygonAxis$1(polygon, 1, ymax, false);
-  }
-
-  function clipPolygonAxis$1(polygon, axis, value, keepGreater) {
-    var output = [];
-    if (polygon.length === 0) return output;
-    var a = polygon[polygon.length - 1];
-    var aInside = keepGreater ? a[axis] >= value - EPS$1 : a[axis] <= value + EPS$1;
-    polygon.forEach(function(b) {
-      var bInside = keepGreater ? b[axis] >= value - EPS$1 : b[axis] <= value + EPS$1;
-      if (aInside != bInside) {
-        var t = (value - a[axis]) / (b[axis] - a[axis]);
-        var p = [
-          a[0] + (b[0] - a[0]) * t,
-          a[1] + (b[1] - a[1]) * t
-        ];
-        p[axis] = value;
-        output.push(p);
-      }
-      if (bInside) output.push(b.concat());
-      a = b;
-      aInside = bInside;
-    });
-    return output;
+    polygon = clipPolygonAxis(polygon, 0, xmin, true);
+    polygon = clipPolygonAxis(polygon, 0, xmax, false);
+    polygon = clipPolygonAxis(polygon, 1, ymin, true);
+    return clipPolygonAxis(polygon, 1, ymax, false);
   }
 
   function interpolateSphericalRadians(a, b, interval) {
     var av = radiansToVector(a[0], a[1]);
     var bv = radiansToVector(b[0], b[1]);
-    var angle = Math.acos(clamp$3(dot$1(av, bv), -1, 1));
+    var angle = Math.acos(clamp$2(dot$1(av, bv), -1, 1));
     var count = Math.max(1, Math.ceil(angle / interval));
     var sinAngle = Math.sin(angle);
     var points = [];
@@ -8682,7 +8898,7 @@
   function vectorToRadians(p) {
     return [
       Math.atan2(p[1], p[0]),
-      Math.asin(clamp$3(p[2], -1, 1))
+      Math.asin(clamp$2(p[2], -1, 1))
     ];
   }
 
@@ -8756,8 +8972,8 @@
     }
     x = qx - BLOCK_HEIGHT;
     y = qy + 1.5;
-    x = clamp$3(x, XMIN, XMAX);
-    y = clamp$3(y, YMIN, YMAX);
+    x = clamp$2(x, XMIN, XMAX);
+    y = clamp$2(y, YMIN, YMAX);
     return {
       x: x,
       y: y,
@@ -8867,7 +9083,7 @@
     var v = radiansToVector(lam, phi);
     return [
       Math.atan2(dot$1(v, orientation.y), dot$1(v, orientation.x)),
-      Math.asin(clamp$3(dot$1(v, orientation.z), -1, 1))
+      Math.asin(clamp$2(dot$1(v, orientation.z), -1, 1))
     ];
   }
 
@@ -8878,7 +9094,7 @@
       orientation.x[1] * v[0] + orientation.y[1] * v[1] + orientation.z[1] * v[2],
       orientation.x[2] * v[0] + orientation.y[2] * v[1] + orientation.z[2] * v[2]
     ];
-    return [Math.atan2(p[1], p[0]), Math.asin(clamp$3(p[2], -1, 1))];
+    return [Math.atan2(p[1], p[0]), Math.asin(clamp$2(p[2], -1, 1))];
   }
 
   // Adapted from Justin Kunimune's Imago implementation.
@@ -8892,7 +9108,7 @@
       lat1 = lat;
       lon1 = lon - lon0;
     } else {
-      lat1 = Math.asin(clamp$3(
+      lat1 = Math.asin(clamp$2(
         Math.sin(lat0) * Math.sin(lat) +
         Math.cos(lat0) * Math.cos(lat) * Math.cos(lon0 - lon),
         -1,
@@ -8903,7 +9119,7 @@
         (Math.cos(lat0) * Math.sin(lat) -
           Math.sin(lat0) * Math.cos(lat) * Math.cos(lon0 - lon)) /
         denominator;
-      lon1 = Math.acos(clamp$3(value, -1, 1)) - Math.PI;
+      lon1 = Math.acos(clamp$2(value, -1, 1)) - Math.PI;
       if (Math.sin(lon - lon0) > 0) lon1 = -lon1;
     }
     return [lat1, normalizeRadians(lon1 - theta0)];
@@ -8913,7 +9129,7 @@
     var lat0 = pole.lat;
     var lon0 = pole.lon;
     lon += pole.meridian;
-    var latOut = Math.asin(clamp$3(
+    var latOut = Math.asin(clamp$2(
       Math.sin(lat0) * Math.sin(lat) -
       Math.cos(lat0) * Math.cos(lon) * Math.cos(lat),
       -1,
@@ -8925,8 +9141,8 @@
     } else {
       var value = Math.sin(lat) / Math.cos(lat0) / Math.cos(latOut) -
         Math.tan(lat0) * Math.tan(latOut);
-      if (Math.sin(lon) > 0) lonOut = lon0 + Math.acos(clamp$3(value, -1, 1));
-      else lonOut = lon0 - Math.acos(clamp$3(value, -1, 1));
+      if (Math.sin(lon) > 0) lonOut = lon0 + Math.acos(clamp$2(value, -1, 1));
+      else lonOut = lon0 - Math.acos(clamp$2(value, -1, 1));
     }
     return [latOut, normalizeRadians(lonOut)];
   }
@@ -8949,7 +9165,7 @@
         var y = edge[0][1] + (edge[1][1] - edge[0][1]) * t;
         var p = inverse(x * EDGE_SCALE, y * EDGE_SCALE);
         path.push([
-          normalizeLongitude$2(p[0] * R2D$2 + lon0),
+          normalizeLongitude$1(p[0] * R2D$2 + lon0),
           p[1] * R2D$2
         ]);
       }
@@ -9040,20 +9256,194 @@
     return lam;
   }
 
-  function normalizeLongitude$2(lon) {
-    while (lon > 180) lon -= 360;
-    while (lon < -180) lon += 360;
-    return lon;
-  }
-
-  function clamp$3(value, min, max) {
-    return Math.max(min, Math.min(max, value));
-  }
-
   var Narukawa2022 = /*#__PURE__*/Object.freeze({
     __proto__: null,
     getNarukawa2022Engine: getNarukawa2022Engine,
     registerNarukawa2022Projection: registerNarukawa2022Projection
+  });
+
+  // Lightweight hierarchical profiler.
+  // Intended for ad-hoc performance work on hot pipelines (e.g. addIntersectionCuts).
+  //
+  // Usage:
+  //   import { profileStart, profileEnd, profileWrap, ... } from './utils/mapshaper-profile';
+  //   profileStart('phase'); doWork(); profileEnd('phase');
+  //   var result = profileWrap('phase', () => doWork());
+  //
+  // When disabled (the default) every call short-circuits in ~one comparison; safe
+  // to leave in hot code paths. Enable from the CLI with the `-profile` command,
+  // from JS with enableProfiling(), or by setting the MAPSHAPER_PROFILE env var.
+  //
+  // The profiler tracks a stack of currently-open phases so calls can nest. Each
+  // unique stack path accumulates ms-elapsed and a call count. profileReport()
+  // returns a flat array; formatProfileReport() pretty-prints a tree.
+
+  var ENABLED = false;
+  var ROOT = makeNode('<root>');
+  var STACK = [ROOT];
+  var WALL_START = 0;
+
+  function makeNode(label) {
+    return {
+      label: label,
+      totalMs: 0,
+      selfMs: 0,
+      calls: 0,
+      childMsAccum: 0,
+      children: Object.create(null)
+    };
+  }
+
+  function nowMs() {
+    if (typeof process !== 'undefined' && process.hrtime && process.hrtime.bigint) {
+      // bigint -> number division: precision down to 1 microsecond is fine for our needs
+      return Number(process.hrtime.bigint()) / 1e6;
+    }
+    if (typeof performance !== 'undefined' && performance.now) {
+      return performance.now();
+    }
+    return Date.now();
+  }
+
+  function enableProfiling() {
+    ENABLED = true;
+    WALL_START = nowMs();
+  }
+
+  function disableProfiling() {
+    ENABLED = false;
+  }
+
+  function profileEnabled() {
+    return ENABLED;
+  }
+
+  function profileReset() {
+    ROOT = makeNode('<root>');
+    STACK = [ROOT];
+    WALL_START = ENABLED ? nowMs() : 0;
+  }
+
+  // Open a new phase. Cheap (~one branch) when disabled.
+  function profileStart(label) {
+    if (!ENABLED) return;
+    var parent = STACK[STACK.length - 1];
+    var node = parent.children[label];
+    if (!node) {
+      node = makeNode(label);
+      parent.children[label] = node;
+    }
+    node._t0 = nowMs();
+    STACK.push(node);
+  }
+
+  function profileEnd(label) {
+    if (!ENABLED) return;
+    var node = STACK[STACK.length - 1];
+    if (label && node.label !== label) {
+      // Mismatched labels usually mean an early return forgot to call profileEnd().
+      // Walk up the stack until we find a match, closing the intervening frames.
+      while (STACK.length > 1 && STACK[STACK.length - 1].label !== label) {
+        profileEnd(STACK[STACK.length - 1].label);
+      }
+      node = STACK[STACK.length - 1];
+      if (node.label !== label) return; // give up rather than throw
+    }
+    var elapsed = nowMs() - node._t0;
+    node._t0 = 0;
+    node.totalMs += elapsed;
+    node.calls += 1;
+    STACK.pop();
+    var parent = STACK[STACK.length - 1];
+    parent.childMsAccum += elapsed;
+  }
+
+  // Wrap a function call. Re-throws if the callback throws but still closes the
+  // phase so the stack stays consistent.
+  function profileWrap(label, fn) {
+    if (!ENABLED) return fn();
+    profileStart(label);
+    try {
+      return fn();
+    } finally {
+      profileEnd(label);
+    }
+  }
+
+  // Build a flat tree report: array of {depth, label, totalMs, selfMs, calls}.
+  function profileReport() {
+    var rows = [];
+    function visit(node, depth) {
+      if (depth > 0) {
+        rows.push({
+          depth: depth - 1,
+          label: node.label,
+          totalMs: node.totalMs,
+          selfMs: Math.max(0, node.totalMs - node.childMsAccum),
+          calls: node.calls
+        });
+      }
+      var keys = Object.keys(node.children);
+      keys.sort(function(a, b) {
+        return node.children[b].totalMs - node.children[a].totalMs;
+      });
+      for (var i = 0; i < keys.length; i++) {
+        visit(node.children[keys[i]], depth + 1);
+      }
+    }
+    visit(ROOT, 0);
+    return rows;
+  }
+
+  function profileWallElapsedMs() {
+    return ENABLED && WALL_START ? nowMs() - WALL_START : 0;
+  }
+
+  // Pretty-print the current report as a column-aligned tree.
+  function formatProfileReport(opts) {
+    var rows = profileReport();
+    if (rows.length === 0) return '(profile is empty)';
+    opts = opts || {};
+    var indent = '  ';
+    var lines = [];
+    // header
+    lines.push(['phase', 'total ms', 'self ms', 'calls'].join('\t'));
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var label = '';
+      for (var j = 0; j < r.depth; j++) label += indent;
+      label += r.label;
+      lines.push([
+        label,
+        r.totalMs.toFixed(2),
+        r.selfMs.toFixed(2),
+        String(r.calls)
+      ].join('\t'));
+    }
+    if (opts.includeWall) {
+      lines.push('');
+      lines.push('wall elapsed ms: ' + profileWallElapsedMs().toFixed(2));
+    }
+    return lines.join('\n');
+  }
+
+  // Honour an env var so users (and CI harnesses) can opt in without code changes.
+  if (typeof process !== 'undefined' && process.env && process.env.MAPSHAPER_PROFILE) {
+    enableProfiling();
+  }
+
+  var Profile = /*#__PURE__*/Object.freeze({
+    __proto__: null,
+    disableProfiling: disableProfiling,
+    enableProfiling: enableProfiling,
+    formatProfileReport: formatProfileReport,
+    profileEnabled: profileEnabled,
+    profileEnd: profileEnd,
+    profileReport: profileReport,
+    profileReset: profileReset,
+    profileStart: profileStart,
+    profileWallElapsedMs: profileWallElapsedMs,
+    profileWrap: profileWrap
   });
 
   /*
@@ -9086,6 +9476,32 @@
   var RECT_YMAX = 0;
   var EPS = 1e-12;
   var MIN_PIECE_AREA = 1e-6;
+
+  // Frame-cut tracing parameters (see createFrameCutPaths).
+  //
+  // FRAME_INSET is how far inside the frame the traced sampling lines run, and it
+  // is bounded on both sides. Measured over 18003 samples with a 6000-sample
+  // edge, the safe window is about [4e-8, 1.3e-7] and this value is its centre:
+  //
+  // * Too small and invertLeeRaw becomes ill-conditioned, because the frame edge
+  //   coincides with a Lee face boundary. The share of samples that fail to
+  //   invert climbs from 0.2% inside the window to 4% at 3e-8 and 14% at 1e-8,
+  //   and *which* samples fail depends on last-bit floating-point behaviour, so
+  //   different JS engines traced different seams from the same input.
+  // * Too large and the strip of sphere between the traced seam and the true
+  //   frame edge survives the cut, leaving a hairline connection that shows up as
+  //   a long chord running along the frame edge. This appears by 1.6e-7.
+  //
+  // The 0.2% of samples that fail inside the window are the four facet vertices,
+  // which genuinely have no inverse.
+  var FRAME_INSET = 8e-8;
+  // Guards the lower bound above. Inside the window the failure rate is 0.2%, so
+  // this only trips on a regression, and the resulting map would be mis-cut.
+  var MAX_FAILED_SAMPLE_RATIO = 0.02;
+  // Samples per frame edge. This sets the resolution of the cut along the frame
+  // (about 8 km on an Earth-sized map).
+  var FRAME_SAMPLES = 6000;
+
   var engines = {};
 
   var TETRAHEDRON_VERTICES = [
@@ -9208,14 +9624,20 @@
 
     // Internal inverse used to trace the geographic cut corresponding to the
     // rectangular frame. The public projection remains forward-only.
+    //
+    // Layout pieces can overlap along their shared edges, so a candidate is only
+    // accepted once it round-trips through forward().
     function inverse(x, y) {
       var q = uncenterOutputPoint([x, y]);
       for (var i = 0; i < rasterPieces.length; i++) {
         var piece = rasterPieces[i];
-        if (!pointInRing$2(centerOutputPoint(q), piece.boundary)) continue;
-        var p = applyMatrix(invertMatrix(piece.matrix), q);
-        var projected = getLayoutCopy(p);
-        if (projected.id != piece.copy) continue;
+        var bounds = piece.bounds;
+        if (x < bounds[0] || x > bounds[2] || y < bounds[1] || y > bounds[3]) {
+          continue;
+        }
+        if (!pointInRing$2([x, y], piece.boundary)) continue;
+        var p = applyMatrix(piece.inverse_matrix, q);
+        if (getLayoutCopy(p).id != piece.copy) continue;
         p = denormalizeBasePoint(p, normalization);
         var spherical = base.invertFace(p[0], p[1], piece.face);
         if (!spherical) continue;
@@ -9278,9 +9700,12 @@
                 paths: seam.paths
               };
             });
+            var frameCut = createFrameCutPaths(inverse, lon0);
             seams.push({
               type: 'cut',
-              paths: createFrameCutPaths(inverse, lon0)
+              paths: frameCut.paths,
+              // How much of the frame the trace resolved; see FRAME_INSET.
+              trace_stats: frameCut.stats
             });
             seamCache.set(lon0, seams);
           }
@@ -9390,13 +9815,16 @@
           projected = clipPolygonAxis(projected, 1, RECT_YMAX, false);
           if (projected.length < 3 ||
               Math.abs(getRingArea$2(projected)) < MIN_PIECE_AREA) return;
+          var boundary = projected.map(centerOutputPoint);
           pieces.push({
             id: pieces.length,
             face: region.id,
             source_region: region.id,
             copy: copy.id,
             matrix: matrix,
-            boundary: projected.map(centerOutputPoint)
+            inverse_matrix: invertMatrix(matrix),
+            bounds: getRingBounds(boundary),
+            boundary: boundary
           });
         });
       });
@@ -9438,40 +9866,59 @@
     };
   }
 
+  // Trace the geographic curves that the rectangular frame corresponds to. The
+  // repeated tetrahedral net is continuous inside the frame, so its only
+  // geographic cuts are the three independent sides of the periodic rectangle.
+  //
+  // Sampling is uniform in frame coordinates rather than adaptive. The traced
+  // curve becomes the centreline of the seam mask, so the polygon edges left
+  // behind by the cut inherit this spacing where they run along the frame; the
+  // even resolution is what lets splitPolygonFrameChords recognize a run along a
+  // frame side. Sampling by geographic curvature instead concentrates vertices
+  // where the map curves and leaves the frame edges coarse, which reintroduces
+  // the long chords along the frame that the cut is meant to remove.
   function createFrameCutPaths(inverse, lon0) {
-    // The repeated tetrahedral net is continuous inside the frame. Its only
-    // geographic cuts are the three independent sides of the periodic rectangle.
-    var n = 6000;
-    // Stay far enough inside the frame to avoid browser-specific inverse
-    // branches at the exact Lee face boundary.
-    var epsilon = 5e-8;
+    profileStart('lee.traceFrameCuts');
+    var e = FRAME_INSET;
     var xmin = centerOutputPoint([RECT_XMIN, 0])[0];
     var xmax = centerOutputPoint([RECT_XMAX, 0])[0];
     var ymin = centerOutputPoint([0, RECT_YMIN])[1];
     var ymax = centerOutputPoint([0, RECT_YMAX])[1];
     var edges = [
-      [[xmin + epsilon, ymin], [xmin + epsilon, ymax]],
-      [[xmin, ymax - epsilon], [xmax, ymax - epsilon]],
-      [[xmin, ymin + epsilon], [xmax, ymin + epsilon]]
+      [[xmin + e, ymin], [xmin + e, ymax]],
+      [[xmin, ymax - e], [xmax, ymax - e]],
+      [[xmin, ymin + e], [xmax, ymin + e]]
     ];
-    return edges.reduce(function(memo, edge) {
+    var stats = {sample_count: 0, failed_count: 0};
+    var paths = edges.reduce(function(memo, edge) {
       var path = [];
-      for (var i = 0; i <= n; i++) {
-        var t = i / n;
-        var x = edge[0][0] + (edge[1][0] - edge[0][0]) * t;
-        var y = edge[0][1] + (edge[1][1] - edge[0][1]) * t;
-        var p = inverse(x, y);
-        if (!p) continue;
-        path.push([
-          normalizeLongitude$1(p[0] * R2D$1 + lon0),
-          p[1] * R2D$1
-        ]);
+      for (var i = 0; i <= FRAME_SAMPLES; i++) {
+        var t = i / FRAME_SAMPLES;
+        var p = inverse(
+          edge[0][0] + (edge[1][0] - edge[0][0]) * t,
+          edge[0][1] + (edge[1][1] - edge[0][1]) * t
+        );
+        stats.sample_count++;
+        // Samples without an inverse occur only at the facet vertices, which
+        // both neighbours converge on, so the chord across the gap is short.
+        if (!p) {
+          stats.failed_count++;
+          continue;
+        }
+        path.push([normalizeLongitude$1(p[0] * R2D$1 + lon0), p[1] * R2D$1]);
       }
       return memo.concat(splitPathAtAntimeridian$1(path));
     }, []).map(function(path) {
       path.mask_width = 4e-5;
       return path;
     });
+    profileEnd('lee.traceFrameCuts');
+    if (stats.failed_count > stats.sample_count * MAX_FAILED_SAMPLE_RATIO) {
+      error('Unable to trace the projection frame: ' + stats.failed_count +
+        ' of ' + stats.sample_count +
+        ' frame samples had no inverse (see FRAME_INSET).');
+    }
+    return {paths: paths, stats: stats};
   }
 
   function splitPathAtAntimeridian$1(path) {
@@ -9577,60 +10024,77 @@
     return project;
   }
 
+  // leeRaw runs tens of times per Newton step in invertLeeRaw, so its constant
+  // tables and the three cube roots of unity are built once here rather than on
+  // every call, and the Horner loops below accumulate into scalars instead of
+  // allocating a complex pair per term. The arithmetic is unchanged.
+  var LEE_W1 = 1.4021821053254548;
+  var LEE_COEFFICIENTS = [
+    1.15470053837925, 0.192450089729875, 0.0481125224324687,
+    0.010309826235529, 3.34114739114366e-4, -0.00150351632601465,
+    -0.0012304417796231, -675190201960282e-18,
+    -284084537293856e-18, -821205120500051e-19,
+    -159257630018706e-20, 1.91691805888369e-5,
+    1.73095888028726e-5, 1.03865580818367e-5,
+    4.70614523937179e-6, 1.4413500104181e-6,
+    1.92757960170179e-8, -3.82869799649063e-7,
+    -3.57526015225576e-7, -2.2175964844211e-7
+  ];
+  var LEE_H0 = [1, 1 / 8, 3 / 56, 1 / 32, 35 / 1664, 63 / 4096, 231 / 19456];
+  var LEE_ROTATIONS = [0, 1, 2].map(function(i) {
+    return complexPower([-0.5, SQRT3 / 2], [i, 0]);
+  });
+
   function leeRaw(lam, phi) {
-    var w = [-0.5, SQRT3 / 2];
-    var z = complexMultiply(stereographicRaw(lam, phi), [SQRT2, 0]);
-    var powers = [0, 1, 2].map(function(i) {
-      return complexPower(w, [i, 0]);
-    });
+    var s = stereographicRaw(lam, phi);
+    var z = [s[0] * SQRT2, s[1] * SQRT2];
+    var i, j;
+    // Pick the sector whose rotation maximizes the real part of rot * z.
     var sector = 0;
-    for (var i = 1; i < powers.length; i++) {
-      if (complexMultiply(z, powers[i])[0] >
-          complexMultiply(z, powers[sector])[0]) sector = i;
+    var best = z[0] * LEE_ROTATIONS[0][0] - z[1] * LEE_ROTATIONS[0][1];
+    for (i = 1; i < LEE_ROTATIONS.length; i++) {
+      var re = z[0] * LEE_ROTATIONS[i][0] - z[1] * LEE_ROTATIONS[i][1];
+      if (re > best) {
+        best = re;
+        sector = i;
+      }
     }
-    var rot = powers[sector];
+    var rot = LEE_ROTATIONS[sector];
     var n = complexNorm(z);
     var h = [0, 0];
     var k = [0, 0];
 
     if (n > 0.3) {
       var y = complexSubtract([1, 0], complexMultiply(rot, z));
-      var w1 = 1.4021821053254548;
-      var coefficients = [
-        1.15470053837925, 0.192450089729875, 0.0481125224324687,
-        0.010309826235529, 3.34114739114366e-4, -0.00150351632601465,
-        -0.0012304417796231, -675190201960282e-18,
-        -284084537293856e-18, -821205120500051e-19,
-        -159257630018706e-20, 1.91691805888369e-5,
-        1.73095888028726e-5, 1.03865580818367e-5,
-        4.70614523937179e-6, 1.4413500104181e-6,
-        1.92757960170179e-8, -3.82869799649063e-7,
-        -3.57526015225576e-7, -2.2175964844211e-7
-      ];
-      var g = [0, 0];
-      for (i = coefficients.length - 1; i >= 0; i--) {
-        g = complexAdd([coefficients[i], 0], complexMultiply(g, y));
+      var g0 = 0;
+      var g1 = 0;
+      for (i = LEE_COEFFICIENTS.length - 1; i >= 0; i--) {
+        j = g1 * y[0] + g0 * y[1];
+        g0 = LEE_COEFFICIENTS[i] + (g0 * y[0] - g1 * y[1]);
+        g1 = j;
       }
-      k = complexSubtract([w1, 0], complexMultiply(complexPower(y, 0.5), g));
+      k = complexSubtract(
+        [LEE_W1, 0],
+        complexMultiply(complexPower(y, 0.5), [g0, g1]));
       k = complexMultiply(complexMultiply(k, rot), rot);
     }
 
     if (n < 0.5) {
-      var h0 = [1, 1 / 8, 3 / 56, 1 / 32, 35 / 1664, 63 / 4096, 231 / 19456];
       var z3 = complexPower(z, [3, 0]);
-      for (i = h0.length - 1; i >= 0; i--) {
-        h = complexAdd([h0[i], 0], complexMultiply(h, z3));
+      var h0 = 0;
+      var h1 = 0;
+      for (i = LEE_H0.length - 1; i >= 0; i--) {
+        j = h1 * z3[0] + h0 * z3[1];
+        h0 = LEE_H0[i] + (h0 * z3[0] - h1 * z3[1]);
+        h1 = j;
       }
-      h = complexMultiply(h, z);
+      h = complexMultiply([h0, h1], z);
     }
 
     if (n < 0.3) return h;
     if (n > 0.5) return k;
     var t = (n - 0.3) / 0.2;
-    return complexAdd(
-      complexMultiply(k, [t, 0]),
-      complexMultiply(h, [1 - t, 0])
-    );
+    return [k[0] * t + h[0] * (1 - t), k[1] * t + h[1] * (1 - t)];
   }
 
   function invertLeeRaw(x, y) {
@@ -9680,10 +10144,6 @@
     return [k * cosPhi * Math.sin(lam), k * Math.sin(phi)];
   }
 
-  function complexAdd(a, b) {
-    return [a[0] + b[0], a[1] + b[1]];
-  }
-
   function complexSubtract(a, b) {
     return [a[0] - b[0], a[1] - b[1]];
   }
@@ -9711,13 +10171,6 @@
     return [magnitude * Math.cos(angle), magnitude * Math.sin(angle)];
   }
 
-  function applyMatrix(m, p) {
-    return [
-      m[0] * p[0] + m[1] * p[1] + m[2],
-      m[3] * p[0] + m[4] * p[1] + m[5]
-    ];
-  }
-
   function shiftMatrixX(matrix, offset) {
     var shifted = matrix.concat();
     shifted[2] += offset;
@@ -9730,84 +10183,15 @@
     return x;
   }
 
-  function invertMatrix(m) {
-    var det = m[0] * m[4] - m[1] * m[3];
-    return [
-      m[4] / det,
-      -m[1] / det,
-      (m[1] * m[5] - m[4] * m[2]) / det,
-      -m[3] / det,
-      m[0] / det,
-      (m[3] * m[2] - m[0] * m[5]) / det
-    ];
-  }
-
-  function clipPolygonAxis(polygon, axis, value, keepGreater) {
-    var output = [];
-    if (!polygon.length) return output;
-    var a = polygon[polygon.length - 1];
-    var aInside = keepGreater ? a[axis] >= value - EPS : a[axis] <= value + EPS;
-    polygon.forEach(function(b) {
-      var bInside = keepGreater ? b[axis] >= value - EPS : b[axis] <= value + EPS;
-      if (aInside != bInside) {
-        var t = (value - a[axis]) / (b[axis] - a[axis]);
-        var p = [
-          a[0] + (b[0] - a[0]) * t,
-          a[1] + (b[1] - a[1]) * t
-        ];
-        p[axis] = value;
-        output.push(p);
-      }
-      if (bInside) output.push(b.concat());
-      a = b;
-      aInside = bInside;
+  function getRingBounds(ring) {
+    var bounds = [Infinity, Infinity, -Infinity, -Infinity];
+    ring.forEach(function(p) {
+      if (p[0] < bounds[0]) bounds[0] = p[0];
+      if (p[1] < bounds[1]) bounds[1] = p[1];
+      if (p[0] > bounds[2]) bounds[2] = p[0];
+      if (p[1] > bounds[3]) bounds[3] = p[1];
     });
-    return output;
-  }
-
-  function clipRasterPolygonAxis(polygon, axis, value, keepGreater) {
-    var output = [];
-    if (!polygon.length) return output;
-    var a = polygon[polygon.length - 1];
-    var aInside = keepGreater ? a[axis] >= value - EPS : a[axis] <= value + EPS;
-    polygon.forEach(function(b) {
-      var bInside = keepGreater ? b[axis] >= value - EPS : b[axis] <= value + EPS;
-      if (aInside != bInside) {
-        var t = (value - a[axis]) / (b[axis] - a[axis]);
-        var vertex = {
-          x: a.x + (b.x - a.x) * t,
-          y: a.y + (b.y - a.y) * t,
-          sx: a.sx + (b.sx - a.sx) * t,
-          sy: a.sy + (b.sy - a.sy) * t,
-          lon: interpolateLongitude(a.lon, b.lon, t),
-          lat: a.lat + (b.lat - a.lat) * t
-        };
-        vertex[axis] = value;
-        output.push(vertex);
-      }
-      if (bInside) output.push(copyRasterVertex(b, b.x, b.y));
-      a = b;
-      aInside = bInside;
-    });
-    return output;
-  }
-
-  function copyRasterVertex(vertex, x, y) {
-    return {
-      x: x,
-      y: y,
-      sx: vertex.sx,
-      sy: vertex.sy,
-      lon: vertex.lon,
-      lat: vertex.lat
-    };
-  }
-
-  function interpolateLongitude(a, b, t) {
-    var delta = b - a;
-    if (delta > 180) delta -= 360;
-    if (delta < -180) delta += 360;
-    return normalizeLongitude$1(a + delta * t);
+    return bounds;
   }
 
   function getRingArea$2(ring) {
@@ -9861,16 +10245,6 @@
 
   function pointsEqual$2(a, b) {
     return Math.abs(a[0] - b[0]) < EPS && Math.abs(a[1] - b[1]) < EPS;
-  }
-
-  function normalizeLongitude$1(lon) {
-    lon = (lon + 180) % 360;
-    if (lon < 0) lon += 360;
-    return lon - 180;
-  }
-
-  function clamp$2(value, min, max) {
-    return Math.max(min, Math.min(max, value));
   }
 
   var mproj$1 = require$1('mproj');
@@ -12189,190 +12563,6 @@
       chains: chains
     };
   }
-
-  // Lightweight hierarchical profiler.
-  // Intended for ad-hoc performance work on hot pipelines (e.g. addIntersectionCuts).
-  //
-  // Usage:
-  //   import { profileStart, profileEnd, profileWrap, ... } from './utils/mapshaper-profile';
-  //   profileStart('phase'); doWork(); profileEnd('phase');
-  //   var result = profileWrap('phase', () => doWork());
-  //
-  // When disabled (the default) every call short-circuits in ~one comparison; safe
-  // to leave in hot code paths. Enable from the CLI with the `-profile` command,
-  // from JS with enableProfiling(), or by setting the MAPSHAPER_PROFILE env var.
-  //
-  // The profiler tracks a stack of currently-open phases so calls can nest. Each
-  // unique stack path accumulates ms-elapsed and a call count. profileReport()
-  // returns a flat array; formatProfileReport() pretty-prints a tree.
-
-  var ENABLED = false;
-  var ROOT = makeNode('<root>');
-  var STACK = [ROOT];
-  var WALL_START = 0;
-
-  function makeNode(label) {
-    return {
-      label: label,
-      totalMs: 0,
-      selfMs: 0,
-      calls: 0,
-      childMsAccum: 0,
-      children: Object.create(null)
-    };
-  }
-
-  function nowMs() {
-    if (typeof process !== 'undefined' && process.hrtime && process.hrtime.bigint) {
-      // bigint -> number division: precision down to 1 microsecond is fine for our needs
-      return Number(process.hrtime.bigint()) / 1e6;
-    }
-    if (typeof performance !== 'undefined' && performance.now) {
-      return performance.now();
-    }
-    return Date.now();
-  }
-
-  function enableProfiling() {
-    ENABLED = true;
-    WALL_START = nowMs();
-  }
-
-  function disableProfiling() {
-    ENABLED = false;
-  }
-
-  function profileEnabled() {
-    return ENABLED;
-  }
-
-  function profileReset() {
-    ROOT = makeNode('<root>');
-    STACK = [ROOT];
-    WALL_START = ENABLED ? nowMs() : 0;
-  }
-
-  // Open a new phase. Cheap (~one branch) when disabled.
-  function profileStart(label) {
-    if (!ENABLED) return;
-    var parent = STACK[STACK.length - 1];
-    var node = parent.children[label];
-    if (!node) {
-      node = makeNode(label);
-      parent.children[label] = node;
-    }
-    node._t0 = nowMs();
-    STACK.push(node);
-  }
-
-  function profileEnd(label) {
-    if (!ENABLED) return;
-    var node = STACK[STACK.length - 1];
-    if (label && node.label !== label) {
-      // Mismatched labels usually mean an early return forgot to call profileEnd().
-      // Walk up the stack until we find a match, closing the intervening frames.
-      while (STACK.length > 1 && STACK[STACK.length - 1].label !== label) {
-        profileEnd(STACK[STACK.length - 1].label);
-      }
-      node = STACK[STACK.length - 1];
-      if (node.label !== label) return; // give up rather than throw
-    }
-    var elapsed = nowMs() - node._t0;
-    node._t0 = 0;
-    node.totalMs += elapsed;
-    node.calls += 1;
-    STACK.pop();
-    var parent = STACK[STACK.length - 1];
-    parent.childMsAccum += elapsed;
-  }
-
-  // Wrap a function call. Re-throws if the callback throws but still closes the
-  // phase so the stack stays consistent.
-  function profileWrap(label, fn) {
-    if (!ENABLED) return fn();
-    profileStart(label);
-    try {
-      return fn();
-    } finally {
-      profileEnd(label);
-    }
-  }
-
-  // Build a flat tree report: array of {depth, label, totalMs, selfMs, calls}.
-  function profileReport() {
-    var rows = [];
-    function visit(node, depth) {
-      if (depth > 0) {
-        rows.push({
-          depth: depth - 1,
-          label: node.label,
-          totalMs: node.totalMs,
-          selfMs: Math.max(0, node.totalMs - node.childMsAccum),
-          calls: node.calls
-        });
-      }
-      var keys = Object.keys(node.children);
-      keys.sort(function(a, b) {
-        return node.children[b].totalMs - node.children[a].totalMs;
-      });
-      for (var i = 0; i < keys.length; i++) {
-        visit(node.children[keys[i]], depth + 1);
-      }
-    }
-    visit(ROOT, 0);
-    return rows;
-  }
-
-  function profileWallElapsedMs() {
-    return ENABLED && WALL_START ? nowMs() - WALL_START : 0;
-  }
-
-  // Pretty-print the current report as a column-aligned tree.
-  function formatProfileReport(opts) {
-    var rows = profileReport();
-    if (rows.length === 0) return '(profile is empty)';
-    opts = opts || {};
-    var indent = '  ';
-    var lines = [];
-    // header
-    lines.push(['phase', 'total ms', 'self ms', 'calls'].join('\t'));
-    for (var i = 0; i < rows.length; i++) {
-      var r = rows[i];
-      var label = '';
-      for (var j = 0; j < r.depth; j++) label += indent;
-      label += r.label;
-      lines.push([
-        label,
-        r.totalMs.toFixed(2),
-        r.selfMs.toFixed(2),
-        String(r.calls)
-      ].join('\t'));
-    }
-    if (opts.includeWall) {
-      lines.push('');
-      lines.push('wall elapsed ms: ' + profileWallElapsedMs().toFixed(2));
-    }
-    return lines.join('\n');
-  }
-
-  // Honour an env var so users (and CI harnesses) can opt in without code changes.
-  if (typeof process !== 'undefined' && process.env && process.env.MAPSHAPER_PROFILE) {
-    enableProfiling();
-  }
-
-  var Profile = /*#__PURE__*/Object.freeze({
-    __proto__: null,
-    disableProfiling: disableProfiling,
-    enableProfiling: enableProfiling,
-    formatProfileReport: formatProfileReport,
-    profileEnabled: profileEnabled,
-    profileEnd: profileEnd,
-    profileReport: profileReport,
-    profileReset: profileReset,
-    profileStart: profileStart,
-    profileWallElapsedMs: profileWallElapsedMs,
-    profileWrap: profileWrap
-  });
 
   // Dissolve arcs that can be merged without affecting topology of layers
   // remove arcs that are not referenced by any layer; remap arc ids
@@ -18090,6 +18280,15 @@
     };
   }
 
+  var ColorUtils = /*#__PURE__*/Object.freeze({
+    __proto__: null,
+    formatColor: formatColor,
+    parseColor: parseColor,
+    parseHexColor: parseHexColor,
+    parseRGBA: parseRGBA,
+    validateColor: validateColor
+  });
+
   function blend(a, b) {
     var colors, weights, args;
     if (Array.isArray(a)) {
@@ -22200,9 +22399,12 @@
   // Assumes that input layers are members of the same dataset (and therefore
   // share the same ArcCollection, if layers have paths).
   cmd.mergeLayers = function(layersArg, opts) {
-    var layers = layersArg.filter(getFeatureCount); // ignore empty layers
-    var merged = {};
+    var layers, merged = {};
     opts = opts || {};
+    layersArg.forEach(function(lyr) {
+      requireNotRasterLayer(lyr, 'Raster layers cannot be merged');
+    });
+    layers = layersArg.filter(getFeatureCount); // ignore empty layers
     if (!layers.length && layersArg.length > 1) {
       layers = layersArg; // merge all-empty layer sets
     }
@@ -28608,6 +28810,9 @@ ${svg}
       if (raster.grid.samples) {
         copy.grid.samples = typedArrayToBuffer(raster.grid.samples);
       }
+      if (raster.grid.coverage) {
+        copy.grid.coverage = typedArrayToBuffer(raster.grid.coverage);
+      }
     }
     if (raster.view) {
       copy.view = Object.assign({}, raster.view);
@@ -33853,8 +34058,9 @@ ${svg}
       error('precision= option should be a positive number');
     }
 
-    if (o.raster_type && o.raster_type != 'image' && o.raster_type != 'categorical') {
-      error('Unsupported raster-type:', o.raster_type);
+    if (o.interpretation && o.interpretation != 'image' &&
+        o.interpretation != 'categorical' && o.interpretation != 'continuous') {
+      error('Unsupported raster-type:', o.interpretation);
     }
 
     if (o.encoding) {
@@ -35167,8 +35373,15 @@ ${svg}
       .option('percentile-range', {
         describe: '[raster] input percentile range for percentile scaling, e.g. 2,98'
       })
+      // The user-facing spelling is raster-type=; the parsed option is named
+      // interpretation to keep it distinct from layer.raster_type, which is a
+      // storage tag, not a semantic one.
+      .option('interpretation', {
+        label: 'raster-type=',
+        describe: '[raster] image, categorical or continuous (default is image)'
+      })
       .option('raster-type', {
-        describe: '[raster] image or categorical (default is image)'
+        alias_to: 'interpretation'
       })
       .option('rendition', {
         describe: '[GeoTIFF] import a GeoTIFF rendition: full,overview-1,etc.'
@@ -35615,9 +35828,11 @@ ${svg}
       .option('no-replace', noReplaceOpt);
 
     parser.command('blur')
-      // .describe('apply a Gaussian-like blur to projected raster layers')
+      .describe('apply a Gaussian-like blur to a projected raster layer')
       .option('radius', {
-        describe: '[raster] blur amount in pixels, corresponding to 2 * sigma (e.g. 10 or 10px)'
+        DEFAULT: true,
+        type: 'distance',
+        describe: 'blur amount as pixels or a distance (e.g. 5px, 20m)'
       })
       .option('target', targetOpt);
 
@@ -35837,6 +36052,35 @@ ${svg}
         describe: 'rounding precision to apply before classification (e.g. 0.1)',
         type: 'number'
       });
+
+    parser.command('contours')
+      .describe('convert a raster layer to contour lines')
+      .option('interval', {
+        describe: 'spacing between contour levels (default is a round interval)',
+        type: 'number'
+      })
+      .option('levels', {
+        describe: 'explicit contour levels, instead of interval= (e.g. 0,100,500)',
+        type: 'numbers'
+      })
+      .option('base', {
+        describe: 'value to align interval= to (default is 0)',
+        type: 'number'
+      })
+      .option('band', {
+        describe: '[raster] band to read values from (default is 0)',
+        type: 'number'
+      })
+      .option('field', {
+        describe: 'name of field to hold contour values (default is "value")'
+      })
+      .option('no-smoothing', {
+        describe: 'skip smoothing away the one-pixel contour staircase',
+        type: 'flag'
+      })
+      .option('name', nameOpt)
+      .option('target', targetOpt)
+      .option('no-replace', noReplaceOpt);
 
     parser.command('dashlines')
       .describe('split lines into sections, with or without a gap')
@@ -41239,7 +41483,7 @@ ${svg}
   }
 
   function getRasterInterpretation$1(opts) {
-    return opts.raster_type || opts.rasterType || 'image';
+    return opts.interpretation || 'image';
   }
 
   async function selectGeoTIFFImportImage(tiff, sourceImage, opts) {
@@ -41667,7 +41911,7 @@ ${svg}
   }
 
   function getRasterInterpretation(opts) {
-    return opts.raster_type || opts.rasterType || 'image';
+    return opts.interpretation || 'image';
   }
 
   async function decodeImage(input, imageType) {
@@ -43011,6 +43255,9 @@ ${svg}
       copy.grid = Object.assign({}, raster.grid);
       if (raster.grid.samples) {
         copy.grid.samples = restoreRasterSamples(raster.grid.samples, raster.grid.pixelType);
+      }
+      if (raster.grid.coverage) {
+        copy.grid.coverage = new Uint8Array(BinArray.copyToArrayBuffer(raster.grid.coverage));
       }
     }
     if (raster.view) {
@@ -57090,6 +57337,16 @@ ${svg}
       derivation.type == 'categorical';
   }
 
+  // Whether uncovered output pixels should get the source's numeric nodata
+  // value instead of a fill color. This is a separate question from the
+  // resampling method: elevation data (raster-type=continuous) wants numeric
+  // nodata AND bilinear resampling, a combination that a single
+  // image/categorical switch could not express.
+  function rasterUsesNumericNodataFill(raster) {
+    return !!raster && raster.interpretation == 'continuous' ||
+      rasterAppearsCategorical(raster);
+  }
+
   function getProjectedRasterGridBBox(raster, srcCRS, destCRS, optsArg) {
     var opts = optsArg || {};
     var grid = getRasterGrid(raster);
@@ -57768,9 +58025,8 @@ ${svg}
   }
 
   function validateRasterGridForProjection(grid) {
-    var t = grid && grid.transform;
     if (!grid || !grid.samples || !grid.bbox) stop$1('Raster layer is missing required projection data');
-    if (t && (t[1] !== 0 || t[3] !== 0)) {
+    if (rasterGridIsRotated(grid)) {
       stop$1('Raster reprojection does not support rotated or skewed rasters');
     }
   }
@@ -57902,18 +58158,35 @@ ${svg}
     var color = getNoDataColor(raster, opts);
     var noData = grid.nodata;
     if (color) {
+      warnIfPaintingOverContinuousData(samples, grid, raster, opts);
       fillProjectedRasterColor(samples, bands, color);
       return;
     }
-    if (noData === null || noData === undefined || !isFinite(noData)) return;
+    if (noData === null || noData === undefined || !isFinite(noData)) {
+      if (raster && raster.interpretation == 'continuous') {
+        warnOnce('This raster has no nodata value, so uncovered pixels will be 0');
+      }
+      return;
+    }
     samples.fill(noData);
+  }
+
+  // Painting a color into a float grid means writing a color value into what
+  // are probably measurements. Flag it, since raster-type=continuous is
+  // usually what the user wanted.
+  function warnIfPaintingOverContinuousData(samples, grid, raster, opts) {
+    if (opts.nodata_color || opts.nodataColor) return; // explicit user choice
+    if (!rasterSamplesAreFloat(samples)) return;
+    if (grid.nodata === null || grid.nodata === undefined) return;
+    warnOnce('Filling uncovered pixels of a floating-point raster with a color. ' +
+      'Use -i raster-type=continuous to preserve its nodata value instead.');
   }
 
   function getNoDataColor(raster, opts) {
     var arg = opts.nodata_color || opts.nodataColor;
     var color;
     if (arg == null || arg === '') {
-      return rasterAppearsCategorical(raster) ? null : {r: 255, g: 255, b: 255, a: 1};
+      return rasterUsesNumericNodataFill(raster) ? null : {r: 255, g: 255, b: 255, a: 1};
     }
     if (String(arg).toLowerCase() == 'transparent') {
       return {r: 0, g: 0, b: 0, a: 0};
@@ -57938,7 +58211,8 @@ ${svg}
     }
   }
 
-  function rasterizeProjectedMesh(srcGrid, destGrid, mesh, sampleMethod) {
+  function rasterizeProjectedMesh(srcGrid, destGrid, mesh, sampleMethodArg) {
+    var sampleMethod = getRasterSamplerContext(srcGrid, destGrid, sampleMethodArg);
     var regionData = mesh.projectedRegions ?
       createProjectedRegionMask(
         destGrid, mesh.projectedRegions, mesh.fillRegionMask) :
@@ -58135,9 +58409,24 @@ ${svg}
     ];
   }
 
-  function copyRasterSample(srcGrid, destGrid, sx, sy, dx, dy, sampleMethod, wrapX) {
-    if (sampleMethod == 'bilinear') {
-      copyBilinearRasterSample(srcGrid, destGrid, sx, sy, dx, dy, wrapX);
+  // Per-projection sampling context, built once so the inner rasterizing loop
+  // does not repeat type or metadata tests for every output pixel.
+  function getRasterSamplerContext(srcGrid, destGrid, method) {
+    return {
+      bilinear: method == 'bilinear',
+      // Integer sample arrays truncate on assignment, so interpolated values
+      // have to be rounded explicitly. Float arrays must NOT be rounded, or
+      // elevation data loses its sub-unit precision.
+      round: !rasterSamplesAreFloat(destGrid.samples),
+      // Resolved once for the whole source grid; null means every pixel is
+      // valid and the sampler can skip validity testing altogether.
+      validity: getRasterValidityMask(srcGrid)
+    };
+  }
+
+  function copyRasterSample(srcGrid, destGrid, sx, sy, dx, dy, sampler, wrapX) {
+    if (sampler.bilinear) {
+      copyBilinearRasterSample(srcGrid, destGrid, sx, sy, dx, dy, sampler, wrapX);
     } else {
       copyNearestRasterSample(srcGrid, destGrid, sx, sy, dx, dy, wrapX);
     }
@@ -58150,7 +58439,9 @@ ${svg}
     var srcY = clamp$1(Math.floor(sy), 0, srcGrid.height - 1);
     var src = (srcY * srcGrid.width + srcX) * srcGrid.bands;
     var dest = (dy * destGrid.width + dx) * destGrid.bands;
-    if (!rasterSourcePixelIsCovered(srcGrid, srcX, srcY)) return;
+    // Nearest sampling copies a nodata sample through unchanged, rather than
+    // skipping it, so nodata areas survive a round trip.
+    if (!rasterPixelIsCovered(srcGrid, srcY * srcGrid.width + srcX)) return;
     for (var band = 0; band < srcGrid.bands; band++) {
       destGrid.samples[dest + band] = srcGrid.samples[src + band];
     }
@@ -58158,7 +58449,7 @@ ${svg}
     if (destGrid.coverage) destGrid.coverage[dy * destGrid.width + dx] = 1;
   }
 
-  function copyBilinearRasterSample(srcGrid, destGrid, sx, sy, dx, dy, wrapX) {
+  function copyBilinearRasterSample(srcGrid, destGrid, sx, sy, dx, dy, sampler, wrapX) {
     if (wrapX) sx = modulo(sx, srcGrid.width);
     var srcX = wrapX ?
       modulo(Math.floor(sx - 0.5), srcGrid.width) :
@@ -58174,77 +58465,79 @@ ${svg}
     var src01 = (srcY2 * srcGrid.width + srcX) * srcGrid.bands;
     var src11 = (srcY2 * srcGrid.width + srcX2) * srcGrid.bands;
     var dest = (dy * destGrid.width + dx) * destGrid.bands;
-    if (!srcGrid.coverage) {
-      copyBilinearRasterSampleFast(srcGrid, destGrid, src00, src10, src01, src11, dest, tx, ty);
+    if (!sampler.validity) {
+      copyBilinearRasterSampleFast(srcGrid, destGrid, src00, src10, src01, src11, dest, tx, ty, sampler.round);
       if (destGrid.coverage) destGrid.coverage[dy * destGrid.width + dx] = 1;
       return;
     }
-    if (copyBilinearRasterSampleWithCoverage(srcGrid, destGrid, srcX, srcY, srcX2, srcY2, src00, src10, src01, src11, dest, tx, ty)) {
+    if (copyBilinearRasterSampleChecked(srcGrid, destGrid, sampler.validity, srcX, srcY, srcX2, srcY2, src00, src10, src01, src11, dest, tx, ty, sampler.round)) {
       if (destGrid.coverage) destGrid.coverage[dy * destGrid.width + dx] = 1;
     }
   }
 
-  function copyBilinearRasterSampleFast(srcGrid, destGrid, src00, src10, src01, src11, dest, tx, ty) {
+  function copyBilinearRasterSampleFast(srcGrid, destGrid, src00, src10, src01, src11, dest, tx, ty, round) {
     if (srcGrid.bands == 3) {
-      copyBilinearRgbSample(srcGrid.samples, destGrid.samples, src00, src10, src01, src11, dest, tx, ty);
+      copyBilinearRgbSample(srcGrid.samples, destGrid.samples, src00, src10, src01, src11, dest, tx, ty, round);
     } else if (srcGrid.bands == 4) {
-      copyBilinearRgbaSample(srcGrid.samples, destGrid.samples, src00, src10, src01, src11, dest, tx, ty);
+      copyBilinearRgbaSample(srcGrid.samples, destGrid.samples, src00, src10, src01, src11, dest, tx, ty, round);
     } else {
-      copyBilinearGenericSample(srcGrid.samples, destGrid.samples, srcGrid.bands, src00, src10, src01, src11, dest, tx, ty);
+      copyBilinearGenericSample(srcGrid.samples, destGrid.samples, srcGrid.bands, src00, src10, src01, src11, dest, tx, ty, round);
     }
     if (destGrid.bands > srcGrid.bands) destGrid.samples[dest + 3] = 255;
   }
 
-  function copyBilinearRgbSample(src, destArr, src00, src10, src01, src11, dest, tx, ty) {
-    copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, 0, tx, ty);
-    copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, 1, tx, ty);
-    copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, 2, tx, ty);
+  function copyBilinearRgbSample(src, destArr, src00, src10, src01, src11, dest, tx, ty, round) {
+    copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, 0, tx, ty, round);
+    copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, 1, tx, ty, round);
+    copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, 2, tx, ty, round);
   }
 
-  function copyBilinearRgbaSample(src, destArr, src00, src10, src01, src11, dest, tx, ty) {
-    copyBilinearRgbSample(src, destArr, src00, src10, src01, src11, dest, tx, ty);
-    copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, 3, tx, ty);
+  function copyBilinearRgbaSample(src, destArr, src00, src10, src01, src11, dest, tx, ty, round) {
+    copyBilinearRgbSample(src, destArr, src00, src10, src01, src11, dest, tx, ty, round);
+    copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, 3, tx, ty, round);
   }
 
-  function copyBilinearGenericSample(src, destArr, bands, src00, src10, src01, src11, dest, tx, ty) {
+  function copyBilinearGenericSample(src, destArr, bands, src00, src10, src01, src11, dest, tx, ty, round) {
     for (var band = 0; band < bands; band++) {
-      copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, band, tx, ty);
+      copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, band, tx, ty, round);
     }
   }
 
-  function copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, band, tx, ty) {
+  function copyBilinearBand(src, destArr, src00, src10, src01, src11, dest, band, tx, ty, round) {
     var a = src[src00 + band] * (1 - tx) + src[src10 + band] * tx;
     var b = src[src01 + band] * (1 - tx) + src[src11 + band] * tx;
-    destArr[dest + band] = Math.round(a * (1 - ty) + b * ty);
+    var val = a * (1 - ty) + b * ty;
+    destArr[dest + band] = round ? Math.round(val) : val;
   }
 
-  function copyBilinearRasterSampleWithCoverage(srcGrid, destGrid, srcX, srcY, srcX2, srcY2, src00, src10, src01, src11, dest, tx, ty) {
-    var coords = [
-      [srcX, srcY, src00, (1 - tx) * (1 - ty)],
-      [srcX2, srcY, src10, tx * (1 - ty)],
-      [srcX, srcY2, src01, (1 - tx) * ty],
-      [srcX2, srcY2, src11, tx * ty]
-    ];
-    var total = 0;
-    var val, item;
+  // Bilinear sampling that skips invalid source pixels and renormalizes the
+  // remaining weights, so nodata is never blended into a real value. Validity
+  // is resolved once per output pixel rather than once per band.
+  function copyBilinearRasterSampleChecked(srcGrid, destGrid, validity, srcX, srcY, srcX2, srcY2, src00, src10, src01, src11, dest, tx, ty, round) {
+    var w00 = (1 - tx) * (1 - ty);
+    var w10 = tx * (1 - ty);
+    var w01 = (1 - tx) * ty;
+    var w11 = tx * ty;
+    var width = srcGrid.width;
+    var samples = srcGrid.samples;
+    var ok00 = w00 > 0 && validity[srcY * width + srcX] > 0;
+    var ok10 = w10 > 0 && validity[srcY * width + srcX2] > 0;
+    var ok01 = w01 > 0 && validity[srcY2 * width + srcX] > 0;
+    var ok11 = w11 > 0 && validity[srcY2 * width + srcX2] > 0;
+    var total = (ok00 ? w00 : 0) + (ok10 ? w10 : 0) + (ok01 ? w01 : 0) + (ok11 ? w11 : 0);
+    var val;
+    if (total <= 0) return false;
     for (var band = 0; band < srcGrid.bands; band++) {
       val = 0;
-      total = 0;
-      for (var i = 0; i < coords.length; i++) {
-        item = coords[i];
-        if (item[3] <= 0 || !rasterSourcePixelIsCovered(srcGrid, item[0], item[1])) continue;
-        val += srcGrid.samples[item[2] + band] * item[3];
-        total += item[3];
-      }
-      if (total <= 0) return false;
-      destGrid.samples[dest + band] = Math.round(val / total);
+      if (ok00) val += samples[src00 + band] * w00;
+      if (ok10) val += samples[src10 + band] * w10;
+      if (ok01) val += samples[src01 + band] * w01;
+      if (ok11) val += samples[src11 + band] * w11;
+      val /= total;
+      destGrid.samples[dest + band] = round ? Math.round(val) : val;
     }
     if (destGrid.bands > srcGrid.bands) destGrid.samples[dest + 3] = 255;
     return true;
-  }
-
-  function rasterSourcePixelIsCovered(grid, x, y) {
-    return !grid.coverage || grid.coverage[y * grid.width + x] > 0;
   }
 
   function timeStart(timing, name) {
@@ -58289,6 +58582,33 @@ ${svg}
     getProjectedRasterMeshBBox: getProjectedRasterMeshBBox,
     projectRasterGridForward: projectRasterGridForward
   });
+
+  /*
+   * Post-projection repair for projections whose layout wraps at a rectangular
+   * frame (currently the Lee tetrahedral pair, the only ones that publish
+   * frame_bounds).
+   *
+   * Why this is needed: such a projection is cut along a curved seam traced in
+   * geographic space, and the seam mask splits any path that crosses it. But
+   * without -densify, a path segment is a straight chord in lon/lat, and a chord
+   * between two vertices either side of the seam can pass on the wrong side of
+   * the curve entirely. The projected path then leaves one edge of the frame and
+   * re-enters at the opposite edge, so the ring closes with a long run along a
+   * frame side, joining two halves that belong on opposite sides of the map.
+   * Densified input curves with the seam and is cut normally, which is why the
+   * artifact only appears without that option.
+   *
+   * The repair looks for a ring that meets the same frame side in two or more
+   * separate runs and splits it there. A ring that legitimately touches a frame
+   * side does so once.
+   *
+   * Note that the jump threshold in getFrameSide is coupled to the resolution of
+   * the seam trace: it recognizes a spurious connection as a single long segment
+   * lying on a frame side. Coarsening the trace breaks the connection into a
+   * chain of shorter segments that fall below the threshold and are missed, so
+   * the two need to be changed together.
+   */
+
 
   function splitPolygonFrameChords(dataset, bounds) {
     var editor = new DatasetEditor(dataset);
@@ -62045,6 +62365,529 @@ ${svg}
     // message('[comment]', opts.message);
   }; // no-op, so -comment doesn't trigger a parsing error
 
+  // Trace contour lines (isolines) from a raster layer's working samples using
+  // marching squares.
+  //
+  // Samples are treated as point measurements at pixel centers, so a W x H grid
+  // contours over a lattice of W x H values and (W-1) x (H-1) cells. Contour
+  // vertices therefore span from the first pixel center to the last, half a
+  // pixel inside the grid bbox. This matches gdal_contour.
+
+
+  var MAX_CONTOUR_LEVELS = 2000;
+  var TARGET_LEVEL_COUNT = 15;
+
+  // Marching squares traces a staircase with treads one pixel wide, so smoothing
+  // at one pixel is what removes the stepping. Measured against an analytic cone
+  // quantized to whole meters (as elevation models usually are), one pixel gives
+  // the lowest deviation from the true contour: 0.16 px, against 0.29 px
+  // unsmoothed and 0.18 px at 1.5 px. On unquantized float data, where there is
+  // no staircase to remove, the cost is under 0.1 px.
+  var SMOOTHING_PIXELS = 1;
+
+  // A degree of longitude vanishes at the poles; keep the implied pixel width
+  // from collapsing to zero there.
+  var MIN_LATITUDE_SCALE = 0.05;
+
+  // Cell corners, and the edges between them:
+  //
+  //        edge 0
+  //   c0 --------- c1
+  //   |             |
+  //   | edge 3      | edge 1
+  //   |             |
+  //   c3 --------- c2
+  //        edge 2
+  //
+  // Corner bits: 1 = c0, 2 = c1, 4 = c2, 8 = c3. A corner is set when its value
+  // is >= the contour level.
+  //
+  // Each entry is the pair of edges a contour segment crosses, directed so that
+  // the above-level side is always on the same hand. Consistent orientation is
+  // what lets segments be stitched together by edge id alone: a crossing is the
+  // exit of one cell and the entry of its neighbor.
+  var CONTOUR_CASES = [
+    null,     // 0: none above
+    [3, 0],   // 1: c0
+    [0, 1],   // 2: c1
+    [3, 1],   // 3: c0 c1
+    [1, 2],   // 4: c2
+    null,     // 5: c0 c2 -- saddle
+    [0, 2],   // 6: c1 c2
+    [3, 2],   // 7: c0 c1 c2
+    [2, 3],   // 8: c3
+    [2, 0],   // 9: c0 c3
+    null,     // 10: c1 c3 -- saddle
+    [2, 1],   // 11: c0 c1 c3
+    [1, 3],   // 12: c2 c3
+    [1, 0],   // 13: c0 c2 c3
+    [0, 3],   // 14: c1 c2 c3
+    null      // 15: all above
+  ];
+
+  // A saddle cell has crossings on all four edges, which can be paired two ways.
+  // The cell-center average breaks the tie: when the center is above the level,
+  // the two above-level corners are joined through the middle of the cell and
+  // the below-level corners are cut off separately.
+  var SADDLE_C0_C2_JOINED = [[1, 0], [3, 2]];
+  var SADDLE_C0_C2_SPLIT = [[3, 0], [1, 2]];
+  var SADDLE_C1_C3_JOINED = [[0, 3], [2, 1]];
+  var SADDLE_C1_C3_SPLIT = [[0, 1], [2, 3]];
+
+  function getRasterContourLines(raster, opts) {
+    var grid = getRasterGrid(raster);
+    var band, levels;
+    validateRasterGridForContours(grid);
+    band = getContourBand(grid, opts);
+    levels = getContourLevels(grid, band, opts);
+    return {
+      levels: levels,
+      lines: traceRasterContours(grid, band, levels)
+    };
+  }
+
+  // Auto-selected smoothing interval for traced contours, returned the way
+  // -smooth reads a plain distance= number: as meters when the CRS is known, and
+  // as raw coordinate units when it is not.
+  function getContourSmoothingDistance(grid, crs) {
+    var bbox = grid.bbox;
+    var dx = Math.abs(bbox[2] - bbox[0]) / grid.width;
+    var dy = Math.abs(bbox[3] - bbox[1]) / grid.height;
+    var lat;
+    if (crs && crs.is_latlong) {
+      lat = (bbox[1] + bbox[3]) / 2;
+      dx = degreesToMeters(dx) * Math.max(Math.cos(lat * D2R$8), MIN_LATITUDE_SCALE);
+      dy = degreesToMeters(dy);
+    } else if (crs && crs.to_meter > 0) {
+      dx *= crs.to_meter;
+      dy *= crs.to_meter;
+    }
+    // Geometric mean, so a grid with non-square pixels gets an interval between
+    // its two resolutions rather than one axis winning.
+    return Math.sqrt(dx * dy) * SMOOTHING_PIXELS;
+  }
+
+  function validateRasterGridForContours(grid) {
+    if (!grid || !grid.samples || !grid.bbox) {
+      stop$1('Raster layer is missing required grid data');
+    }
+    if (rasterGridIsRotated(grid)) {
+      stop$1('Tracing contours from a rotated or skewed raster is not supported');
+    }
+    if (grid.width < 2 || grid.height < 2) {
+      stop$1('Raster layer is too small to contour (needs to be at least 2x2 pixels)');
+    }
+  }
+
+  function getContourBand(grid, opts) {
+    var band = opts && 'band' in opts ? opts.band : 0;
+    if (!(band >= 0) || band !== Math.floor(band) || band >= grid.bands) {
+      stop$1('Invalid band=' + band + '; this raster has ' + grid.bands +
+        (grid.bands == 1 ? ' band' : ' bands'));
+    }
+    return band;
+  }
+
+  function getContourLevels(grid, band, opts) {
+    var levels = opts && opts.levels ?
+      getExplicitLevels(opts.levels) :
+      getIntervalLevels(getRasterSampleRange(grid, band), opts || {});
+    if (levels.length > MAX_CONTOUR_LEVELS) {
+      stop$1('Contouring would generate ' + levels.length + ' levels; the limit is ' +
+        MAX_CONTOUR_LEVELS + '. Use a larger interval= or an explicit levels= list.');
+    }
+    return levels;
+  }
+
+  function getExplicitLevels(arg) {
+    var levels = [];
+    arg.forEach(function(val) {
+      if (typeof val != 'number' || !isFinite(val)) {
+        stop$1('Invalid contour level:', val);
+      }
+      if (levels.indexOf(val) == -1) levels.push(val);
+    });
+    return levels.sort(ascending);
+  }
+
+  function getIntervalLevels(range, opts) {
+    var base = 'base' in opts ? opts.base : 0;
+    var levels = [];
+    var interval, k, level;
+    // Only fall back to an automatic interval when none was given: a bad
+    // interval= should be reported, not quietly replaced.
+    if (opts.interval === null || opts.interval === undefined) {
+      interval = getAutoContourInterval(range);
+    } else {
+      interval = opts.interval;
+      if (!(interval > 0) || !isFinite(interval)) {
+        stop$1('Contour interval= must be a positive number');
+      }
+    }
+    if (!isFinite(base)) {
+      stop$1('Contour base= must be a number');
+    }
+    // A level at exactly the data minimum has no cell to cross, because every
+    // corner counts as above it.
+    if (!(range.max > range.min)) return levels;
+    k = Math.ceil((range.min - base) / interval);
+    while (levels.length <= MAX_CONTOUR_LEVELS) {
+      level = cleanLevelValue(base + k * interval);
+      if (level > range.max) break;
+      if (level > range.min) levels.push(level);
+      k++;
+    }
+    return levels;
+  }
+
+  // Choose a round interval that divides the data range into roughly
+  // TARGET_LEVEL_COUNT steps.
+  function getAutoContourInterval(range) {
+    var span = range.max - range.min;
+    var raw, magnitude, normalized;
+    if (!(span > 0) || !isFinite(span)) return 1;
+    raw = span / TARGET_LEVEL_COUNT;
+    magnitude = Math.pow(10, Math.floor(Math.log(raw) / Math.LN10));
+    normalized = raw / magnitude;
+    return (normalized >= 5 ? 5 : normalized >= 2 ? 2 : 1) * magnitude;
+  }
+
+  // Repeated addition of a fractional interval accumulates error that shows up
+  // in output field values, e.g. 0.30000000000000004.
+  function cleanLevelValue(value) {
+    return value === 0 ? 0 : Number(value.toPrecision(12));
+  }
+
+  function getRasterSampleRange(grid, band) {
+    var samples = grid.samples;
+    var bands = grid.bands;
+    var valid = getRasterValidityMask(grid);
+    var n = grid.width * grid.height;
+    var min = Infinity;
+    var max = -Infinity;
+    var v, i;
+    for (i = 0; i < n; i++) {
+      if (valid && !valid[i]) continue;
+      v = samples[i * bands + band];
+      if (v !== v) continue; // NaN, used as a nodata value by some float rasters
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    return {min: min, max: max};
+  }
+
+  function traceRasterContours(grid, band, levels) {
+    var segments = collectContourSegments(grid, band, levels);
+    var toMapXY = getLatticeToMapTransform(grid);
+    var hCount = (grid.width - 1) * grid.height;
+    var lines = [];
+    segments.forEach(function(levelSegments, i) {
+      stitchContourSegments(levelSegments).forEach(function(path) {
+        var coords = getPathCoords(path, grid, band, levels[i], hCount, toMapXY);
+        if (coords.length > 1) {
+          lines.push({value: levels[i], coords: coords});
+        }
+      });
+    });
+    return lines;
+  }
+
+  // Visit each cell once and march it for every level that falls inside its
+  // value range, rather than scanning the whole grid once per level.
+  function collectContourSegments(grid, band, levels) {
+    var W = grid.width;
+    var H = grid.height;
+    var bands = grid.bands;
+    var samples = grid.samples;
+    var hCount = (W - 1) * H;
+    var valid = getRasterValidityMask(grid);
+    var rowStride = W * bands;
+    var out = levels.map(function() { return {from: [], to: []}; });
+    var cx, cy, pixelId, off, v0, v1, v2, v3, min, max, i;
+    if (levels.length === 0) return out;
+    for (cy = 0; cy < H - 1; cy++) {
+      for (cx = 0; cx < W - 1; cx++) {
+        pixelId = cy * W + cx;
+        if (valid && (!valid[pixelId] || !valid[pixelId + 1] ||
+            !valid[pixelId + W] || !valid[pixelId + W + 1])) continue;
+        off = pixelId * bands + band;
+        v0 = samples[off];
+        v1 = samples[off + bands];
+        v3 = samples[off + rowStride];
+        v2 = samples[off + rowStride + bands];
+        if (v0 !== v0 || v1 !== v1 || v2 !== v2 || v3 !== v3) continue; // NaN
+        min = v0 < v1 ? v0 : v1;
+        if (v2 < min) min = v2;
+        if (v3 < min) min = v3;
+        max = v0 > v1 ? v0 : v1;
+        if (v2 > max) max = v2;
+        if (v3 > max) max = v3;
+        // A level crosses the cell when min < level <= max, which matches the
+        // >= test that classifies each corner.
+        for (i = firstLevelAbove(levels, min); i < levels.length && levels[i] <= max; i++) {
+          addCellSegments(out[i], levels[i], v0, v1, v2, v3, cx, cy, W, hCount);
+        }
+      }
+    }
+    return out;
+  }
+
+  function firstLevelAbove(levels, value) {
+    var lo = 0;
+    var hi = levels.length;
+    var mid;
+    while (lo < hi) {
+      mid = (lo + hi) >> 1;
+      if (levels[mid] > value) hi = mid;
+      else lo = mid + 1;
+    }
+    return lo;
+  }
+
+  function addCellSegments(dest, level, v0, v1, v2, v3, cx, cy, W, hCount) {
+    var caseId = (v0 >= level ? 1 : 0) | (v1 >= level ? 2 : 0) |
+      (v2 >= level ? 4 : 0) | (v3 >= level ? 8 : 0);
+    var pairs, pair;
+    if (caseId === 5 || caseId === 10) {
+      pairs = getSaddlePairs(caseId, level, v0, v1, v2, v3);
+      addSegment(dest, pairs[0], cx, cy, W, hCount);
+      addSegment(dest, pairs[1], cx, cy, W, hCount);
+      return;
+    }
+    pair = CONTOUR_CASES[caseId];
+    if (pair) addSegment(dest, pair, cx, cy, W, hCount);
+  }
+
+  function getSaddlePairs(caseId, level, v0, v1, v2, v3) {
+    var centerAbove = (v0 + v1 + v2 + v3) / 4 >= level;
+    if (caseId === 5) {
+      return centerAbove ? SADDLE_C0_C2_JOINED : SADDLE_C0_C2_SPLIT;
+    }
+    return centerAbove ? SADDLE_C1_C3_JOINED : SADDLE_C1_C3_SPLIT;
+  }
+
+  function addSegment(dest, pair, cx, cy, W, hCount) {
+    dest.from.push(getCellEdgeId(pair[0], cx, cy, W, hCount));
+    dest.to.push(getCellEdgeId(pair[1], cx, cy, W, hCount));
+  }
+
+  // Edges are numbered so that neighboring cells agree on the id of the edge
+  // they share: horizontal edges run left to right along a lattice row,
+  // vertical edges run top to bottom down a lattice column.
+  function getCellEdgeId(edge, cx, cy, W, hCount) {
+    if (edge === 0) return cy * (W - 1) + cx;           // top
+    if (edge === 1) return hCount + cy * W + cx + 1;    // right
+    if (edge === 2) return (cy + 1) * (W - 1) + cx;     // bottom
+    return hCount + cy * W + cx;                        // left
+  }
+
+  // Join directed segments end to end. Because every segment is oriented the
+  // same way relative to the contour, each edge is the start of at most one
+  // segment and the end of at most one, so following the chain is unambiguous.
+  function stitchContourSegments(segments) {
+    var from = segments.from;
+    var to = segments.to;
+    var next = new Map();
+    var hasIncoming = new Set();
+    var visited = new Set();
+    var paths = [];
+    var i, ring;
+    for (i = 0; i < from.length; i++) {
+      next.set(from[i], to[i]);
+      hasIncoming.add(to[i]);
+    }
+    // Trace open contours first, starting from the edges nothing leads into, so
+    // that a contour running between two grid boundaries is not entered part
+    // way along and split in two.
+    for (i = 0; i < from.length; i++) {
+      if (hasIncoming.has(from[i]) || visited.has(from[i])) continue;
+      paths.push(followContour(from[i], next, visited));
+    }
+    // Anything left over forms a closed ring.
+    for (i = 0; i < from.length; i++) {
+      if (visited.has(from[i])) continue;
+      ring = followContour(from[i], next, visited);
+      ring.push(ring[0]);
+      paths.push(ring);
+    }
+    return paths;
+  }
+
+  function followContour(startEdge, next, visited) {
+    var path = [];
+    var edge = startEdge;
+    while (edge !== undefined && !visited.has(edge)) {
+      visited.add(edge);
+      path.push(edge);
+      edge = next.get(edge);
+    }
+    return path;
+  }
+
+  function getPathCoords(path, grid, band, level, hCount, toMapXY) {
+    var coords = [];
+    var prev = null;
+    var point, xy;
+    for (var i = 0; i < path.length; i++) {
+      point = getEdgeCrossing(grid, band, level, path[i], hCount);
+      xy = toMapXY(point[0], point[1]);
+      // A corner value exactly equal to the level puts two crossings in the
+      // same place; keeping both would emit zero-length segments.
+      if (prev && xy[0] === prev[0] && xy[1] === prev[1]) continue;
+      coords.push(xy);
+      prev = xy;
+    }
+    return coords;
+  }
+
+  // Returns the crossing point in lattice coordinates. The result depends only
+  // on the edge and the level, so both cells sharing an edge compute the same
+  // point, down to the last bit.
+  function getEdgeCrossing(grid, band, level, edgeId, hCount) {
+    var W = grid.width;
+    var bands = grid.bands;
+    var samples = grid.samples;
+    var x, y, v0, v1;
+    if (edgeId < hCount) {
+      y = Math.floor(edgeId / (W - 1));
+      x = edgeId - y * (W - 1);
+      v0 = samples[(y * W + x) * bands + band];
+      v1 = samples[(y * W + x + 1) * bands + band];
+      return [x + interpolateCrossing(level, v0, v1), y];
+    }
+    edgeId -= hCount;
+    y = Math.floor(edgeId / W);
+    x = edgeId - y * W;
+    v0 = samples[(y * W + x) * bands + band];
+    v1 = samples[((y + 1) * W + x) * bands + band];
+    return [x, y + interpolateCrossing(level, v0, v1)];
+  }
+
+  function interpolateCrossing(level, v0, v1) {
+    var t;
+    if (v1 === v0) return 0.5;
+    t = (level - v0) / (v1 - v0);
+    return t < 0 ? 0 : t > 1 ? 1 : t;
+  }
+
+  // Lattice coordinates are indexed from the center of the first pixel, not the
+  // corner of the grid.
+  function getLatticeToMapTransform(grid) {
+    var bbox = grid.bbox;
+    var dx = (bbox[2] - bbox[0]) / grid.width;
+    var dy = (bbox[3] - bbox[1]) / grid.height;
+    var x0 = bbox[0] + dx / 2;
+    var y0 = bbox[3] - dy / 2;
+    return function(col, row) {
+      return [x0 + col * dx, y0 - row * dy];
+    };
+  }
+
+  function ascending(a, b) {
+    return a - b;
+  }
+
+  var RasterContours = /*#__PURE__*/Object.freeze({
+    __proto__: null,
+    getContourBand: getContourBand,
+    getContourLevels: getContourLevels,
+    getContourSmoothingDistance: getContourSmoothingDistance,
+    getRasterContourLines: getRasterContourLines,
+    getRasterSampleRange: getRasterSampleRange,
+    traceRasterContours: traceRasterContours,
+    validateRasterGridForContours: validateRasterGridForContours
+  });
+
+  var DEFAULT_CONTOUR_FIELD = 'value';
+
+  cmd.contours = function(targetLyr, targetDataset, opts) {
+    var field = opts.field || DEFAULT_CONTOUR_FIELD;
+    var contours, dataset, outputLayers;
+    if (!layerHasRaster(targetLyr)) {
+      stop$1('Command requires a raster layer');
+    }
+    // Contours come from the layer's working samples, so they reflect any
+    // earlier edits (e.g. -blur, -clip) rather than the original source pixels.
+    contours = getRasterContourLines(targetLyr.raster, opts);
+    message(getContoursMessage(contours));
+    if (contours.lines.length === 0) {
+      return [createEmptyContourLayer(targetLyr, opts)];
+    }
+    dataset = importGeoJSON(getContoursGeoJSON(contours.lines, field), {});
+    setDatasetCrsInfo(dataset, getDatasetCrsInfo(targetDataset));
+    // Smooth before merging, so that only the contour arcs are affected. Merging
+    // first would put them in the same ArcCollection as any vector layer already
+    // in the target dataset, and -smooth rewrites every arc it is given.
+    if (!opts.no_smoothing) {
+      smoothContourDataset(dataset, getRasterGrid(targetLyr.raster));
+    }
+    outputLayers = mergeDatasetsIntoDataset(targetDataset, [dataset]);
+    setOutputLayerName(outputLayers[0], targetLyr, 'contours', opts);
+    return outputLayers;
+  };
+
+  function smoothContourDataset(dataset, grid) {
+    var crs = getDatasetCRS(dataset);
+    var distance = getContourSmoothingDistance(grid, crs);
+    if (!(distance > 0)) {
+      message('Skipped contour smoothing: unable to determine the pixel size');
+      return;
+    }
+    message('Smoothing contours with an auto-selected interval of ' +
+      formatSmoothingDistance(distance, crs) + ' (one pixel)');
+    cmd.smooth(dataset, {
+      distance: distance,
+      // The contour staircase is an artifact, so there are no real corners to
+      // preserve and no sub-pixel detail worth prefiltering out.
+      no_corners: true,
+      no_prefilter: true
+    }, dataset.layers);
+  }
+
+  function formatSmoothingDistance(distance, crs) {
+    var rounded = Number(distance.toPrecision(3));
+    return crs ? rounded + 'm' : String(rounded);
+  }
+
+  function getContoursGeoJSON(lines, field) {
+    return {
+      type: 'FeatureCollection',
+      features: lines.map(function(line) {
+        var properties = {};
+        properties[field] = line.value;
+        return {
+          type: 'Feature',
+          properties: properties,
+          geometry: {
+            type: 'LineString',
+            coordinates: line.coords
+          }
+        };
+      })
+    };
+  }
+
+  function createEmptyContourLayer(targetLyr, opts) {
+    var lyr = {
+      geometry_type: 'polyline',
+      shapes: [],
+      data: new DataTable([])
+    };
+    setOutputLayerName(lyr, targetLyr, 'contours', opts);
+    return lyr;
+  }
+
+  function getContoursMessage(contours) {
+    var levels = contours.levels;
+    if (levels.length === 0) {
+      return 'No contour levels fall inside the range of this raster';
+    }
+    return 'Traced ' + contours.lines.length + ' contour ' +
+      (contours.lines.length == 1 ? 'line' : 'lines') + ' at ' + levels.length +
+      (levels.length == 1 ? ' level' : ' levels') +
+      ' (' + levels[0] + ' to ' + levels[levels.length - 1] + ')';
+  }
+
   cmd.dashlines = function(lyr, dataset, opts) {
     var crs = getDatasetCRS(dataset);
     var defs = getStashedVar('defs');
@@ -63593,10 +64436,18 @@ ${svg}
   //
   cmd.dissolve = function(arg1, arg2, opts) {
     if (Array.isArray(arg1)) {
+      arg1.forEach(requireDissolvableLayer);
       return dissolveLayers(arg1, arg2, opts);
     }
+    requireDissolvableLayer(arg1);
     return dissolveSingleLayer(arg1, arg2, opts);
   };
+
+  // Without this guard a raster layer takes the tabular branch of
+  // dissolveOneLayer() and is replaced by a geometry-less aggregate.
+  function requireDissolvableLayer(lyr) {
+    requireNotRasterLayer(lyr, 'Raster layers cannot be dissolved');
+  }
 
   function dissolveLayers(layers, dataset, optsArg) {
     var opts = utils.extend({}, optsArg);
@@ -72671,7 +73522,7 @@ ${svg}
     }
     return [
       'affine', 'alpha-shapes', 'blur', 'buffer', 'calc', 'check-geometry',
-      'classify', 'clean', 'clip', 'cluster', 'dashlines', 'data-fill',
+      'classify', 'clean', 'clip', 'cluster', 'contours', 'dashlines', 'data-fill',
       'densify', 'dissolve', 'dissolve2', 'divide', 'dots', 'each', 'erase',
       'explode', 'filter',
       'filter-detail', 'filter-fields', 'filter-geom', 'filter-islands',
@@ -72847,6 +73698,9 @@ ${svg}
 
       // } else if (name == 'comment') {
       //   // no-op
+
+      } else if (name == 'contours') {
+        outputLayers = applyCommandToEachLayer(cmd.contours, targetLayers, targetDataset, opts);
 
       } else if (name == 'dashlines') {
         applyCommandToEachLayer(cmd.dashlines, targetLayers, targetDataset, opts);
@@ -73332,7 +74186,7 @@ ${svg}
     return name == 'rectangle' || name == 'rectangles' || name == 'filter' && opts.cleanup;
   }
 
-  var version = "0.7.48";
+  var version = "0.7.49";
 
   // Parse command line args into commands and run them
   // Function takes an optional Node-style callback. A Promise is returned if no callback is given.
@@ -73996,10 +74850,10 @@ ${svg}
 
   var BOX_BLUR_PASSES = 3;
 
-  function blurRasterGrid(raster, optsArg) {
+  function blurRasterGrid(raster, optsArg, crs) {
     var opts = optsArg || {};
     var grid = getRasterGrid(raster);
-    var radius = getBlurRadius(opts);
+    var radius = getBlurRadius(grid, opts, crs);
     var sigma = radius / 2;
     var boxes = getGaussianBoxWidths(sigma, BOX_BLUR_PASSES);
     var samples = new grid.samples.constructor(grid.samples.length);
@@ -74023,18 +74877,46 @@ ${svg}
     });
   }
 
-  function getBlurRadius(opts) {
+  // The blur kernel works in pixels, but the radius may be given either in pixels
+  // (a bare number or a px suffix) or as a real-world distance (e.g. 20m), which
+  // is converted using the size of a pixel on the ground.
+  function getBlurRadius(grid, opts, crs) {
     var arg = opts.radius;
-    var radius;
-    if (arg == null || arg === '') stop$1('Missing blur radius');
-    if (typeof arg == 'string') {
-      arg = arg.trim().replace(/px$/i, '');
+    var measure, radius;
+    if (arg === null || arg === undefined || arg === '') {
+      stop$1('Missing blur radius');
     }
-    radius = Number(arg);
+    if (typeof arg == 'string' && /px$/i.test(arg.trim())) {
+      radius = Number(arg.trim().replace(/px$/i, ''));
+    } else {
+      measure = parseMeasure(arg);
+      radius = measure.units ?
+        convertDistanceToPixels(arg, grid, crs) :
+        measure.value;
+    }
     if (!(radius > 0 && isFinite(radius))) {
-      stop$1('Expected radius= to be a positive pixel value');
+      stop$1('Expected a positive blur radius, received:', arg);
     }
     return radius;
+  }
+
+  function convertDistanceToPixels(arg, grid, crs) {
+    // convertIntervalParam() gives the distance in the coordinate units of the
+    // dataset, which is what the grid's bbox is measured in.
+    return convertIntervalParam(arg, crs) / getPixelSize(grid);
+  }
+
+  // Blurring is isotropic in pixel space, so a distance has to map to a single
+  // pixel count; use the geometric mean when the pixels are not square.
+  function getPixelSize(grid) {
+    var bbox = grid.bbox;
+    var dx, dy;
+    if (!bbox) {
+      stop$1('Raster layer is missing the georeferencing needed to blur by a distance');
+    }
+    dx = Math.abs(bbox[2] - bbox[0]) / grid.width;
+    dy = Math.abs(bbox[3] - bbox[1]) / grid.height;
+    return Math.sqrt(dx * dy);
   }
 
   function validateBlurGrid(grid) {
@@ -74185,8 +75067,8 @@ ${svg}
 
   function copyUnpremultipliedChannelToBand(channel, alpha, samples, grid, band) {
     var bands = grid.bands;
-    var isFloat = samples instanceof Float32Array || samples instanceof Float64Array;
-    var range = isFloat ? null : getTypedArrayRange(samples);
+    var isFloat = rasterSamplesAreFloat(samples);
+    var range = isFloat ? null : getSampleArrayRange(samples);
     var maxAlpha = getAlphaMaxValue(samples);
     var val, a;
     for (var i = 0, j = band; i < channel.length; i++, j += bands) {
@@ -74198,8 +75080,8 @@ ${svg}
 
   function copyChannelToBand(channel, samples, grid, band) {
     var bands = grid.bands;
-    var isFloat = samples instanceof Float32Array || samples instanceof Float64Array;
-    var range = isFloat ? null : getTypedArrayRange(samples);
+    var isFloat = rasterSamplesAreFloat(samples);
+    var range = isFloat ? null : getSampleArrayRange(samples);
     var val;
     for (var i = 0, j = band; i < channel.length; i++, j += bands) {
       val = channel[i];
@@ -74208,62 +75090,47 @@ ${svg}
   }
 
   function getRasterBlurWeights(grid) {
-    if (!grid.coverage && grid.nodata == null) return null;
+    if (!rasterGridHasInvalidPixels(grid)) return null;
     var weights = new Float32Array(grid.width * grid.height);
     for (var i = 0; i < weights.length; i++) {
-      weights[i] = rasterBlurPixelIsValid(grid, i) ? 1 : 0;
+      weights[i] = rasterPixelIsValid(grid, i) ? 1 : 0;
     }
     return weights;
   }
 
-  function rasterBlurPixelIsValid(grid, pixelId) {
-    var off, n;
-    if (grid.coverage && grid.coverage[pixelId] === 0) return false;
-    if (grid.nodata == null) return true;
-    off = pixelId * grid.bands;
-    n = Math.min(grid.bands, 3);
-    for (var i = 0; i < n; i++) {
-      if (grid.samples[off + i] != grid.nodata) return true;
-    }
-    return false;
-  }
-
   function getAlphaMaxValue(samples) {
-    if (samples instanceof Float32Array || samples instanceof Float64Array) return 1;
-    return getTypedArrayRange(samples).max;
-  }
-
-  function getTypedArrayRange(arr) {
-    if (arr instanceof Uint8Array || arr instanceof Uint8ClampedArray) return {min: 0, max: 255};
-    if (arr instanceof Int8Array) return {min: -128, max: 127};
-    if (arr instanceof Uint16Array) return {min: 0, max: 65535};
-    if (arr instanceof Int16Array) return {min: -32768, max: 32767};
-    if (arr instanceof Uint32Array) return {min: 0, max: 4294967295};
-    if (arr instanceof Int32Array) return {min: -2147483648, max: 2147483647};
-    return {min: -Infinity, max: Infinity};
+    if (rasterSamplesAreFloat(samples)) return 1;
+    return getSampleArrayRange(samples).max;
   }
 
   function clamp(val, min, max) {
     return val < min ? min : val > max ? max : val;
   }
 
+  var RasterBlur = /*#__PURE__*/Object.freeze({
+    __proto__: null,
+    blurRasterGrid: blurRasterGrid,
+    getBlurRadius: getBlurRadius
+  });
+
   cmd.blur = blurRasterLayers;
 
   function blurRasterLayers(layers, dataset, optsArg) {
     var opts = optsArg || {};
+    var crs = getDatasetCRS(dataset);
     requireProjectedDataset(dataset);
     layers.forEach(function(lyr) {
       if (!layerHasRaster(lyr)) {
         stop$1('Command requires a raster layer');
       }
-      blurRasterLayer(lyr, opts);
+      blurRasterLayer(lyr, opts, crs);
     });
   }
 
-  function blurRasterLayer(lyr, opts) {
+  function blurRasterLayer(lyr, opts, crs) {
     var raster = lyr.raster;
     noteLayerWillChange(lyr, {operation: 'blurRasterLayer', unit: 'raster'});
-    raster.grid = blurRasterGrid(raster, opts);
+    raster.grid = blurRasterGrid(raster, opts, crs);
     raster.view = raster.view || {};
     delete raster.view.scalingStats;
     if (runningInBrowser()) {
@@ -75167,6 +76034,7 @@ ${svg}
     Catalog$1,
     ClipErase,
     ClipPoints,
+    ColorUtils,
     Colorizer,
     CustomProjections,
     Dymaxion,
@@ -75214,6 +76082,9 @@ ${svg}
     Lines,
     Logging,
     Profile,
+    RasterBlur,
+    RasterContours,
+    RasterGrid,
     RasterReprojection,
     RasterUtils,
     Merging,

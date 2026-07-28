@@ -726,6 +726,16 @@ body.is-home .docs-article { padding: 32px 40px 40px; }
   border-radius: 4px;
 }
 
+/* Screenshots of menus and panels. Captured on a high-density display, so the
+ * markup gives each one a width attribute of half its pixel width, to show it
+ * at the size it appears in the app. No frame: they carry their own. */
+.docs-article img.ui-screenshot {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 4px 0 16px;
+}
+
 /* What's-new entries */
 .whats-new-entry {
   border-left: 3px solid #1385B7;

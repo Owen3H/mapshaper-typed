@@ -4544,6 +4544,77 @@
     return this;
   };
 
+  // Low-level access to raster grid samples, shared by the code that reads or
+  // rewrites pixels (-proj, -blur, clipping and preview rendering). These used
+  // to be reimplemented per module, which let the nodata and coverage rules
+  // drift apart.
+  //
+  // Samples are band-interleaved: pixel i occupies
+  // samples[i * bands] through samples[i * bands + bands - 1].
+
+  // A pixel is nodata only when every one of its color-carrying bands matches
+  // the nodata value. An alpha band is ignored, so a transparent pixel whose
+  // color channels hold real values is still treated as data.
+  function samplesAreNodataAtOffset(samples, offset, bands, nodata) {
+    var n = Math.min(bands, 3);
+    if (nodata === null || nodata === undefined) return false;
+    for (var i = 0; i < n; i++) {
+      if (samples[offset + i] != nodata) return false;
+    }
+    return true;
+  }
+
+  function rasterPixelIsNodata(grid, pixelId) {
+    return samplesAreNodataAtOffset(grid.samples, pixelId * grid.bands, grid.bands, grid.nodata);
+  }
+
+  // The coverage mask is set by reprojection to record which output pixels
+  // received source content, independently of the nodata fill value.
+  function rasterPixelIsCovered(grid, pixelId) {
+    return !grid.coverage || grid.coverage[pixelId] > 0;
+  }
+
+  function rasterPixelIsValid(grid, pixelId) {
+    return rasterPixelIsCovered(grid, pixelId) && !rasterPixelIsNodata(grid, pixelId);
+  }
+
+  // False when every pixel is known to be valid, so callers can skip
+  // per-pixel validity testing entirely.
+  function rasterGridHasInvalidPixels(grid) {
+    return !!grid.coverage || grid.nodata !== null && grid.nodata !== undefined;
+  }
+
+  // One byte per pixel, so that code sampling a grid repeatedly can test
+  // validity with a single lookup instead of re-reading every band. Returns
+  // the coverage mask itself when there is no nodata value to fold in, and
+  // null when every pixel is valid.
+  function getRasterValidityMask(grid) {
+    var n = grid.width * grid.height;
+    var mask, i;
+    if (grid.nodata === null || grid.nodata === undefined) return grid.coverage || null;
+    mask = new Uint8Array(n);
+    for (i = 0; i < n; i++) {
+      mask[i] = rasterPixelIsValid(grid, i) ? 1 : 0;
+    }
+    return mask;
+  }
+
+  function rasterSamplesAreFloat(samples) {
+    return samples instanceof Float32Array || samples instanceof Float64Array;
+  }
+
+  // Value range of a sample array, used to clamp computed values before
+  // writing them back into an integer array.
+  function getSampleArrayRange(samples) {
+    if (samples instanceof Uint8Array || samples instanceof Uint8ClampedArray) return {min: 0, max: 255};
+    if (samples instanceof Int8Array) return {min: -128, max: 127};
+    if (samples instanceof Uint16Array) return {min: 0, max: 65535};
+    if (samples instanceof Int16Array) return {min: -32768, max: 32767};
+    if (samples instanceof Uint32Array) return {min: 0, max: 4294967295};
+    if (samples instanceof Int32Array) return {min: -2147483648, max: 2147483647};
+    return {min: -Infinity, max: Infinity};
+  }
+
   function runningInBrowser() {
     return typeof window !== 'undefined' && typeof window.document !== 'undefined';
   }
@@ -4823,6 +4894,9 @@
   function copyRasterGrid(grid) {
     var copy = utils.extend({}, grid);
     if (grid.samples) copy.samples = copyTypedArray(grid.samples);
+    // The coverage mask is mutated in place by the reprojection code, so an
+    // undo snapshot that shared it would track later edits.
+    if (grid.coverage) copy.coverage = copyTypedArray(grid.coverage);
     if (grid.sampleBands) copy.sampleBands = grid.sampleBands.concat();
     if (grid.bbox) copy.bbox = grid.bbox.concat();
     if (grid.transform) copy.transform = copyObjectOrArray(grid.transform);
@@ -4928,6 +5002,69 @@
       };
     }
     return stats;
+  }
+
+  // Returns the band values and display color of the pixel containing a map
+  // coordinate, for readouts like the GUI's right-click menu, or null if the point
+  // falls outside the raster. Rotated grids are not supported, because pixels can
+  // only be located through the axis-aligned bbox.
+  // x, y: a point in the coordinate system of the raster's bbox
+  function getRasterPixelAtMapXY(raster, x, y) {
+    var grid = getRasterGrid(raster);
+    var col, row, pixelId, offset, values, valid, isColor, band;
+    if (!grid || !grid.samples || !grid.bbox || rasterGridIsRotated(grid)) return null;
+    col = Math.floor(mapXToRasterPixel(grid, x));
+    row = Math.floor(mapYToRasterPixel(grid, y));
+    if (col < 0 || col >= grid.width || row < 0 || row >= grid.height) return null;
+    pixelId = row * grid.width + col;
+    offset = pixelId * grid.bands;
+    values = [];
+    for (band = 0; band < grid.bands; band++) {
+      values.push(grid.samples[offset + band]);
+    }
+    // The renderer reads interleaved bands in display order, so three or more
+    // bands are shown as R, G, B and (if present) alpha.
+    isColor = grid.bands >= 3;
+    valid = rasterPixelIsValid(grid, pixelId);
+    return {
+      col: col,
+      row: row,
+      values: values,
+      isColor: isColor,
+      isFloat: rasterSamplesAreFloat(grid.samples),
+      valid: valid,
+      // Only color images get a color, so that inspecting a measurement raster
+      // does not trigger a scaling-stats scan of the whole grid.
+      // [r, g, b, a] in the 0-255 range, for formatColor() or a canvas.
+      color: isColor && valid ? getRasterPixelDisplayColor(raster, grid, pixelId) : null
+    };
+  }
+
+  // Returns [r, g, b, a] in the 0-255 range, using the same recipe and scaling as
+  // the preview renderer, so that a readout agrees with how the pixel is drawn.
+  function getRasterPixelDisplayColor(raster, grid, pixelId) {
+    var view = getRasterView(raster);
+    var recipe = getRasterViewRecipe(grid, view && view.recipe);
+    var stats = getRasterViewScalingStats(raster, recipe);
+    var sourceRange = recipe.scaling == 'none' ? getPixelTypeRange(grid.pixelType) : null;
+    var displayRange = getDisplayRange(recipe.scaleRange);
+    var offset = pixelId * grid.bands;
+    var color = [0, 1, 2].map(function(band) {
+      return scaleSample(grid.samples[offset + band], stats && stats[band], sourceRange, displayRange);
+    });
+    color.push(grid.bands >= 4 ?
+      scaleSample(grid.samples[offset + 3], stats && stats[3], sourceRange, [0, 255]) : 255);
+    return color;
+  }
+
+  // Float samples print with binary noise at full precision (a Float32 holding
+  // 1234.5678 prints as 1234.5677490234375), so they are rounded to the number of
+  // digits that the type can actually represent.
+  function formatRasterSampleValue(val, isFloat) {
+    if (val === null || val === undefined) return '';
+    if (!isFinite(val)) return String(val); // NaN, Infinity
+    if (!isFloat) return String(val);
+    return String(+val.toPrecision(7));
   }
 
   function renderRasterGridPreview(grid, recipe, width, height, statsArg, sourceBbox, resamplingMethod) {
@@ -5172,10 +5309,22 @@
     return (sy * grid.width + sx) * bands;
   }
 
+  // A grid is north-up when its affine transform has no rotation/skew terms.
+  // Cropping and reprojection both index pixels through the axis-aligned bbox,
+  // so they can only handle north-up grids.
+  function rasterGridIsRotated(grid) {
+    var t = grid && grid.transform;
+    return !!t && (t[1] !== 0 || t[3] !== 0);
+  }
+
   function clipRasterToBBox(lyr, bbox, opts) {
     var raster = lyr.raster;
     var grid = getRasterGrid(raster);
-    var clipBbox = intersectBboxes(grid.bbox, bbox);
+    var clipBbox;
+    if (rasterGridIsRotated(grid)) {
+      stop('Clipping a rotated or skewed raster is not supported');
+    }
+    clipBbox = intersectBboxes(grid.bbox, bbox);
     if (!clipBbox) {
       warn('Raster clipping rectangle does not intersect the raster layer');
       return false;
@@ -5236,9 +5385,28 @@
       width: crop.width,
       height: crop.height,
       samples: samples,
+      coverage: cropRasterCoverage(grid, crop),
       bbox: bbox,
       transform: updateTransformForBBox(grid.transform, bbox, crop.width, crop.height)
     });
+  }
+
+  // The coverage mask is one byte per pixel (not per sample), and must be
+  // cropped alongside the samples -- consumers index it with the cropped
+  // grid's dimensions.
+  function cropRasterCoverage(grid, crop) {
+    var coverage = grid.coverage;
+    var cropped, src, dest, x, y;
+    if (!coverage) return coverage;
+    cropped = new Uint8Array(crop.width * crop.height);
+    for (y = 0; y < crop.height; y++) {
+      src = (crop.y + y) * grid.width + crop.x;
+      dest = y * crop.width;
+      for (x = 0; x < crop.width; x++) {
+        cropped[dest + x] = coverage[src + x];
+      }
+    }
+    return cropped;
   }
 
   function getRasterLayerBounds(lyr) {
@@ -5501,11 +5669,7 @@
   }
 
   function allSamplesAreNoData(data, offset, bands, noData) {
-    var n = Math.min(bands, 3);
-    for (var i = 0; i < n; i++) {
-      if (data[offset + i] != noData) return false;
-    }
-    return true;
+    return samplesAreNodataAtOffset(data, offset, bands, noData);
   }
 
   function copyObjectOrArray(obj) {
@@ -6539,7 +6703,6 @@
             notifyUndoWarning(gui, 'Undo restore data was not deleted', e);
           });
       }, {
-        maxStates: opts.maxStates,
         evictToken: evictToken,
         preserveOnModeChange: true
       });
@@ -6713,8 +6876,6 @@
   // instead.
 
 
-  var DEFAULT_HISTORY_LIMIT = 10;
-
   // Returns true if the manifest, URL query, gui-installed checker, or
   // localStorage indicates that app-level undo should be active.
   function appUndoIsEnabled(gui) {
@@ -6754,11 +6915,6 @@
     return gui.storedUndoHistory;
   }
 
-  function getUndoHistoryLimit(gui) {
-    var opt = gui && gui.options && gui.options.undoHistoryLimit;
-    return opt > 0 ? opt : DEFAULT_HISTORY_LIMIT;
-  }
-
   // Construct an UndoTransaction if and only if app undo is enabled and the
   // transaction can plausibly be added to history. Returns null when undo is
   // off, when the gui's undo manager is missing, or when the UndoTransaction
@@ -6772,12 +6928,13 @@
     return Transaction ? new Transaction(label || '') : null;
   }
 
-  // Add a captured transaction to gui-level history. Pass options through to
-  // stored-undo-history.addTransaction(); fills in maxStates when not provided.
+  // Add a captured transaction to gui-level history. Options are passed through
+  // to stored-undo-history.addTransaction(). History is not capped by entry
+  // count: entries are dropped only when their restore data no longer fits in
+  // the payload store.
   function addUndoTransactionToHistory(gui, tx, opts) {
     if (!tx) return Promise.resolve(null);
-    var fullOpts = Object.assign({maxStates: getUndoHistoryLimit(gui)}, opts || {});
-    return getStoredUndoHistory(gui).addTransaction(tx, fullOpts).catch(function(e) {
+    return getStoredUndoHistory(gui).addTransaction(tx, opts || {}).catch(function(e) {
       console.error(e);
     });
   }
@@ -9336,7 +9493,9 @@
     this.runCommand = function(str) {
       str = str.trim();
       if (!str) return;
-      gui.toggleSidebarPanel('console');
+      if (!gui.consoleIsOpen()) {
+        gui.toggleSidebarPanel('console');
+      }
       submit(str);
     };
 
@@ -9884,7 +10043,6 @@
         error: err,
         flags: flags,
         entryPrefix: 'command',
-        maxStates: getCommandUndoHistoryLimit(),
         onUndo: function() {
           gui.session.setCommandsActive(historyIds, false);
         },
@@ -9897,11 +10055,6 @@
     function isCommandUndoEnabled() {
       if (!gui.undo || typeof gui.undo.addHistoryState != 'function') return false;
       return appUndoIsEnabled(gui);
-    }
-
-    function getCommandUndoHistoryLimit() {
-      var opt = gui.options && gui.options.undoHistoryLimit;
-      return opt > 0 ? opt : 10;
     }
 
     function logCommandTiming(commandString, commands, err, totalMillis, undoTiming) {
@@ -10835,10 +10988,17 @@
 
   var openMenu;
   var openMenuId;
+  // Prefixes shown to the left of a menu item. The checkmark is what a copyable
+  // item shows after it has been copied.
+  var BULLET = '• &nbsp;';
+  var CHECKMARK = '✓ &nbsp;';
+  var COPIED_DELAY = 1200;
 
   document.addEventListener('mousedown', function(e) {
-    if (e.target.classList.contains('contextmenu-item')) {
-      return; // don't close menu if clicking on a menu link
+    // Clicks inside the menu are handled by the menu itself: an item that runs a
+    // command closes the menu, one that copies a value leaves it open.
+    if (e.target.closest?.('.contextmenu')) {
+      return;
     }
     closeOpenMenu();
   });
@@ -10892,18 +11052,45 @@
       }, 200);
     }
 
-    function addMenuItem(label, func, prefixArg) {
-      var prefix = prefixArg === undefined ? '• &nbsp;' : prefixArg;
-      var item = El('div')
+    function createMenuItem(label, prefixArg) {
+      var prefix = prefixArg === undefined ? BULLET : prefixArg;
+      return El('div')
         .appendTo(menu)
         .addClass('contextmenu-item')
         .html(prefix + label)
         .show();
+    }
 
+    function addMenuItem(label, func, prefixArg) {
+      var item = createMenuItem(label, prefixArg);
       GUI.onClick(item, function(e) {
         func();
         closeOpenMenu();
       });
+    }
+
+    // An item that copies a value to the clipboard. Unlike a command item, it
+    // leaves the menu open, so that several values from the same click point can
+    // be copied in turn. The menu closing is therefore no longer the sign that the
+    // copy happened, so the item's prefix briefly becomes a checkmark instead.
+    // content: the string to copy, or a function returning it
+    function addCopyItem(label, content, prefixArg) {
+      var prefix = prefixArg === undefined ? BULLET : prefixArg;
+      var item = createMenuItem(label, prefix);
+      var timeout;
+
+      GUI.onClick(item, function() {
+        var str = typeof content == 'function' ? content() : content;
+        saveFileContentToClipboard(str).then(showCopied);
+      });
+
+      function showCopied() {
+        item.html(CHECKMARK + label);
+        clearTimeout(timeout);
+        timeout = setTimeout(function() {
+          item.html(prefix + label);
+        }, COPIED_DELAY);
+      }
     }
 
     function addMenuLabel(label) {
@@ -10948,7 +11135,7 @@
             addMenuItem('delete point', e.deletePoint);
           }
           if (e.ids?.length) {
-            addMenuItem('copy as GeoJSON', copyGeoJSON);
+            addCopyItem('copy as GeoJSON', getSelectionGeoJSON);
           }
           if (e.deleteFeature) {
             addMenuItem(getDeleteLabel(), e.deleteFeature);
@@ -10962,6 +11149,9 @@
         if (e.projected_coordinates) {
           addMenuLabel('x, y');
           addCoords(e.projected_coordinates);
+        }
+        if (e.raster_pixel) {
+          addRasterPixel(e.raster_pixel);
         }
       }
 
@@ -11009,16 +11199,32 @@
         return 'delete ' + (lyr.geometry_type == 'point' ? 'point' : 'shape');
       }
 
-      function addCoords(p) {
-        var coordStr = p[0] + ',' + p[1];
-        // var displayStr = '• &nbsp;' + coordStr.replace(/-/g, '–').replace(',', ', ');
-        var displayStr = coordStr.replace(/-/g, '–').replace(',', ', ');
-        addMenuItem(displayStr, function() {
-          saveFileContentToClipboard(coordStr);
+      // info: pixel data from internal.getRasterPixelAtMapXY()
+      function addRasterPixel(info) {
+        var values = info.values.map(function(val) {
+          return internal.formatRasterSampleValue(val, info.isFloat);
         });
+        var valueStr = values.join(', ');
+        addMenuLabel(getBandLabel(info.values.length) +
+          (info.valid ? '' : ' (no data)'));
+        addCopyItem(valueStr, valueStr);
+        if (info.color) {
+          addColor(getColorString(info.color));
+        }
       }
 
-      function copyGeoJSON() {
+      function addColor(color) {
+        addMenuLabel('color');
+        addCopyItem(color, color, getSwatchHtml(color));
+      }
+
+      function addCoords(p) {
+        var coordStr = p[0] + ',' + p[1];
+        var displayStr = coordStr.replace(/-/g, '–').replace(',', ', ');
+        addCopyItem(displayStr, coordStr);
+      }
+
+      function getSelectionGeoJSON() {
         var opts = {
           no_replace: true,
           ids: e.ids,
@@ -11032,12 +11238,31 @@
           layer.geometry_type = 'polyline';
         }
         var features = internal.exportLayerAsGeoJSON(layer, dataset, {rfc7946: true, prettify: true}, true, 'string');
-        var str = internal.geojson.formatCollection({"type": "FeatureCollection"}, features);
-        saveFileContentToClipboard(str);
+        return internal.geojson.formatCollection({"type": "FeatureCollection"}, features);
       }
     };
   }
 
+
+  // rgba: [r, g, b, a] channels in the 0-255 range
+  function getColorString(rgba) {
+    return internal.formatColor({
+      r: rgba[0], g: rgba[1], b: rgba[2], a: rgba[3] / 255
+    });
+  }
+
+  function getBandLabel(bands) {
+    if (bands == 1) return 'band value';
+    if (bands == 3) return 'red, green, blue';
+    if (bands == 4) return 'red, green, blue, alpha';
+    return 'band values';
+  }
+
+  // A color tile, used in place of the bullet that other menu items get.
+  function getSwatchHtml(color) {
+    return '<span class="contextmenu-swatch" style="background-color: ' +
+      color + '"></span>';
+  }
 
   function layerHasOpenPaths(layer, arcs) {
     var retn = false;
@@ -12462,7 +12687,6 @@
       if (!preserveOnModeChange) {
         editSession.noteEdit();
       }
-      trimHistory(opts);
       fireHistoryChange();
     }
 
@@ -12503,14 +12727,6 @@
       history = nextHistory;
       offset = history.length - nextDoneCount;
       fireHistoryChange();
-    }
-
-    function trimHistory(opts) {
-      var max = opts && opts.maxStates;
-      var overflow;
-      if (!(max > 0) || history.length <= max) return;
-      overflow = history.length - max;
-      disposeHistoryItems(history.splice(0, overflow));
     }
 
     function fireHistoryChange() {
@@ -12613,8 +12829,7 @@
         if (!wasChanged) return;
         getStoredUndoHistory(gui).addTransaction(finishedTx, {
           flags: {select: true},
-          entryPrefix: 'edit-session',
-          maxStates: getEditSessionUndoHistoryLimit()
+          entryPrefix: 'edit-session'
         }).catch(function(e) {
           console.error(e);
         });
@@ -12659,11 +12874,6 @@
 
     function getUndoTransactionConstructor() {
       return internal.UndoTransaction && (internal.UndoTransaction.UndoTransaction || internal.UndoTransaction);
-    }
-
-    function getEditSessionUndoHistoryLimit() {
-      var opt = gui.options && gui.options.undoHistoryLimit;
-      return opt > 0 ? opt : 10;
     }
 
   }
@@ -17332,6 +17542,11 @@
         // data coordinates
         eventData.projected_coordinates = gui.map.pixelCoordsToProjectedCoords(evt.x, evt.y);
         eventData.lonlat_coordinates = gui.map.pixelCoordsToLngLatCoords(evt.x, evt.y);
+        if (type == 'contextmenu') {
+          // Only the context menu reads pixel values, and sampling one can cost a
+          // scan of the grid, so it is not done on every hover event.
+          eventData.raster_pixel = gui.map.pixelCoordsToRasterPixel(evt.x, evt.y);
+        }
         eventData.originalEvent = evt;
         eventData.overMap = isOverMap(evt);
         utils$1.defaults(eventData, evt.data);
@@ -20782,10 +20997,6 @@
     }, 0);
   }
 
-  function invalidateRasterViewportPreview(layer) {
-    cache$1.delete(layer);
-  }
-
   function getRasterViewportPreviewParams(layer, ext) {
     var raster = layer && layer.raster;
     var grid = internal.getRasterGrid(raster);
@@ -20795,7 +21006,7 @@
     var preview = internal.getRasterPreview(raster);
     var recipe, pixelRatio, t, p1, p2, displayWidth, displayHeight, crop, width, height, scale, key, needed;
     if (!grid || !grid.samples || !visibleBbox || !grid.bbox) return null;
-    if (!supportsNorthUpRaster(grid)) return null;
+    if (internal.rasterGridIsRotated(grid)) return null;
     crop = getRasterSourceWindow(grid, visibleBbox);
     if (!crop) return null;
     visibleBbox = crop.bbox;
@@ -20899,11 +21110,6 @@
 
   function formatMs$1(ms) {
     return Math.round(ms * 10) / 10 + 'ms';
-  }
-
-  function supportsNorthUpRaster(grid) {
-    var t = grid.transform;
-    return !t || t[1] === 0 && t[3] === 0;
   }
 
   function getRasterSourcePixelSize(grid, bbox) {
@@ -23519,6 +23725,17 @@ GUI and setting the size and crop of SVG output.</p><div><input type="text" clas
       var p1 = translateDisplayPoint(_activeLyr, _ext.pixCoordsToMapCoords(x, y));
       var p2 = translateDisplayPoint(_activeLyr, _ext.pixCoordsToMapCoords(x+1, y+1));
       return p1 && p2 ? formatCoordsForDisplay(p1, p2) : null;
+    };
+
+    // Returns band values and display color of the raster pixel under a screen
+    // location, or null if the active layer is not a raster or the point misses it.
+    this.pixelCoordsToRasterPixel = function(x, y) {
+      var p;
+      if (!_activeLyr || !internal.layerHasRaster(_activeLyr)) return null;
+      // The grid is georeferenced in the layer's own CRS, so a display point has
+      // to be translated back when the layer is being reprojected for display.
+      p = translateDisplayPoint(_activeLyr, _ext.pixCoordsToMapCoords(x, y));
+      return p ? internal.getRasterPixelAtMapXY(_activeLyr.raster, p[0], p[1]) : null;
     };
 
     this.getDisplayCRS = function() {
