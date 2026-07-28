@@ -1,4 +1,4 @@
-v0.7.49 (unreleased)
+v0.7.49
 * Removed the ten-state limit on undo history in the web UI. Undo states are now discarded only when their restore data exceeds the storage limit.
 * The web UI's right-click menu now stays open after copying a value, so several values can be copied from the same point.
 * The web UI's right-click menu now reports the band values of the raster pixel under the cursor, plus a color tile and hex value for color images.
