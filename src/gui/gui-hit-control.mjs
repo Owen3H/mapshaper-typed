@@ -484,6 +484,11 @@ export function HitControl(gui, ext, mouse) {
       // data coordinates
       eventData.projected_coordinates = gui.map.pixelCoordsToProjectedCoords(evt.x, evt.y);
       eventData.lonlat_coordinates = gui.map.pixelCoordsToLngLatCoords(evt.x, evt.y);
+      if (type == 'contextmenu') {
+        // Only the context menu reads pixel values, and sampling one can cost a
+        // scan of the grid, so it is not done on every hover event.
+        eventData.raster_pixel = gui.map.pixelCoordsToRasterPixel(evt.x, evt.y);
+      }
       eventData.originalEvent = evt;
       eventData.overMap = isOverMap(evt);
       utils.defaults(eventData, evt.data);

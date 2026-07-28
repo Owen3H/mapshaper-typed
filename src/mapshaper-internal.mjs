@@ -81,6 +81,7 @@ import * as CalcUtils from './utils/mapshaper-calc-utils';
 import * as Catalog from './dataset/mapshaper-catalog';
 import * as ClipErase from './commands/mapshaper-clip-erase';
 import * as ClipPoints from './clipping/mapshaper-point-clipping';
+import * as ColorUtils from './color/color-utils';
 import * as Colorizer from './commands/mapshaper-colorizer';
 import * as CustomProjections from './crs/mapshaper-custom-projections';
 import * as Dymaxion from './crs/mapshaper-dymaxion';
@@ -217,6 +218,7 @@ Object.assign(internal,
   Catalog,
   ClipErase,
   ClipPoints,
+  ColorUtils,
   Colorizer,
   CustomProjections,
   Dymaxion,

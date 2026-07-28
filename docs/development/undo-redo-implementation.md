@@ -269,6 +269,10 @@ an active project and are undoable as one catalog-level entry.
 The GUI stores large undo payloads outside the in-memory history entry using
 `gui-undo-unit-store.mjs` and `gui-undo-payload-store.mjs`.
 
+Payload size is the only thing that truncates history. There is no cap on the
+number of undo states: entries are removed only to make room for a new one, so
+a long run of cheap edits stays undoable while a few expensive ones do not.
+
 Undo payloads are stored when the history entry is created. Redo payloads are
 captured and stored lazily on the first Undo. If the per-session payload limit
 would be exceeded while saving a new state, the undo history evicts complete

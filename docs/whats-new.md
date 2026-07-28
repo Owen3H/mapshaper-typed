@@ -11,6 +11,20 @@ This is a curated list of recently added features. For the full list of changes,
 
 <div class="whats-new-entry">
 
+**Contour lines from rasters.** The `-contours` command traces contour lines from a raster layer &mdash; most often elevation contours from a digital elevation model. Mapshaper picks a sensible spacing between lines from the data itself, or you can set your own with `interval=` or a list of `levels=`. Lines stop at the edge of the valid data instead of crossing gaps, and they are smoothed to remove the stair-step edges that tracing a grid of pixels leaves behind. Add `+` to keep the raster as well, for drawing the contours over the image.
+
+→ See [`-contours`](/docs/reference.html#-contours).
+</div>
+
+<div class="whats-new-entry">
+
+**Blur command.** The `-blur` command softens a raster layer. It has been available but undocumented for a while; it now takes its radius as a plain argument, either in pixels (`-blur 5px`) or as a real-world distance (`-blur 500m`), so the same command gives a comparable amount of blur on images of differing resolution. Blurring an elevation model before `-contours` is a good way to get calmer contour lines. The layer needs to be projected first, if it isn't already.
+
+→ See [`-blur`](/docs/reference.html#-blur).
+</div>
+
+<div class="whats-new-entry">
+
 **Interrupted and polyhedral world projections.** The `-proj` command supports Interrupted Goode Homolosine (`igh`, `igh_o`), Interrupted Mollweide (`imoll`, `imoll_o`), Buckminster Fuller's Dymaxion map (`dymaxion`, `dymaxion2`), two octahedral butterfly maps (`butterfly`, `butterfly2`), the Cahill-Keyes projection (`cahill_keyes`), Hajime Narukawa's 2022 update to the AuthaGraph projection (`narukawa2022`), and two rectangular world maps using tetrahedral geometry (`markley`, `calm`). The `-graticule` command can generate graticules, polygon footprints and neatlines for all of these projections.
 
 → See [Interrupted and polyhedral world projections](/docs/guides/projections.html#interrupted-and-polyhedral-world-projections).

@@ -1,5 +1,9 @@
 import { Bounds } from '../geom/mapshaper-bounds';
-import { samplesAreNodataAtOffset } from './mapshaper-raster-grid';
+import {
+  rasterPixelIsValid,
+  rasterSamplesAreFloat,
+  samplesAreNodataAtOffset
+} from './mapshaper-raster-grid';
 import utils from '../utils/mapshaper-utils';
 import { stop, warn } from '../utils/mapshaper-logging';
 import { runningInBrowser } from '../mapshaper-env';
@@ -188,6 +192,69 @@ export function getRasterViewScalingStats(raster, recipeArg) {
     };
   }
   return stats;
+}
+
+// Returns the band values and display color of the pixel containing a map
+// coordinate, for readouts like the GUI's right-click menu, or null if the point
+// falls outside the raster. Rotated grids are not supported, because pixels can
+// only be located through the axis-aligned bbox.
+// x, y: a point in the coordinate system of the raster's bbox
+export function getRasterPixelAtMapXY(raster, x, y) {
+  var grid = getRasterGrid(raster);
+  var col, row, pixelId, offset, values, valid, isColor, band;
+  if (!grid || !grid.samples || !grid.bbox || rasterGridIsRotated(grid)) return null;
+  col = Math.floor(mapXToRasterPixel(grid, x));
+  row = Math.floor(mapYToRasterPixel(grid, y));
+  if (col < 0 || col >= grid.width || row < 0 || row >= grid.height) return null;
+  pixelId = row * grid.width + col;
+  offset = pixelId * grid.bands;
+  values = [];
+  for (band = 0; band < grid.bands; band++) {
+    values.push(grid.samples[offset + band]);
+  }
+  // The renderer reads interleaved bands in display order, so three or more
+  // bands are shown as R, G, B and (if present) alpha.
+  isColor = grid.bands >= 3;
+  valid = rasterPixelIsValid(grid, pixelId);
+  return {
+    col: col,
+    row: row,
+    values: values,
+    isColor: isColor,
+    isFloat: rasterSamplesAreFloat(grid.samples),
+    valid: valid,
+    // Only color images get a color, so that inspecting a measurement raster
+    // does not trigger a scaling-stats scan of the whole grid.
+    // [r, g, b, a] in the 0-255 range, for formatColor() or a canvas.
+    color: isColor && valid ? getRasterPixelDisplayColor(raster, grid, pixelId) : null
+  };
+}
+
+// Returns [r, g, b, a] in the 0-255 range, using the same recipe and scaling as
+// the preview renderer, so that a readout agrees with how the pixel is drawn.
+function getRasterPixelDisplayColor(raster, grid, pixelId) {
+  var view = getRasterView(raster);
+  var recipe = getRasterViewRecipe(grid, view && view.recipe);
+  var stats = getRasterViewScalingStats(raster, recipe);
+  var sourceRange = recipe.scaling == 'none' ? getPixelTypeRange(grid.pixelType) : null;
+  var displayRange = getDisplayRange(recipe.scaleRange);
+  var offset = pixelId * grid.bands;
+  var color = [0, 1, 2].map(function(band) {
+    return scaleSample(grid.samples[offset + band], stats && stats[band], sourceRange, displayRange);
+  });
+  color.push(grid.bands >= 4 ?
+    scaleSample(grid.samples[offset + 3], stats && stats[3], sourceRange, [0, 255]) : 255);
+  return color;
+}
+
+// Float samples print with binary noise at full precision (a Float32 holding
+// 1234.5678 prints as 1234.5677490234375), so they are rounded to the number of
+// digits that the type can actually represent.
+export function formatRasterSampleValue(val, isFloat) {
+  if (val === null || val === undefined) return '';
+  if (!isFinite(val)) return String(val); // NaN, Infinity
+  if (!isFloat) return String(val);
+  return String(+val.toPrecision(7));
 }
 
 function renderRasterGridPreview(grid, recipe, width, height, statsArg, sourceBbox, resamplingMethod) {

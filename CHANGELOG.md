@@ -1,7 +1,10 @@
 v0.7.49 (unreleased)
+* Removed the ten-state limit on undo history in the web UI. Undo states are now discarded only when their restore data exceeds the storage limit.
+* The web UI's right-click menu now stays open after copying a value, so several values can be copied from the same point.
+* The web UI's right-click menu now reports the band values of the raster pixel under the cursor, plus a color tile and hex value for color images.
 * `-blur` now accepts a real-world distance as well as a pixel count (e.g. `-blur 500m`), takes its radius as a bare argument (e.g. `-blur 5px`), and appears in the command list printed by `mapshaper -h`.
 * Added `-contours` command for tracing contour lines from a raster layer, with `interval=`, `levels=`, `base=`, `band=` and `field=` options. Traced lines are smoothed at an auto-selected one-pixel interval; use `no-smoothing` to skip that step.
-* Added `-i raster-type=continuous` for measurement rasters like elevation models, which use bilinear resampling but keep the source nodata value instead of a fill color when projected.
+* Added `-i raster-type=continuous` for measurement rasters like elevation models, which use bilinear resampling but keep the source nodata value instead of a fill color when projected (ordinarily the correct type should be auto-detected).
 * Fixed loss of precision when projecting a floating point raster: bilinear resampling was rounding every sample to a whole number.
 * Fixed bilinear resampling averaging nodata samples together with real values along the edges of a raster's valid data.
 

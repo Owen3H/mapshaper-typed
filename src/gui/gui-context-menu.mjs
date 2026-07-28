@@ -7,10 +7,17 @@ import { GUI } from './gui-lib';
 
 var openMenu;
 var openMenuId;
+// Prefixes shown to the left of a menu item. The checkmark is what a copyable
+// item shows after it has been copied.
+var BULLET = '• &nbsp;';
+var CHECKMARK = '✓ &nbsp;';
+var COPIED_DELAY = 1200;
 
 document.addEventListener('mousedown', function(e) {
-  if (e.target.classList.contains('contextmenu-item')) {
-    return; // don't close menu if clicking on a menu link
+  // Clicks inside the menu are handled by the menu itself: an item that runs a
+  // command closes the menu, one that copies a value leaves it open.
+  if (e.target.closest?.('.contextmenu')) {
+    return;
   }
   closeOpenMenu();
 });
@@ -64,18 +71,45 @@ export function ContextMenu(parentArg) {
     }, 200);
   }
 
-  function addMenuItem(label, func, prefixArg) {
-    var prefix = prefixArg === undefined ? '• &nbsp;' : prefixArg;
-    var item = El('div')
+  function createMenuItem(label, prefixArg) {
+    var prefix = prefixArg === undefined ? BULLET : prefixArg;
+    return El('div')
       .appendTo(menu)
       .addClass('contextmenu-item')
       .html(prefix + label)
       .show();
+  }
 
+  function addMenuItem(label, func, prefixArg) {
+    var item = createMenuItem(label, prefixArg);
     GUI.onClick(item, function(e) {
       func();
       closeOpenMenu();
     });
+  }
+
+  // An item that copies a value to the clipboard. Unlike a command item, it
+  // leaves the menu open, so that several values from the same click point can
+  // be copied in turn. The menu closing is therefore no longer the sign that the
+  // copy happened, so the item's prefix briefly becomes a checkmark instead.
+  // content: the string to copy, or a function returning it
+  function addCopyItem(label, content, prefixArg) {
+    var prefix = prefixArg === undefined ? BULLET : prefixArg;
+    var item = createMenuItem(label, prefix);
+    var timeout;
+
+    GUI.onClick(item, function() {
+      var str = typeof content == 'function' ? content() : content;
+      saveFileContentToClipboard(str).then(showCopied);
+    });
+
+    function showCopied() {
+      item.html(CHECKMARK + label);
+      clearTimeout(timeout);
+      timeout = setTimeout(function() {
+        item.html(prefix + label);
+      }, COPIED_DELAY);
+    }
   }
 
   function addMenuLabel(label) {
@@ -120,7 +154,7 @@ export function ContextMenu(parentArg) {
           addMenuItem('delete point', e.deletePoint);
         }
         if (e.ids?.length) {
-          addMenuItem('copy as GeoJSON', copyGeoJSON);
+          addCopyItem('copy as GeoJSON', getSelectionGeoJSON);
         }
         if (e.deleteFeature) {
           addMenuItem(getDeleteLabel(), e.deleteFeature);
@@ -134,6 +168,9 @@ export function ContextMenu(parentArg) {
       if (e.projected_coordinates) {
         addMenuLabel('x, y');
         addCoords(e.projected_coordinates);
+      }
+      if (e.raster_pixel) {
+        addRasterPixel(e.raster_pixel);
       }
     }
 
@@ -181,16 +218,32 @@ export function ContextMenu(parentArg) {
       return 'delete ' + (lyr.geometry_type == 'point' ? 'point' : 'shape');
     }
 
-    function addCoords(p) {
-      var coordStr = p[0] + ',' + p[1];
-      // var displayStr = '• &nbsp;' + coordStr.replace(/-/g, '–').replace(',', ', ');
-      var displayStr = coordStr.replace(/-/g, '–').replace(',', ', ');
-      addMenuItem(displayStr, function() {
-        saveFileContentToClipboard(coordStr);
+    // info: pixel data from internal.getRasterPixelAtMapXY()
+    function addRasterPixel(info) {
+      var values = info.values.map(function(val) {
+        return internal.formatRasterSampleValue(val, info.isFloat);
       });
+      var valueStr = values.join(', ');
+      addMenuLabel(getBandLabel(info.values.length) +
+        (info.valid ? '' : ' (no data)'));
+      addCopyItem(valueStr, valueStr);
+      if (info.color) {
+        addColor(getColorString(info.color));
+      }
     }
 
-    function copyGeoJSON() {
+    function addColor(color) {
+      addMenuLabel('color');
+      addCopyItem(color, color, getSwatchHtml(color));
+    }
+
+    function addCoords(p) {
+      var coordStr = p[0] + ',' + p[1];
+      var displayStr = coordStr.replace(/-/g, '–').replace(',', ', ');
+      addCopyItem(displayStr, coordStr);
+    }
+
+    function getSelectionGeoJSON() {
       var opts = {
         no_replace: true,
         ids: e.ids,
@@ -204,12 +257,31 @@ export function ContextMenu(parentArg) {
         layer.geometry_type = 'polyline';
       }
       var features = internal.exportLayerAsGeoJSON(layer, dataset, {rfc7946: true, prettify: true}, true, 'string');
-      var str = internal.geojson.formatCollection({"type": "FeatureCollection"}, features);
-      saveFileContentToClipboard(str);
+      return internal.geojson.formatCollection({"type": "FeatureCollection"}, features);
     }
   };
 }
 
+
+// rgba: [r, g, b, a] channels in the 0-255 range
+function getColorString(rgba) {
+  return internal.formatColor({
+    r: rgba[0], g: rgba[1], b: rgba[2], a: rgba[3] / 255
+  });
+}
+
+function getBandLabel(bands) {
+  if (bands == 1) return 'band value';
+  if (bands == 3) return 'red, green, blue';
+  if (bands == 4) return 'red, green, blue, alpha';
+  return 'band values';
+}
+
+// A color tile, used in place of the bullet that other menu items get.
+function getSwatchHtml(color) {
+  return '<span class="contextmenu-swatch" style="background-color: ' +
+    color + '"></span>';
+}
 
 function layerHasOpenPaths(layer, arcs) {
   var retn = false;

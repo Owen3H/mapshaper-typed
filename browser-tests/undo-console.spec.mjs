@@ -418,6 +418,32 @@ test('new undo states evict older payloads when session storage is full', async 
   expect(secondState.model.checksum).not.toBe(firstState.model.checksum);
 });
 
+// Undo history is bounded by the size of the stored restore data, not by a
+// number of entries, so a long run of small commands stays undoable.
+test('undo history is not capped by a number of states', async function({page}) {
+  var count = 25;
+  var i;
+  await loadFixture(page);
+
+  var before = await getUndoState(page);
+  for (i = 0; i < count; i++) {
+    await runConsoleCommand(page, '-each \'foo = ' + i + '\'');
+  }
+  expect((await getUndoState(page)).payloadStore.ownPayloads.some(function(payload) {
+    return payload.entryId == 'command-1';
+  })).toBe(true);
+
+  for (i = 0; i < count; i++) {
+    await page.evaluate(function() {
+      return window.mapshaper.undoTest.undo();
+    });
+  }
+  await expect.poll(async function() {
+    return (await getUndoState(page)).model.checksum;
+  }).toBe(before.model.checksum);
+  expect((await getUndoState(page)).undo.canUndo).toBe(false);
+});
+
 test('polygon reprojection stores one arcs payload and no layer payload', async function({page}) {
   await loadFixture(page, POLYGON_FIXTURE);
 

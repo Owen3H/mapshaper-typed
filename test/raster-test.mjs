@@ -414,6 +414,172 @@ describe('raster layers', function () {
     });
   });
 
+  describe('pixel readout', function () {
+    // The GUI's right-click menu reads a single pixel through these functions.
+    var sample = api.internal.getRasterPixelAtMapXY;
+
+    // A 2x1 uint8 RGB grid covering [0,0,2,1]: red pixel then blue pixel
+    function getRgbRaster() {
+      return getRasterDataset().layers[0].raster;
+    }
+
+    // A 1x1 single-band grid covering [0,0,1,1]
+    function getGrayRaster() {
+      return {
+        grid: {
+          width: 1,
+          height: 1,
+          bands: 1,
+          pixelType: 'uint8',
+          samples: new Uint8Array([10]),
+          sampleBands: [0],
+          nodata: null,
+          bbox: [0, 0, 1, 1],
+          transform: [1, 0, 0, 0, -1, 1]
+        },
+        view: {recipe: {type: 'gray', bands: [0]}}
+      };
+    }
+
+    it('reads the band values of the pixel containing a point', function () {
+      var raster = getRgbRaster();
+      assert.deepEqual(sample(raster, 0.5, 0.5).values, [255, 0, 0]);
+      assert.deepEqual(sample(raster, 1.5, 0.5).values, [0, 0, 255]);
+    });
+
+    it('reports the pixel row and column', function () {
+      var info = sample(getRgbRaster(), 1.5, 0.5);
+      assert.equal(info.col, 1);
+      assert.equal(info.row, 0);
+    });
+
+    it('counts rows downward from the top of the bbox', function () {
+      var raster = getRgbRaster();
+      raster.grid.height = 2;
+      raster.grid.width = 1;
+      raster.grid.bbox = [0, 0, 1, 2];
+      // samples are [255,0,0] then [0,0,255], so the top row is red
+      assert.deepEqual(sample(raster, 0.5, 1.5).values, [255, 0, 0]);
+      assert.deepEqual(sample(raster, 0.5, 0.5).values, [0, 0, 255]);
+    });
+
+    it('returns null for a point outside the raster', function () {
+      var raster = getRgbRaster();
+      assert.strictEqual(sample(raster, 2.5, 0.5), null);
+      assert.strictEqual(sample(raster, -0.5, 0.5), null);
+      assert.strictEqual(sample(raster, 0.5, 1.5), null);
+      assert.strictEqual(sample(raster, 0.5, -0.5), null);
+    });
+
+    it('returns the display color of a color image', function () {
+      var raster = getRgbRaster();
+      assert.deepEqual(sample(raster, 0.5, 0.5).color, [255, 0, 0, 255]);
+      assert.deepEqual(sample(raster, 1.5, 0.5).color, [0, 0, 255, 255]);
+      assert.equal(sample(raster, 0.5, 0.5).isColor, true);
+    });
+
+    it('includes alpha in the color of an RGBA image', function () {
+      var raster = getRgbRaster();
+      raster.grid.bands = 4;
+      raster.grid.width = 1;
+      raster.grid.bbox = [0, 0, 1, 1];
+      raster.grid.samples = new Uint8Array([255, 0, 0, 128]);
+      raster.view.recipe = {type: 'rgba', bands: [0, 1, 2, 3]};
+      assert.deepEqual(sample(raster, 0.5, 0.5).color, [255, 0, 0, 128]);
+      // the GUI turns the channels into a CSS color
+      assert.equal(api.internal.formatColor({r: 255, g: 0, b: 0, a: 128 / 255}),
+        'rgba(255,0,0,0.502)');
+    });
+
+    it('does not give a single-band raster a color', function () {
+      var raster = getGrayRaster();
+      var info = sample(raster, 0.5, 0.5);
+      assert.strictEqual(info.color, null);
+      assert.strictEqual(info.isColor, false);
+      assert.deepEqual(info.values, [10]);
+    });
+
+    it('applies the view scaling that the renderer uses', function () {
+      // 16-bit samples are stretched to the display range, so the color is not
+      // a straight reading of the sample values. Here the shared min and max
+      // across the three bands are 1000 and 4000.
+      var raster = {
+        grid: {
+          width: 2,
+          height: 1,
+          bands: 3,
+          pixelType: 'uint16',
+          samples: new Uint16Array([1000, 2000, 4000, 4000, 1000, 1000]),
+          sampleBands: [0, 1, 2],
+          nodata: null,
+          bbox: [0, 0, 2, 1],
+          transform: [1, 0, 0, 0, -1, 1]
+        },
+        view: {recipe: {type: 'rgb', bands: [0, 1, 2], scaling: 'minmax'}}
+      };
+      assert.deepEqual(sample(raster, 0.5, 0.5).values, [1000, 2000, 4000]);
+      assert.deepEqual(sample(raster, 0.5, 0.5).color, [0, 85, 255, 255]);
+    });
+
+    it('flags a nodata pixel and withholds its color', function () {
+      var raster = getRgbRaster();
+      raster.grid.nodata = 0;
+      // the second pixel is [0, 0, 255]; nodata compares the first three bands
+      assert.equal(sample(raster, 0.5, 0.5).valid, true);
+      raster.grid.samples = new Uint8Array([255, 0, 0, 0, 0, 0]);
+      assert.equal(sample(raster, 1.5, 0.5).valid, false);
+      assert.strictEqual(sample(raster, 1.5, 0.5).color, null);
+    });
+
+    it('flags a pixel outside the coverage mask', function () {
+      var raster = getRgbRaster();
+      raster.grid.coverage = new Uint8Array([1, 0]);
+      assert.equal(sample(raster, 0.5, 0.5).valid, true);
+      assert.equal(sample(raster, 1.5, 0.5).valid, false);
+    });
+
+    it('flags float samples so they can be rounded for display', function () {
+      var raster = getGrayRaster();
+      assert.strictEqual(sample(raster, 0.5, 0.5).isFloat, false);
+      raster.grid.pixelType = 'float32';
+      raster.grid.samples = new Float32Array([1234.5678]);
+      assert.strictEqual(sample(raster, 0.5, 0.5).isFloat, true);
+    });
+
+    it('returns null for a rotated raster', function () {
+      var raster = getRgbRaster();
+      raster.grid.transform = [1, 0.5, 0, 0, -1, 1];
+      assert.strictEqual(sample(raster, 0.5, 0.5), null);
+    });
+
+    describe('value formatting', function () {
+      var format = api.internal.formatRasterSampleValue;
+
+      it('prints integer samples as-is', function () {
+        assert.equal(format(0, false), '0');
+        assert.equal(format(-9999, false), '-9999');
+      });
+
+      it('rounds away the binary noise in a float sample', function () {
+        var samples = new Float32Array([1234.5678, 0.1]);
+        assert.equal(String(samples[0]), '1234.5677490234375'); // the problem
+        assert.equal(format(samples[0], true), '1234.568');
+        assert.equal(format(samples[1], true), '0.1');
+      });
+
+      it('keeps small and large float samples readable', function () {
+        assert.equal(format(1e-8, true), '1e-8');
+        assert.equal(format(-0.5, true), '-0.5');
+      });
+
+      it('prints non-numeric samples without crashing', function () {
+        assert.equal(format(NaN, true), 'NaN');
+        assert.equal(format(Infinity, true), 'Infinity');
+        assert.equal(format(undefined, false), '');
+      });
+    });
+  });
+
   it('clips raster samples and bbox to an intersecting rectangle', function () {
     var dataset = getRasterDataset();
     var lyr = dataset.layers[0];

@@ -28,11 +28,14 @@ A Mapshaper snapshot captures the current state of a session &mdash; arcs, layer
 
 ### In the web app
 
-The ribbon icon in the layer panel opens the **snapshot menu**. From there you can:
+The **History** button in the header opens the snapshot menu. From there you can:
 
-- **Create a snapshot** &mdash; saves to in-browser storage. These are session-scoped and intended to be temporary; Mapshaper tries to clean them up when the tab closes or the page reloads. For anything you want to keep, **Save snapshot to file** writes a `.msx` file you can re-open later.
-- **Export** a stored snapshot to a `.msx` file on disk. Persisted `.msx` files survive browser restarts and can be re-imported by drag-drop, the **Add files** button, or the `?files=` URL parameter.
+- **Create snapshot** &mdash; saves to in-browser storage. These are session-scoped and intended to be temporary; Mapshaper tries to clean them up when the tab closes or the page reloads. For anything you want to keep, export it to a file.
+- **Export** a stored snapshot to a `.msx` file on disk. Files on disk survive browser restarts and can be re-imported by drag-drop, the **Add files** button, or the `?files=` URL parameter. Choosing **Snapshot file** in the Export panel does the same thing for the current state.
 - **Restore** a stored snapshot into the current session.
+- **Remove** a stored snapshot from the browser.
+
+See [History, undo and snapshots](/docs/essentials/web-app.html#history-undo-and-snapshots) for the rest of the History menu.
 
 ## External resources
 

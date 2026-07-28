@@ -134,6 +134,17 @@ export function MshpMap(gui) {
     return p1 && p2 ? formatCoordsForDisplay(p1, p2) : null;
   };
 
+  // Returns band values and display color of the raster pixel under a screen
+  // location, or null if the active layer is not a raster or the point misses it.
+  this.pixelCoordsToRasterPixel = function(x, y) {
+    var p;
+    if (!_activeLyr || !internal.layerHasRaster(_activeLyr)) return null;
+    // The grid is georeferenced in the layer's own CRS, so a display point has
+    // to be translated back when the layer is being reprojected for display.
+    p = translateDisplayPoint(_activeLyr, _ext.pixCoordsToMapCoords(x, y));
+    return p ? internal.getRasterPixelAtMapXY(_activeLyr.raster, p[0], p[1]) : null;
+  };
+
   this.getDisplayCRS = function() {
     if (!_activeLyr) {
       return _dynamicCRS || internal.parseCrsString('wgs84');

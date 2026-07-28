@@ -261,7 +261,6 @@ export function Undo(gui) {
     if (!preserveOnModeChange) {
       editSession.noteEdit();
     }
-    trimHistory(opts);
     fireHistoryChange();
   }
 
@@ -302,14 +301,6 @@ export function Undo(gui) {
     history = nextHistory;
     offset = history.length - nextDoneCount;
     fireHistoryChange();
-  }
-
-  function trimHistory(opts) {
-    var max = opts && opts.maxStates;
-    var overflow;
-    if (!(max > 0) || history.length <= max) return;
-    overflow = history.length - max;
-    disposeHistoryItems(history.splice(0, overflow));
   }
 
   function fireHistoryChange() {
@@ -412,8 +403,7 @@ export function Undo(gui) {
       if (!wasChanged) return;
       getStoredUndoHistory(gui).addTransaction(finishedTx, {
         flags: {select: true},
-        entryPrefix: 'edit-session',
-        maxStates: getEditSessionUndoHistoryLimit()
+        entryPrefix: 'edit-session'
       }).catch(function(e) {
         console.error(e);
       });
@@ -458,11 +448,6 @@ export function Undo(gui) {
 
   function getUndoTransactionConstructor() {
     return internal.UndoTransaction && (internal.UndoTransaction.UndoTransaction || internal.UndoTransaction);
-  }
-
-  function getEditSessionUndoHistoryLimit() {
-    var opt = gui.options && gui.options.undoHistoryLimit;
-    return opt > 0 ? opt : 10;
   }
 
 }

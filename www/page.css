@@ -2788,6 +2788,17 @@ body.dragging-color-picker * {
 	margin-top: -2px;
 }
 
+/* color tile shown instead of a bullet in the raster color readout */
+.contextmenu-swatch {
+	display: inline-block;
+	width: 10px;
+	height: 10px;
+	margin-right: 7px;
+	vertical-align: 0;
+	border: 1px solid rgba(0,0,0,0.25);
+	border-radius: 2px;
+}
+
 .nav-menu-item:hover,
 .contextmenu-item:hover,
 .nav-btn:hover .nav-sub-menu:not(.active):not(:hover) .nav-menu-item[data-name=info] {

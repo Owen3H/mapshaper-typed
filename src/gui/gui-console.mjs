@@ -601,7 +601,6 @@ export function Console(gui) {
       error: err,
       flags: flags,
       entryPrefix: 'command',
-      maxStates: getCommandUndoHistoryLimit(),
       onUndo: function() {
         gui.session.setCommandsActive(historyIds, false);
       },
@@ -614,11 +613,6 @@ export function Console(gui) {
   function isCommandUndoEnabled() {
     if (!gui.undo || typeof gui.undo.addHistoryState != 'function') return false;
     return appUndoIsEnabled(gui);
-  }
-
-  function getCommandUndoHistoryLimit() {
-    var opt = gui.options && gui.options.undoHistoryLimit;
-    return opt > 0 ? opt : 10;
   }
 
   function logCommandTiming(commandString, commands, err, totalMillis, undoTiming) {

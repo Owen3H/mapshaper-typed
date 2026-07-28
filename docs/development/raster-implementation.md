@@ -262,6 +262,38 @@ the forward mesh raster reprojection path to create a viewport-sized projected
 preview. Reprojected display previews are GUI-only caches; they do not mutate
 the working grid.
 
+## GUI Pixel Readout
+
+The right-click menu reports the pixel under the cursor, alongside the
+coordinates it already showed. `getRasterPixelAtMapXY()` does the work: it turns
+a map coordinate into a column and row through the axis-aligned bbox, collects
+the interleaved band values, and reports whether the pixel is valid according to
+the shared `rasterPixelIsValid` mask. Rotated grids return null, the same
+restriction the other bbox-indexed operations have.
+
+Three things are worth knowing about how it is wired up:
+
+- It reads the working grid, not the display preview, so the values are the ones
+  commands would see, at full stored resolution, and they reflect earlier edits
+  such as `-blur`. Since the preview may be decimated and is drawn with
+  smoothing, the reported value can differ from the blended color of the screen
+  pixel that was clicked, particularly when zoomed far past the raster's own
+  resolution.
+- The map's `pixelCoordsToRasterPixel()` runs the display point back through
+  `translateDisplayPoint()` first, because the grid is georeferenced in the
+  layer's own CRS while the click is in the display CRS.
+- `HitControl` samples only on `contextmenu`, not on every pointer event.
+  Resolving a color can trigger a scaling-stats scan of the grid, and hover
+  events fire constantly.
+
+A color is only computed for images of three or more bands, so inspecting a DEM
+does not pay for a stats scan that nothing would display. The color goes through
+the same recipe, scaling stats and `scaleSample()` as the preview renderer, so a
+16-bit or float image reads as the color it is drawn with rather than as a raw
+band triplet. Float band values are printed through
+`formatRasterSampleValue()`, which rounds to the precision the type actually
+carries; printing a Float32 in full shows binary noise.
+
 ## SVG Export
 
 SVG export writes raster images using SVG `<image>` elements. By default, images

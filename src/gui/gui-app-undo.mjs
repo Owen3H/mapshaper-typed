@@ -9,8 +9,6 @@
 import { internal } from './gui-core';
 import { createStoredUndoHistory } from './gui-stored-undo-history';
 
-var DEFAULT_HISTORY_LIMIT = 10;
-
 // Returns true if the manifest, URL query, gui-installed checker, or
 // localStorage indicates that app-level undo should be active.
 export function appUndoIsEnabled(gui) {
@@ -50,11 +48,6 @@ export function getStoredUndoHistory(gui) {
   return gui.storedUndoHistory;
 }
 
-export function getUndoHistoryLimit(gui) {
-  var opt = gui && gui.options && gui.options.undoHistoryLimit;
-  return opt > 0 ? opt : DEFAULT_HISTORY_LIMIT;
-}
-
 // Construct an UndoTransaction if and only if app undo is enabled and the
 // transaction can plausibly be added to history. Returns null when undo is
 // off, when the gui's undo manager is missing, or when the UndoTransaction
@@ -68,12 +61,13 @@ export function createUndoTransaction(gui, label) {
   return Transaction ? new Transaction(label || '') : null;
 }
 
-// Add a captured transaction to gui-level history. Pass options through to
-// stored-undo-history.addTransaction(); fills in maxStates when not provided.
+// Add a captured transaction to gui-level history. Options are passed through
+// to stored-undo-history.addTransaction(). History is not capped by entry
+// count: entries are dropped only when their restore data no longer fits in
+// the payload store.
 export function addUndoTransactionToHistory(gui, tx, opts) {
   if (!tx) return Promise.resolve(null);
-  var fullOpts = Object.assign({maxStates: getUndoHistoryLimit(gui)}, opts || {});
-  return getStoredUndoHistory(gui).addTransaction(tx, fullOpts).catch(function(e) {
+  return getStoredUndoHistory(gui).addTransaction(tx, opts || {}).catch(function(e) {
     console.error(e);
   });
 }

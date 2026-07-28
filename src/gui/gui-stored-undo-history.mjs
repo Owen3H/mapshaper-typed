@@ -76,7 +76,6 @@ export function createStoredUndoHistory(gui) {
           notifyUndoWarning(gui, 'Undo restore data was not deleted', e);
         });
     }, {
-      maxStates: opts.maxStates,
       evictToken: evictToken,
       preserveOnModeChange: true
     });
