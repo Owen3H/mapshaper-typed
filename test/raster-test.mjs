@@ -79,7 +79,7 @@ describe('raster layers', function () {
   it('rejects raster export to vector and table formats', function () {
     assert.throws(function() {
       api.internal.exportFileContent(getRasterDataset(), {format: 'geojson'});
-    }, /Raster layers can only be exported as SVG or/);
+    }, /Raster layers can only be exported as GeoTIFF, SVG or/);
   });
 
   it('clips embedded SVG raster images to a frame layer', function () {

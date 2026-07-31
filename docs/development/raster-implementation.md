@@ -332,6 +332,53 @@ when `linked-images` is enabled.
 Browser export can use Canvas encoders. CLI export needs Node-capable JPEG and
 PNG encoding dependencies or a shared pure-JS encoder.
 
+## GeoTIFF Export
+
+`-o format=geotiff` (or a `.tif`/`.tiff` output filename) writes a raster
+layer's samples to a GeoTIFF. Unlike SVG export, which renders a picture of the
+raster, this writes the grid unchanged: same values, same data type, same band
+count, so an elevation model round-trips as elevations.
+
+The encoder in `src/geotiff/mapshaper-geotiff-encode.mjs` is hand-rolled. The
+`geotiff` dependency that reads GeoTIFFs also has a writer, but it corrupts
+signed integer samples (its type table omits the signed typed arrays, so it
+writes 64-bit floats behind integer tags), tags data as Deflate without
+compressing it, and assembles its IFD in a fixed 1000-byte buffer that a long
+ASCII tag overruns. Building on it would have meant fixing all three upstream.
+
+What the encoder writes:
+
+- A classic (32-bit) little-endian TIFF, band-interleaved
+  (`PlanarConfiguration = 1`), which is the layout `grid.samples` already has.
+  Samples are copied as bytes on a little-endian platform and byte-swapped
+  otherwise, rather than written value by value through a `DataView`.
+- Rows grouped into strips of about 256 KB, each Deflate-compressed on its own
+  (`compression=none` stores them). Deflate goes through
+  `deflateSync()` in `src/io/mapshaper-gzip.mjs`, which is zlib in Node and
+  fflate in the browser.
+- `SampleFormat` and `BitsPerSample` derived from the typed array, so all of
+  mapshaper's pixel types survive the trip.
+- `PhotometricInterpretation = 2` (RGB) for three or more bands and `1`
+  (BlackIsZero) otherwise, matching how the renderer treats band counts. A
+  fourth band is declared as unassociated alpha; other bands past the ones the
+  photometric interpretation covers are declared unspecified.
+- `GDAL_NODATA` when the grid has a nodata value.
+- Georeferencing as `ModelTiepoint` plus `ModelPixelScale`, which cannot express
+  rotation, so a rotated or skewed grid is rejected rather than written wrong.
+
+CRS handling is the one lossy part. The geo keys this writer emits hold numeric
+codes only, so an EPSG code can go in the file and anything else cannot.
+`src/geotiff/mapshaper-geotiff-export.mjs` looks for a code in the dataset's
+`crs_string`, in an `AUTHORITY` clause in `info.wkt1`, in GeoPackage CRS
+metadata, and finally by recognizing WGS-84 or Web Mercator from the projection
+itself (which is what makes mapshaper's own `wgs84` and `webmercator` aliases
+come out coded). Failing all that, it writes the projection as WKT to a
+`<file>.tif.aux.xml` sidecar and says so. That is GDAL's own PAM sidecar, which
+GDAL-based software reads; a shapefile-style `.prj` next to a `.tif` is ignored.
+Writing a code-less CRS into the file itself would mean emitting decomposed geo
+keys — a projection method code plus its parameters, the way GDAL does — which
+is a mapping from proj4 that does not exist here yet.
+
 ## Raster Clipping
 
 Raster clipping is available through the rectangle tool and the existing

@@ -11,6 +11,7 @@ import { exportJSON } from '../datatable/mapshaper-json-table';
 import { exportFlatGeobuf } from '../flatgeobuf/mapshaper-flatgeobuf-export';
 import { exportGeoPackage } from '../geopackage/mapshaper-geopackage-export';
 import { exportGeoParquet } from '../geoparquet/mapshaper-geoparquet-export';
+import { exportGeoTIFF } from '../geotiff/mapshaper-geotiff-export';
 import { setCoordinatePrecision } from '../geom/mapshaper-rounding';
 import { copyDatasetForExport, copyDatasetForRenaming } from '../dataset/mapshaper-dataset-utils';
 import { mergeDatasetsForExport } from '../dataset/mapshaper-merging';
@@ -57,8 +58,11 @@ async function exportDatasets(datasets, opts) {
   var format = getOutputFormat(datasets[0], opts);
   var files;
   validateRasterExportFormat(datasets, format);
-  if (format != 'geoparquet' && (opts.compression || opts.level !== undefined)) {
-    error('The compression= and level= options only apply to GeoParquet output');
+  if (format != 'geoparquet' && opts.level !== undefined) {
+    error('The level= option only applies to GeoParquet output');
+  }
+  if (format != 'geoparquet' && format != 'geotiff' && opts.compression) {
+    error('The compression= option only applies to GeoParquet and GeoTIFF output');
   }
   if (format == PACKAGE_EXT) {
     opts = utils.defaults({compact: true}, opts);
@@ -127,14 +131,28 @@ async function exportDatasets(datasets, opts) {
 }
 
 function validateRasterExportFormat(datasets, format) {
+  if (format == 'geotiff') {
+    if (datasetsHaveVectorLayers(datasets)) {
+      stop('GeoTIFF output requires raster layers; use -target to select them');
+    }
+    return;
+  }
   if (!datasetsHaveRasterLayers(datasets)) return;
   if (format == 'svg' || format == PACKAGE_EXT) return;
-  stop('Raster layers can only be exported as SVG or ' + PACKAGE_EXT + ' files');
+  stop('Raster layers can only be exported as GeoTIFF, SVG or ' + PACKAGE_EXT + ' files');
 }
 
 function datasetsHaveRasterLayers(datasets) {
   return datasets.some(function(dataset) {
     return dataset.layers && dataset.layers.some(layerHasRaster);
+  });
+}
+
+function datasetsHaveVectorLayers(datasets) {
+  return datasets.some(function(dataset) {
+    return dataset.layers && dataset.layers.some(function(lyr) {
+      return !layerHasRaster(lyr);
+    });
   });
 }
 
@@ -198,7 +216,8 @@ var exporters = {
   json: exportJSON,
   flatgeobuf: exportFlatGeobuf,
   svg: exportSVG,
-  kml: exportKML
+  kml: exportKML,
+  geotiff: exportGeoTIFF
 };
 
 

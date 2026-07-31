@@ -1,4 +1,5 @@
 v0.7.49
+* Added GeoTIFF output for raster layers (`-o out.tif` or `-o format=geotiff`), keeping the pixels in their source data type, with Deflate compression by default (`compression=none` to store them uncompressed) and the layer's nodata value. A CRS that mapshaper cannot identify by an EPSG code is written to an `.aux.xml` sidecar file.
 * Removed the ten-state limit on undo history in the web UI. Undo states are now discarded only when their restore data exceeds the storage limit.
 * The web UI's right-click menu now stays open after copying a value, so several values can be copied from the same point.
 * The web UI's right-click menu now reports the band values of the raster pixel under the cursor, plus a color tile and hex value for color images.

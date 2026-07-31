@@ -1,4 +1,4 @@
-import { gzipSync as _gzipSync, gzip as _gzipAsync,  gunzipSync as _gunzipSync, gunzip as _gunzipAsync, strToU8, strFromU8 } from 'fflate';
+import { gzipSync as _gzipSync, gzip as _gzipAsync,  gunzipSync as _gunzipSync, gunzip as _gunzipAsync, zlibSync as _zlibSync, strToU8, strFromU8 } from 'fflate';
 import { isImportableAsBinary } from '../io/mapshaper-file-types';
 import utils from '../utils/mapshaper-utils';
 import { runningInBrowser } from '../mapshaper-env';
@@ -18,6 +18,19 @@ export function gzipSync(content, opts) {
     return _gzipSync(content, opts);
   }
   return require('zlib').gzipSync(content, opts);
+}
+
+// Compress to a zlib stream (a deflate stream wrapped in a zlib header and
+// checksum). This is what TIFF's Deflate compression expects, unlike the gzip
+// wrapper used for .gz files.
+export function deflateSync(content, opts) {
+  if (typeof content == 'string') {
+    content = strToU8(content);
+  }
+  if (runningInBrowser()) {
+    return _zlibSync(content, opts);
+  }
+  return require('zlib').deflateSync(content, opts);
 }
 
 export async function gzipAsync(content, opts) {

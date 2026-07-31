@@ -48,6 +48,8 @@ export function inferOutputFormat(file, inputFormat) {
     format = 'flatgeobuf';
   } else if (ext == 'parquet' || ext == 'geoparquet') {
     format = 'geoparquet';
+  } else if (ext == 'tif' || ext == 'tiff') {
+    format = 'geotiff';
   } else if (ext == 'svg') {
     format = 'svg';
   } else if (ext == 'kml' || ext == 'kmz') {

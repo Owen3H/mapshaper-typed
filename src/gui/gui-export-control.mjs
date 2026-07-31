@@ -292,12 +292,23 @@ export var ExportControl = function(gui) {
     var dataset = active.dataset;
     var inputFmt = dataset.info && dataset.info.input_formats &&
         dataset.info.input_formats[0];
-    if (active.layer && internal.layerHasRaster(active.layer)) return 'svg';
+    // SVG stays the default for rasters: it is the only format that also
+    // accepts the vector layers a session usually has alongside them.
+    if (activeLayerHasRaster()) return 'svg';
     return getExportFormats().includes(inputFmt) ? inputFmt : 'geojson';
   }
 
   function getExportFormats() {
-    return ['shapefile', 'json', 'geojson', 'dsv', 'topojson', 'flatgeobuf', 'geopackage', 'geoparquet', 'kml', 'svg', internal.PACKAGE_EXT];
+    var formats = ['shapefile', 'json', 'geojson', 'dsv', 'topojson', 'flatgeobuf', 'geopackage', 'geoparquet', 'kml', 'svg', internal.PACKAGE_EXT];
+    // GeoTIFF is the one format here that only accepts raster layers, so it is
+    // offered only when there is a raster to export.
+    if (activeLayerHasRaster()) formats.push('geotiff');
+    return formats;
+  }
+
+  function activeLayerHasRaster() {
+    var active = model.getActiveLayer();
+    return !!active.layer && internal.layerHasRaster(active.layer);
   }
 
   function initFormatMenu() {

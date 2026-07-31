@@ -11,14 +11,21 @@ This is a curated list of recently added features. For the full list of changes,
 
 <div class="whats-new-entry">
 
-**Contour lines from rasters.** The `-contours` command traces contour lines from a raster layer &mdash; most often elevation contours from a digital elevation model. Mapshaper picks a sensible spacing between lines from the data itself, or you can set your own with `interval=` or a list of `levels=`. Lines stop at the edge of the valid data instead of crossing gaps, and they are smoothed to remove the stair-step edges that tracing a grid of pixels leaves behind. Add `+` to keep the raster as well, for drawing the contours over the image.
+**Saving rasters as GeoTIFF files.** Raster layers can now be exported to a `.tif` file, which until now could only be read. This makes Mapshaper usable as a step in a workflow that continues in other software: crop, project, blur or otherwise edit an image or an elevation model and pass it on. The pixels keep the values and the data type they came in with, so an elevation model is saved as elevations rather than as a picture of them. Files are compressed by default. Since a GeoTIFF holds pixels and nothing else, use `target=` to pick out the raster layer if your session also has vector layers in it.
+
+→ See [File formats](/docs/formats/overview.html) and [`-o`](/docs/reference.html#-o).
+</div>
+
+<div class="whats-new-entry">
+
+**Contour lines from rasters.** The `-contours` command traces contour lines from a raster layer &mdash; typically elevation contours from a digital elevation model. Mapshaper picks a sensible spacing between lines from the data itself, or you can set your own with `interval=` or a list of `levels=`. Add `+` to keep the raster layer.
 
 → See [`-contours`](/docs/reference.html#-contours).
 </div>
 
 <div class="whats-new-entry">
 
-**Blur command.** The `-blur` command softens a raster layer. It has been available but undocumented for a while; it now takes its radius as a plain argument, either in pixels (`-blur 5px`) or as a real-world distance (`-blur 500m`), so the same command gives a comparable amount of blur on images of differing resolution. Blurring an elevation model before `-contours` is a good way to get calmer contour lines. The layer needs to be projected first, if it isn't already.
+**Blur command.** The `-blur` command takes a radius either in pixels (`-blur 5px`) or as a real-world distance (`-blur 500m`). Slightly blurring an elevation model before running `-contours` is an effective way to get smoother, more generalized contour lines.
 
 → See [`-blur`](/docs/reference.html#-blur).
 </div>

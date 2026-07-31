@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 var SOURCE_FIXTURE = 'test/data/geojson/three_points.geojson';
+var RASTER_FIXTURE = 'test/data/geotiff/wgs84-geographic-epsg4326.tif';
 
 test('GUI exports GeoJSON file', async function({page}) {
   await loadFixture(page, SOURCE_FIXTURE);
@@ -33,6 +34,25 @@ test('GUI exports GeoParquet with zstd option', async function({page}) {
   expect(download.suggestedFilename()).toMatch(/\.parquet$/i);
   var errors = await getExportErrors(page);
   expect(errors).toEqual([]);
+});
+
+// GeoTIFF is offered only for raster layers, and its deflate compression takes
+// a different code path in the browser than in Node.
+test('GUI exports GeoTIFF file for a raster layer', async function({page}) {
+  await loadFixture(page, RASTER_FIXTURE);
+  await openExportMenu(page);
+  await selectExportFormat(page, 'geotiff');
+  await clearAdvancedOptions(page);
+  var download = await triggerExportDownload(page);
+  expect(download.suggestedFilename()).toMatch(/\.tif$/i);
+  var errors = await getExportErrors(page);
+  expect(errors).toEqual([]);
+});
+
+test('GUI does not offer GeoTIFF for a vector layer', async function({page}) {
+  await loadFixture(page, SOURCE_FIXTURE);
+  await openExportMenu(page);
+  await expect(page.locator('.export-formats input[value="geotiff"]')).toHaveCount(0);
 });
 
 async function loadFixture(page, fixture) {

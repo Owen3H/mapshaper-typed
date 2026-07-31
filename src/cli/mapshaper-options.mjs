@@ -260,7 +260,7 @@ export function getOptionParser() {
       }
     })
     .option('format', {
-      describe: 'options: shapefile,geojson,topojson,flatgeobuf,geopackage,geoparquet,json,dbf,csv,tsv,svg'
+      describe: 'options: shapefile,geojson,topojson,flatgeobuf,geopackage,geoparquet,geotiff,json,dbf,csv,tsv,svg'
     })
     .option('target', targetOpt)
     .option('force', {
@@ -454,7 +454,7 @@ export function getOptionParser() {
       describe: '[CSV] export numbers with decimal commas not points'
     })
     .option('compression', {
-      describe: '[GeoParquet] options: snappy,zstd,none (default is snappy)'
+      describe: '[GeoParquet] snappy,zstd,none (default snappy) [GeoTIFF] deflate,none'
     })
     .option('level', {
       describe: '[GeoParquet] zstd compression level',
