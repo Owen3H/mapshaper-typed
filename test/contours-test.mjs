@@ -310,13 +310,25 @@ describe('mapshaper-contours.mjs', function () {
   });
 
   describe('smoothing', function () {
+    // The smoother reads coordinates in the lng/lat range as degrees, so these
+    // grids are placed where a UTM-style easting and northing would be. Then a
+    // coordinate unit is a meter, and one pixel of the grid is one meter.
+    var ORIGIN_X = 500000;
+    var ORIGIN_Y = 4000000;
+
+    function placeGrid(grid) {
+      grid.bbox = [ORIGIN_X, ORIGIN_Y, ORIGIN_X + grid.width, ORIGIN_Y + grid.height];
+      grid.transform = [1, 0, ORIGIN_X, 0, -1, ORIGIN_Y + grid.height];
+      return grid;
+    }
+
     // A cone quantized to whole units, which is what makes marching squares
-    // produce a visible one-pixel staircase.
+    // produce a visible staircase.
     function coneDataset(quantize) {
-      var grid = makeGrid(60, 60, function(x, y) {
+      var grid = placeGrid(makeGrid(60, 60, function(x, y) {
         var v = 100 - Math.sqrt(Math.pow(x - 29.5, 2) + Math.pow(y - 29.5, 2));
         return quantize ? Math.round(v) : v;
-      });
+      }));
       var dataset = makeRasterDataset(grid);
       delete dataset.info.crs_string; // smooth in planar coordinate units
       return dataset;
@@ -331,9 +343,8 @@ describe('mapshaper-contours.mjs', function () {
       var raw = coneDataset(true);
       api.cmd.contours(smoothed.layers[0], smoothed, {levels: [80]});
       api.cmd.contours(raw.layers[0], raw, {levels: [80], no_smoothing: true});
-      assert(vertexCount(smoothed) < vertexCount(raw),
-        'smoothing did not reduce the vertex count (' + vertexCount(smoothed) +
-        ' vs ' + vertexCount(raw) + ')');
+      assert.notDeepEqual(smoothed.arcs.getVertexData().xx,
+        raw.arcs.getVertexData().xx);
     });
 
     it('leaves geometry untouched with no-smoothing', function () {
@@ -348,10 +359,74 @@ describe('mapshaper-contours.mjs', function () {
         a.layers[0].raster.grid, 0, [80])[0].coords.length, vertexCount(a));
     });
 
+    // Eleven pixels of a real elevation model, coarse and steep enough that
+    // neighboring contours run a fraction of a pixel apart -- the case that
+    // smoothing by a whole pixel used to pull into a tangle.
+    var STEEP_ROWS = [
+      [193.17, 215.82, 267.06, 232.73, 97.81, 8.19, -15.96, 32.32, 167.67, 236.52, 174.24],
+      [232.08, 212.39, 222.54, 223.01, 188.13, 121.83, 21.87, -6.07, 54.95, 136.04, 66.75],
+      [285.31, 238.65, 205.21, 189.74, 194.18, 157.32, 124.96, 25.57, -18.25, 13.08, 7.22],
+      [246.51, 224.75, 203.61, 177.07, 112.03, 48.06, 136.63, 199.47, 125.7, 0.59, -6.77],
+      [239.31, 201.86, 175.71, 169.97, 163.36, 50.06, 96.44, 228.69, 180.56, 30.7, -4.48],
+      [186.16, 139.57, 149.4, 222.85, 246.77, 66.8, 37.71, 97.56, 48.48, 22.96, -1.98],
+      [121.85, 75.2, 149.67, 235.39, 277.71, 215.89, 60.85, -2.82, -3.49, 0.63, 0.02],
+      [178.87, 53.67, 147.13, 190.91, 96.35, 91.34, 43.59, -4.41, -0.99, -0.55, 0.05],
+      [202.72, 41.3, 110.65, 108.12, 29.3, -9.77, -1.88, 0.14, 0.05, 0.02, 0],
+      [39.89, -1.08, 6.18, -5.15, -0.21, -0.17, -0.23, 0.02, 0, 0, 0],
+      [19.93, -4.42, -1.43, -0.14, -0.16, 0.01, 0, 0, 0, 0, 0]
+    ];
+
+    function steepDataset() {
+      var grid = placeGrid(makeGrid(11, 11, function(x, y) {
+        return STEEP_ROWS[y][x];
+      }));
+      var dataset = makeRasterDataset(grid);
+      delete dataset.info.crs_string; // smooth in planar coordinate units
+      return dataset;
+    }
+
+    function crossingCount(dataset) {
+      return internal.findSegmentIntersections(dataset.arcs, {}).length;
+    }
+
+    it('does not let smoothing pull contour lines across each other', function () {
+      var dataset = steepDataset();
+      var loose = steepDataset();
+      api.cmd.contours(dataset.layers[0], dataset, {interval: 20});
+      // Confirm the grid still exercises the problem: smoothing it by a whole
+      // pixel, as this command once did, tangles the lines.
+      var lyrs = api.cmd.contours(loose.layers[0], loose,
+        {interval: 20, no_smoothing: true});
+      api.cmd.smooth(loose, {distance: 1, no_corners: true, no_prefilter: true}, lyrs);
+      assert(crossingCount(loose) > 0, 'test grid no longer produces crossings');
+      assert.equal(crossingCount(dataset), 0);
+    });
+
+    it('keeps traced vertices clear of grid points before smoothing', function () {
+      // Every sample is a whole number, so a contour at a whole number would
+      // otherwise pass exactly through the grid points it touches. The samples
+      // sit at pixel centers, half a unit inside this grid's bbox.
+      var grid = makeGrid(5, 5, function(x, y) { return x + y; });
+      var onGridPoint = function(lines) {
+        return lines[0].coords.some(function(xy) {
+          return (xy[0] - 0.5) % 1 === 0 && (xy[1] - 0.5) % 1 === 0;
+        });
+      };
+      assert(onGridPoint(internal.traceRasterContours(grid, 0, [4], 0)),
+        'expected the exact trace to touch grid points');
+      assert(!onGridPoint(internal.traceRasterContours(
+        grid, 0, [4], internal.getCornerClearance({}))));
+    });
+
+    it('places crossings exactly with no-smoothing', function () {
+      assert.equal(internal.getCornerClearance({no_smoothing: true}), 0);
+      assert(internal.getCornerClearance({}) > 0);
+    });
+
     it('moves contours closer to the true shape of a quantized surface', function () {
       // The level-80 contour of the cone is a circle of radius 20 centered on
       // the grid. Quantizing to whole units puts a staircase on it; smoothing
-      // at one pixel should reduce the deviation from the true circle.
+      // should reduce the deviation from the true circle.
       function radialError(dataset) {
         var arcs = dataset.arcs;
         var sum = 0, n = 0;
@@ -375,19 +450,19 @@ describe('mapshaper-contours.mjs', function () {
         radialError(smoothed).toFixed(3) + ' vs ' + radialError(raw).toFixed(3) + ')');
     });
 
-    it('selects an interval of one pixel in coordinate units without a CRS', function () {
+    it('selects an interval of a quarter pixel in coordinate units without a CRS', function () {
       var grid = makeGrid(10, 10, function(x) { return x; });
       grid.bbox = [0, 0, 50, 50]; // 5 units per pixel
-      assert.equal(internal.getContourSmoothingDistance(grid, null), 5);
+      assert.equal(internal.getContourSmoothingDistance(grid, null), 1.25);
     });
 
     it('converts the interval to meters for a projected CRS', function () {
       var grid = makeGrid(10, 10, function(x) { return x; });
       grid.bbox = [0, 0, 50, 50]; // 5 units per pixel
-      assert.equal(internal.getContourSmoothingDistance(grid, {to_meter: 1}), 5);
-      // A CRS in feet: five feet per pixel is about 1.524 m.
+      assert.equal(internal.getContourSmoothingDistance(grid, {to_meter: 1}), 1.25);
+      // A CRS in feet: a quarter of a five-foot pixel is about 0.381 m.
       assert(Math.abs(internal.getContourSmoothingDistance(
-        grid, {to_meter: 0.3048}) - 1.524) < 1e-9);
+        grid, {to_meter: 0.3048}) - 0.381) < 1e-9);
     });
 
     it('converts the interval to meters for a lat-long CRS', function () {
@@ -396,7 +471,7 @@ describe('mapshaper-contours.mjs', function () {
       // longitude and a degree of latitude are the same length.
       grid.bbox = [0, -5, 10, 5];
       var d = internal.getContourSmoothingDistance(grid, {is_latlong: true});
-      assert(Math.abs(d - 111195) < 500, 'expected about 111km, got ' + d);
+      assert(Math.abs(d - 111195 / 4) < 500, 'expected about 28km, got ' + d);
     });
 
     it('does not collapse the interval to zero at the poles', function () {
@@ -409,7 +484,7 @@ describe('mapshaper-contours.mjs', function () {
     it('averages the two resolutions of a non-square grid', function () {
       var grid = makeGrid(10, 10, function(x) { return x; });
       grid.bbox = [0, 0, 40, 90]; // 4 units per pixel across, 9 down
-      assert.equal(internal.getContourSmoothingDistance(grid, null), 6);
+      assert.equal(internal.getContourSmoothingDistance(grid, null), 1.5);
     });
 
     it('picks a sane interval for a one-arcsecond DEM', function () {
@@ -417,7 +492,7 @@ describe('mapshaper-contours.mjs', function () {
       var grid = makeGrid(8, 8, function(x) { return x; });
       grid.bbox = [10, 45, 10 + 8 / 3600, 45 + 8 / 3600];
       var d = internal.getContourSmoothingDistance(grid, {is_latlong: true});
-      assert(d > 20 && d < 32, 'expected roughly 26m, got ' + d);
+      assert(d > 5 && d < 8, 'expected roughly 6.5m, got ' + d);
     });
   });
 

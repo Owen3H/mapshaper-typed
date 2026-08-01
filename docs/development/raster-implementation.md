@@ -593,8 +593,31 @@ already sharing the target dataset. And the interval is returned by
 `distance=` number, which is meters when the CRS is known (including for
 lat-long datasets, where a pixel's ground size is derived with a cosine
 correction at the raster's middle latitude) and raw coordinate units when it is
-not. The interval is one pixel; see the constant's comment for the measurements
-behind that choice.
+not. The interval is a quarter of a pixel; see the constant's comment for the
+measurements behind that choice.
+
+Smoothing moves lines, and contour lines run close together wherever the ground
+is steep -- much closer than a pixel on a coarse grid -- so two further steps
+keep it from pulling one line over its neighbor. Both were added after a
+one-pixel interval turned an 11x11 elevation model into a tangle of 40 crossings
+(and a 1200x1053 DEM into 346).
+
+- While the lines are going to be smoothed, the tracer holds each vertex
+  `CORNER_CLEARANCE` of a cell clear of the grid point at either end of the edge
+  it crosses. A sample whose value is exactly the contour level -- routine, with
+  whole-unit elevations and round levels -- otherwise puts the crossing exactly
+  on that grid point, and every cell around the point does the same, so two
+  branches of the contour meet there. Touching does no harm in the traced line,
+  but smoothing turns each touch into a crossing, and no interval is small enough
+  to prevent it. `no-smoothing` traces without the clearance, so the raw geometry
+  is still the exact marching-squares result.
+- Afterwards `repairCrossedArcs()` looks for crossings and puts the lines
+  involved back the way they were traced, repeating until none are left. Contour
+  lines never cross, so any crossing is smoothing overreaching, and the traced
+  geometry is a floor the repair can always fall back to. This costs a
+  `findSegmentIntersections()` pass, about 2% of what the smoothing itself costs,
+  and on the DEMs measured it leaves a handful of lines unsmoothed at most (2 of
+  12,697 on the 1200x1053 file).
 
 ## Commands And Validation
 

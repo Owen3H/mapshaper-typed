@@ -14,13 +14,34 @@ import { stop } from '../utils/mapshaper-logging';
 var MAX_CONTOUR_LEVELS = 2000;
 var TARGET_LEVEL_COUNT = 15;
 
-// Marching squares traces a staircase with treads one pixel wide, so smoothing
-// at one pixel is what removes the stepping. Measured against an analytic cone
-// quantized to whole meters (as elevation models usually are), one pixel gives
-// the lowest deviation from the true contour: 0.16 px, against 0.29 px
-// unsmoothed and 0.18 px at 1.5 px. On unquantized float data, where there is
-// no staircase to remove, the cost is under 0.1 px.
-var SMOOTHING_PIXELS = 1;
+// Marching squares traces a staircase with treads about one pixel wide, and the
+// smoother halves the amplitude of detail at roughly five times the distance it
+// is given, so a quarter of a pixel is already aimed squarely at the stepping.
+//
+// The distance also sets how far the line may move, and that is what limits it
+// from above: neighboring contours are as far apart as the contour interval
+// divided by the local gradient, which on a coarse grid over steep ground is a
+// small fraction of a pixel. (In test/data/features/contours/sample2_detail.tif
+// -- 11x11 pixels -- lines run as close as 0.1 px.) A distance of one pixel
+// therefore let lines walk over their neighbors: 40 crossings on that file and
+// 346 on a 1200x1053 DEM, against none at a quarter pixel and one pixel of
+// visible detail lost for nothing.
+var SMOOTHING_PIXELS = 0.25;
+
+// Smallest gap, as a fraction of a cell, that a traced vertex is kept from the
+// grid point at either end of the edge it crosses.
+//
+// A sample whose value is exactly the contour level -- common, since elevations
+// are usually whole units and levels are round numbers -- puts the crossing
+// exactly on that grid point. Every cell around the point does the same, so two
+// branches of the contour meet there instead of passing by. Touching is
+// harmless in the traced line, but smoothing moves the branches and turns each
+// touch into a crossing, and no smoothing distance is small enough to avoid it.
+// Holding vertices a tenth of a cell clear leaves the branches far enough apart
+// to survive smoothing: on a 1200x1053 DEM this took the crossings that
+// survived from 67 to 2. Only applied when the lines are going to be smoothed;
+// with no-smoothing the crossings are placed exactly.
+var CORNER_CLEARANCE = 0.1;
 
 // A degree of longitude vanishes at the poles; keep the implied pixel width
 // from collapsing to zero there.
@@ -79,7 +100,7 @@ export function getRasterContourLines(raster, opts) {
   levels = getContourLevels(grid, band, opts);
   return {
     levels: levels,
-    lines: traceRasterContours(grid, band, levels)
+    lines: traceRasterContours(grid, band, levels, getCornerClearance(opts))
   };
 }
 
@@ -213,14 +234,21 @@ export function getRasterSampleRange(grid, band) {
   return {min: min, max: max};
 }
 
-export function traceRasterContours(grid, band, levels) {
+export function getCornerClearance(opts) {
+  return opts && opts.no_smoothing ? 0 : CORNER_CLEARANCE;
+}
+
+// clearance: see CORNER_CLEARANCE; 0 places crossings exactly.
+export function traceRasterContours(grid, band, levels, clearance) {
   var segments = collectContourSegments(grid, band, levels);
   var toMapXY = getLatticeToMapTransform(grid);
   var hCount = (grid.width - 1) * grid.height;
   var lines = [];
+  clearance = clearance || 0;
   segments.forEach(function(levelSegments, i) {
     stitchContourSegments(levelSegments).forEach(function(path) {
-      var coords = getPathCoords(path, grid, band, levels[i], hCount, toMapXY);
+      var coords = getPathCoords(path, grid, band, levels[i], hCount, toMapXY,
+        clearance);
       if (coords.length > 1) {
         lines.push({value: levels[i], coords: coords});
       }
@@ -361,12 +389,12 @@ function followContour(startEdge, next, visited) {
   return path;
 }
 
-function getPathCoords(path, grid, band, level, hCount, toMapXY) {
+function getPathCoords(path, grid, band, level, hCount, toMapXY, clearance) {
   var coords = [];
   var prev = null;
   var point, xy;
   for (var i = 0; i < path.length; i++) {
-    point = getEdgeCrossing(grid, band, level, path[i], hCount);
+    point = getEdgeCrossing(grid, band, level, path[i], hCount, clearance);
     xy = toMapXY(point[0], point[1]);
     // A corner value exactly equal to the level puts two crossings in the
     // same place; keeping both would emit zero-length segments.
@@ -380,7 +408,7 @@ function getPathCoords(path, grid, band, level, hCount, toMapXY) {
 // Returns the crossing point in lattice coordinates. The result depends only
 // on the edge and the level, so both cells sharing an edge compute the same
 // point, down to the last bit.
-function getEdgeCrossing(grid, band, level, edgeId, hCount) {
+function getEdgeCrossing(grid, band, level, edgeId, hCount, clearance) {
   var W = grid.width;
   var bands = grid.bands;
   var samples = grid.samples;
@@ -390,21 +418,23 @@ function getEdgeCrossing(grid, band, level, edgeId, hCount) {
     x = edgeId - y * (W - 1);
     v0 = samples[(y * W + x) * bands + band];
     v1 = samples[(y * W + x + 1) * bands + band];
-    return [x + interpolateCrossing(level, v0, v1), y];
+    return [x + interpolateCrossing(level, v0, v1, clearance), y];
   }
   edgeId -= hCount;
   y = Math.floor(edgeId / W);
   x = edgeId - y * W;
   v0 = samples[(y * W + x) * bands + band];
   v1 = samples[((y + 1) * W + x) * bands + band];
-  return [x, y + interpolateCrossing(level, v0, v1)];
+  return [x, y + interpolateCrossing(level, v0, v1, clearance)];
 }
 
-function interpolateCrossing(level, v0, v1) {
+// clearance: fraction of the edge kept free at either end. See CORNER_CLEARANCE.
+function interpolateCrossing(level, v0, v1, clearance) {
+  var hi = 1 - clearance;
   var t;
   if (v1 === v0) return 0.5;
   t = (level - v0) / (v1 - v0);
-  return t < 0 ? 0 : t > 1 ? 1 : t;
+  return t < clearance ? clearance : t > hi ? hi : t;
 }
 
 // Lattice coordinates are indexed from the center of the first pixel, not the

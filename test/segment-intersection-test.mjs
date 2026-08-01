@@ -92,6 +92,56 @@ describe('mapshaper-segment-intersection.js', function () {
     })
   })
 
+  describe('repairCrossedArcs()', function () {
+    var repairCrossedArcs = internal.repairCrossedArcs;
+
+    // Two arcs a unit apart. Bulging the second one across the first is the
+    // kind of damage a whole-collection edit (such as smoothing) can do.
+    function makeArcs(bulge) {
+      return new internal.ArcCollection([
+        [[0, 0], [1, 0], [2, 0], [3, 0]],
+        [[0, 1], [1, bulge], [2, bulge], [3, 1]]
+      ]);
+    }
+
+    it('leaves arcs alone when nothing crosses', function () {
+      var arcs = makeArcs(1);
+      var res = repairCrossedArcs(arcs, makeArcs(1));
+      assert.deepEqual(res, {reverted: 0, remaining: 0});
+      assert.deepEqual(arcs.toArray(), makeArcs(1).toArray());
+    });
+
+    it('puts crossed arcs back and reports them', function () {
+      var arcs = makeArcs(-1);
+      var res = repairCrossedArcs(arcs, makeArcs(1));
+      assert.equal(res.remaining, 0);
+      // Only the arc that moved needs to go back, but both take part in the
+      // crossing and neither is distinguishable from the other here.
+      assert(res.reverted > 0 && res.reverted <= 2);
+      assert.equal(internal.findSegmentIntersections(arcs).length, 0);
+    });
+
+    it('restores arcs whose vertex count changed', function () {
+      var arcs = new internal.ArcCollection([
+        [[0, 0], [3, 0]],
+        [[0, 1], [1.5, -1], [3, 1]] // crosses the first arc
+      ]);
+      var orig = new internal.ArcCollection([
+        [[0, 0], [1, 0], [2, 0], [3, 0]],
+        [[0, 1], [1, 1], [2, 1], [3, 1]]
+      ]);
+      var res = repairCrossedArcs(arcs, orig);
+      assert.equal(res.remaining, 0);
+      assert.equal(internal.findSegmentIntersections(arcs).length, 0);
+      assert.deepEqual(arcs.toArray(), orig.toArray());
+    });
+
+    it('gives up when the original arcs cross too', function () {
+      var res = repairCrossedArcs(makeArcs(-1), makeArcs(-1));
+      assert.equal(res.remaining > 0, true);
+    });
+  })
+
   describe('calcSegmentIntersectionStripeCount()', function () {
     it('Issue #49 test 1', function () {
       // collapsed islands

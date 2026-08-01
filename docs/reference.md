@@ -605,12 +605,16 @@ first pixel to the center of the last, half a pixel inside the raster's bounds.
 Pixels marked as nodata, and pixels left uncovered by a previous `-proj`, are
 excluded: contours stop at the edge of the valid data instead of crossing it.
 
-Traced contours carry a one-pixel staircase, which is most visible on quantized
-data such as an elevation model recorded in whole meters. `-contours` therefore
-finishes by smoothing the lines, using an interval of one pixel that it works
-out from the raster's resolution and reports on the console. Smoothing also
-reduces the vertex count substantially. Use `no-smoothing` to skip the step and
-keep the raw traced geometry, which you can then smooth yourself with `-smooth`.
+Traced contours carry a staircase about a pixel wide, which is most visible on
+quantized data such as an elevation model recorded in whole meters. `-contours`
+therefore finishes by smoothing the lines, using an interval of a quarter of a
+pixel that it works out from the raster's resolution and reports on the console.
+The interval is kept well under a pixel because contour lines can run much
+closer together than that on steep ground, and smoothing must not move a line
+far enough to cross its neighbor. Where a line would cross anyway, it is left as
+traced, and the console says how many lines that affected. Use `no-smoothing` to
+skip the step and keep the raw traced geometry, which you can then smooth
+yourself with `-smooth`.
 
 By default the contour layer replaces the raster layer. Use `+` to keep the
 raster as well, which is useful for drawing the contours over the image.

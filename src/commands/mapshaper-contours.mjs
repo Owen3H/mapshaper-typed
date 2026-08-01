@@ -8,6 +8,7 @@ import { layerHasRaster, setOutputLayerName } from '../dataset/mapshaper-layer-u
 import { mergeDatasetsIntoDataset } from '../dataset/mapshaper-merging';
 import { DataTable } from '../datatable/mapshaper-data-table';
 import { importGeoJSON } from '../geojson/geojson-import';
+import { repairCrossedArcs } from '../paths/mapshaper-segment-intersection-repair';
 import { getRasterGrid } from '../rasters/mapshaper-raster-utils';
 import {
   getContourSmoothingDistance,
@@ -46,12 +47,14 @@ cmd.contours = function(targetLyr, targetDataset, opts) {
 function smoothContourDataset(dataset, grid) {
   var crs = getDatasetCRS(dataset);
   var distance = getContourSmoothingDistance(grid, crs);
+  var unsmoothed, repair;
   if (!(distance > 0)) {
     message('Skipped contour smoothing: unable to determine the pixel size');
     return;
   }
   message('Smoothing contours with an auto-selected interval of ' +
-    formatSmoothingDistance(distance, crs) + ' (one pixel)');
+    formatSmoothingDistance(distance, crs) + ' (a quarter of a pixel)');
+  unsmoothed = dataset.arcs.getCopy();
   cmd.smooth(dataset, {
     distance: distance,
     // The contour staircase is an artifact, so there are no real corners to
@@ -59,6 +62,19 @@ function smoothContourDataset(dataset, grid) {
     no_corners: true,
     no_prefilter: true
   }, dataset.layers);
+  // Contour lines never cross, so any crossing is smoothing pulling a line over
+  // its neighbor. The interval is small enough that this is rare, and where it
+  // happens the lines involved are better left as they were traced.
+  repair = repairCrossedArcs(dataset.arcs, unsmoothed);
+  if (repair.reverted > 0) {
+    message('Left ' + repair.reverted + ' contour ' +
+      (repair.reverted == 1 ? 'line' : 'lines') +
+      ' unsmoothed, to keep lines from crossing');
+  }
+  if (repair.remaining > 0) {
+    message('Unable to remove ' + repair.remaining + ' crossing' +
+      (repair.remaining == 1 ? '' : 's') + ' between contour lines');
+  }
 }
 
 function formatSmoothingDistance(distance, crs) {
