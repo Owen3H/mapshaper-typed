@@ -273,6 +273,31 @@ the forward mesh raster reprojection path to create a viewport-sized projected
 preview. Reprojected display previews are GUI-only caches; they do not mutate
 the working grid.
 
+### Magnified rasters
+
+Zoomed in past a raster's resolution, smoothing is all a user can see, so the
+pixels are drawn as squares instead. Both display paths reach this through the
+two rules in `gui-raster-display-utils.mjs`, which are kept free of browser and
+mapshaper dependencies so they can be tested directly:
+
+- `previewHasSourcePixels()` — whether the preview image in hand holds every
+  raster pixel in view. This is the guard that makes the feature safe. While a
+  large raster is panned, and until a sharper preview is ready, the map draws
+  the whole-raster preview made at import time, which is scaled down to fit
+  within `DEFAULT_MAX_PREVIEW_PIXELS`. Magnifying that as squares would show
+  crisp blocks that are not pixels of the raster, and they would then be
+  replaced by different, real ones.
+- `rasterPreviewIsSmoothed()` — applies `MIN_CRISP_MAGNIFICATION`, in screen
+  pixels per raster pixel. Below it, squares would only look jagged, since the
+  destination rectangle is not pixel-snapped and pixels land on fractional
+  boundaries.
+
+The reprojected path has to decide before it resamples, not just at the blit:
+the sample method follows the same test, because interpolating between pixels
+when the output grid has room for all of them blurs the data away for nothing.
+It estimates how many raster pixels a view covers by mapping the view's bbox
+back through the source CRS, and falls back to smoothing if that fails.
+
 ## GUI Pixel Readout
 
 The right-click menu reports the pixel under the cursor, alongside the

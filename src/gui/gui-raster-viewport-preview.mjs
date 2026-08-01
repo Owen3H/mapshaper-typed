@@ -1,5 +1,6 @@
 import { internal } from './gui-core';
 import { GUI } from './gui-lib';
+import { previewHasSourcePixels } from './gui-raster-display-utils';
 
 var MAX_VIEWPORT_PREVIEW_PIXELS = 6e6;
 var cache = new WeakMap();
@@ -27,6 +28,7 @@ export function scheduleRasterViewportPreview(layer, ext, onReady) {
     stats = getCachedRasterScalingStats(params, timing);
     timing.renderStart = getTimer();
     preview = internal.renderRasterViewportPreview(params.grid, params.recipe, params.bbox, params.width, params.height, stats);
+    if (preview) preview.sourcePixels = params.sourcePixels;
     timing.renderMs = getTimer() - timing.renderStart;
     logRasterPreviewTiming(params, timing);
     current = cache.get(layer);
@@ -78,6 +80,7 @@ export function getRasterViewportPreviewParams(layer, ext) {
   return {
     key: key,
     needed: needed,
+    sourcePixels: previewHasSourcePixels(width, height, crop.width, crop.height),
     raster: raster,
     grid: grid,
     recipe: recipe,

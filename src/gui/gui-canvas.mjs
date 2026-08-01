@@ -10,6 +10,10 @@ import {
   scheduleRasterReprojectedPreview
 } from './gui-raster-reprojected-preview';
 import { getCanvasFillPattern, getCanvasFillEffect } from './gui-canvas-patterns';
+import {
+  previewHasSourcePixels,
+  rasterPreviewIsSmoothed
+} from './gui-raster-display-utils';
 
 // TODO: consider moving this upstream
 function getArcsForRendering(lyr, ext) {
@@ -159,7 +163,7 @@ export function DisplayCanvas() {
     var raster = layer.raster;
     var options = opts || {};
     var preview = null;
-    var bbox;
+    var bbox, grid, sourcePixels;
     if (layer.gui && layer.gui.dynamic_crs) {
       preview = getCachedRasterReprojectedPreview(layer, _ext);
       if (!preview) {
@@ -170,7 +174,7 @@ export function DisplayCanvas() {
       }
       bbox = preview.bbox;
       if (!preview.pixels || !bbox) return;
-      drawRasterPreview(preview, bbox);
+      drawRasterPreview(preview, bbox, preview.sourcePixels);
       if (options.action != 'nav' && options.onViewportPreviewReady) {
         scheduleRasterReprojectedPreview(layer, _ext, options.onViewportPreviewReady);
       }
@@ -178,15 +182,21 @@ export function DisplayCanvas() {
     }
     preview = options.action == 'nav' ? null : getCachedRasterViewportPreview(layer, _ext);
     bbox = preview && preview.bbox;
+    sourcePixels = preview && preview.sourcePixels;
     if (!preview) {
+      // The whole-raster preview made at import time, which is scaled down if
+      // the raster is large.
       preview = raster && internal.getRasterPreview(raster);
       bbox = raster && internal.getRasterBBox(raster);
+      grid = raster && internal.getRasterGrid(raster);
+      sourcePixels = !!(preview && grid) && previewHasSourcePixels(
+        preview.width, preview.height, grid.width, grid.height);
       if (options.action != 'nav' && options.onViewportPreviewReady) {
         scheduleRasterViewportPreview(layer, _ext, options.onViewportPreviewReady);
       }
     }
     if (!preview || !preview.pixels || !bbox) return;
-    drawRasterPreview(preview, bbox);
+    drawRasterPreview(preview, bbox, sourcePixels);
   };
 
   /*
@@ -388,12 +398,16 @@ export function DisplayCanvas() {
     }
   }
 
-  function drawRasterPreview(preview, bbox) {
+  // sourcePixels: true if one pixel of the preview is one pixel of the raster,
+  // so that drawing it as squares shows the data rather than an artifact of
+  // whatever it was scaled down to.
+  function drawRasterPreview(preview, bbox, sourcePixels) {
     var img = getRasterCanvas(preview);
     var t = _ext.getTransform(GUI.getPixelRatio());
     var p1 = t.transform(bbox[0], bbox[3]);
     var p2 = t.transform(bbox[2], bbox[1]);
-    _ctx.imageSmoothingEnabled = true;
+    var magnification = Math.abs(p2[0] - p1[0]) / img.width / GUI.getPixelRatio();
+    _ctx.imageSmoothingEnabled = rasterPreviewIsSmoothed(sourcePixels, magnification);
     _ctx.drawImage(img, p1[0], p1[1], p2[0] - p1[0], p2[1] - p1[1]);
   }
 

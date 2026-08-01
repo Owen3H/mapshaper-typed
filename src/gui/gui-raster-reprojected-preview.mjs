@@ -1,5 +1,6 @@
 import { internal } from './gui-core';
 import { GUI } from './gui-lib';
+import { previewHasSourcePixels } from './gui-raster-display-utils';
 
 var MAX_REPROJECTED_PREVIEW_PIXELS = 6e6;
 var cache = new WeakMap();
@@ -45,6 +46,7 @@ export function scheduleRasterReprojectedPreview(layer, ext, onReady) {
     }
     timing.renderStart = getTimer();
     preview = internal.renderRasterPreview(grid, params.recipe, grid.width, grid.height, params.stats);
+    preview.sourcePixels = params.sourcePixels;
     applyCoverageMask(preview, grid.coverage);
     timing.renderMs = getTimer() - timing.renderStart;
     logRasterReprojectionTiming(params, timing);
@@ -68,12 +70,13 @@ function getRasterReprojectedPreviewParams(layer, ext) {
   var viewBbox = ext && ext.getBounds().toArray();
   var bbox = rasterBbox && viewBbox && internal.intersectBboxes(rasterBbox, viewBbox);
   var size = bbox && getPreviewSize(ext, sourceGrid);
-  var recipe, stats;
+  var recipe, stats, sourcePixels;
   if (!sourceCRS || !displayCRS || !sourceGrid || !sourceGrid.samples || !bbox || !size) return null;
   recipe = internal.getRasterViewRecipe(sourceGrid, raster.view && raster.view.recipe);
   stats = internal.getRasterViewScalingStats(raster, recipe);
+  sourcePixels = outputHasSourcePixels(sourceGrid, bbox, sourceCRS, displayCRS, size);
   return {
-    key: getRasterReprojectedPreviewKey(layer, bbox, size, sourceCRS, displayCRS, recipe),
+    key: getRasterReprojectedPreviewKey(layer, bbox, size, sourceCRS, displayCRS, recipe, sourcePixels),
     grid: sourceGrid,
     sourceCRS: sourceCRS,
     displayCRS: displayCRS,
@@ -82,8 +85,46 @@ function getRasterReprojectedPreviewParams(layer, ext) {
     height: size.height,
     recipe: recipe,
     stats: stats,
-    sampleMethod: getRasterReprojectionSampleMethod(),
+    sourcePixels: sourcePixels,
+    sampleMethod: getRasterReprojectionSampleMethod(sourcePixels),
     meshInterval: 32
+  };
+}
+
+// True if the reprojected grid has room for every source pixel in view, so that
+// sampling it without interpolation gives back the raster's own pixels. This is
+// the zoomed-in case: reprojecting a raster to fewer pixels than it has needs
+// interpolation to avoid dropping data.
+function outputHasSourcePixels(grid, bbox, sourceCRS, displayCRS, size) {
+  var sourceSize = getSourcePixelsInView(grid, bbox, sourceCRS, displayCRS);
+  return !!sourceSize && previewHasSourcePixels(
+    size.width, size.height, sourceSize.width, sourceSize.height);
+}
+
+// Estimates how many of the raster's pixels a view covers, by taking the part
+// of the source grid that the view maps back onto. Returns null if the view
+// does not map back (e.g. it includes coordinates outside the projection).
+function getSourcePixelsInView(grid, bbox, sourceCRS, displayCRS) {
+  var transform = internal.getProjTransform2(displayCRS, sourceCRS);
+  var xx = [bbox[0], (bbox[0] + bbox[2]) / 2, bbox[2]];
+  var yy = [bbox[1], (bbox[1] + bbox[3]) / 2, bbox[3]];
+  var xmin = Infinity, ymin = Infinity, xmax = -Infinity, ymax = -Infinity;
+  var p;
+  if (!transform) return null;
+  for (var i = 0; i < xx.length; i++) {
+    for (var j = 0; j < yy.length; j++) {
+      p = transform(xx[i], yy[j]);
+      if (!p || !isFinite(p[0]) || !isFinite(p[1])) continue;
+      if (p[0] < xmin) xmin = p[0];
+      if (p[0] > xmax) xmax = p[0];
+      if (p[1] < ymin) ymin = p[1];
+      if (p[1] > ymax) ymax = p[1];
+    }
+  }
+  if (!(xmax > xmin) || !(ymax > ymin)) return null;
+  return {
+    width: (xmax - xmin) / (grid.bbox[2] - grid.bbox[0]) * grid.width,
+    height: (ymax - ymin) / (grid.bbox[3] - grid.bbox[1]) * grid.height
   };
 }
 
@@ -101,10 +142,11 @@ function getPreviewSize(ext, grid) {
   return {width: width, height: height};
 }
 
-function getRasterReprojectedPreviewKey(layer, bbox, size, sourceCRS, displayCRS, recipe) {
+function getRasterReprojectedPreviewKey(layer, bbox, size, sourceCRS, displayCRS, recipe, sourcePixels) {
   return [
     size.width,
     size.height,
+    sourcePixels,
     bbox.join(','),
     internal.crsToProj4(sourceCRS),
     internal.crsToProj4(displayCRS),
@@ -112,7 +154,7 @@ function getRasterReprojectedPreviewKey(layer, bbox, size, sourceCRS, displayCRS
     recipe.scaling,
     recipe.scaleRange && recipe.scaleRange.join(','),
     recipe.percentileRange && recipe.percentileRange.join(','),
-    getRasterReprojectionSampleMethod(),
+    getRasterReprojectionSampleMethod(sourcePixels),
     layer.raster && layer.raster.grid && layer.raster.grid.samples && layer.raster.grid.samples.length
   ].join('|');
 }
@@ -140,10 +182,13 @@ function applyCoverageMask(preview, coverage) {
   }
 }
 
-function getRasterReprojectionSampleMethod() {
+function getRasterReprojectionSampleMethod(sourcePixels) {
   var vars = GUI.getUrlVars();
   var val = vars['raster-bilinear'] ?? vars.raster_bilinear;
-  return val === false || val == '0' ? 'nearest' : 'bilinear';
+  if (val === false || val == '0') return 'nearest';
+  // Interpolating between pixels when there is room for all of them would blur
+  // the data away for nothing.
+  return sourcePixels ? 'nearest' : 'bilinear';
 }
 
 function logRasterReprojectionTiming(params, timing) {
