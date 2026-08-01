@@ -53,6 +53,37 @@ test('GUI imports multiple fixtures in one session', async function({page}) {
   expect(result.errorMessages).toEqual([]);
 });
 
+// A raster whose CRS mapshaper cannot read is still a picture with a known
+// place in its own coordinates, so it is drawn. It used to be loaded but never
+// drawn: the modal popup about its CRS took the app out of import mode, and
+// leaving import mode is what draws what was imported.
+test('GUI displays a raster with no readable CRS', async function({page}) {
+  var files = 'test/data/geotiff/no-crs-rgb-3x3.tif';
+  await page.goto('/?undo=on&undo-test=on&files=' + encodeURIComponent(files));
+  await getImportResult(page);
+
+  await expect(page.locator('.alert-box')).toHaveCount(0);
+  await expect.poll(function() {
+    return getPaintedMapPixels(page);
+  }).toBeGreaterThan(1000);
+});
+
+// The number of pixels the map canvases have drawn anything into.
+function getPaintedMapPixels(page) {
+  return page.evaluate(function() {
+    return Array.from(document.querySelectorAll('.map-layers canvas')).reduce(
+      function(memo, canvas) {
+        var data = canvas.getContext('2d').getImageData(
+          0, 0, canvas.width, canvas.height).data;
+        var count = 0;
+        for (var i = 3; i < data.length; i += 4) {
+          if (data[i] > 0) count++;
+        }
+        return memo + count;
+      }, 0);
+  });
+}
+
 async function getImportResult(page) {
   await page.waitForFunction(function() {
     return window.mapshaper &&

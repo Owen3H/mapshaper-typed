@@ -1,4 +1,4 @@
-import { getCrsInfo, initProjLibrary, setDatasetCrsInfo } from '../crs/mapshaper-projections';
+import { initProjLibrary, setDatasetCrsInfo, tryParseCrsString } from '../crs/mapshaper-projections';
 import { getGeoKeyProjection, replaceProj4Projection } from '../geotiff/mapshaper-geotiff-geokeys';
 import { runningInBrowser } from '../mapshaper-env';
 import { getFileBase } from '../utils/mapshaper-filename-utils';
@@ -373,20 +373,31 @@ function getSourceInfo(input, sourceId, image) {
   };
 }
 
+// Reads the CRS a GeoTIFF claims, if mapshaper can make sense of it. A file
+// with no usable CRS metadata still imports: the raster keeps the coordinates
+// in its own georeferencing, and only the things that need to know what those
+// coordinates mean (reprojecting, basemaps, measuring) are unavailable. So a
+// CRS that cannot be read is reported and set aside, never raised as an error.
 async function importGeoTIFFCrs(dataset, image) {
   var crsInfo = await getGeoTIFFCrsInfo(image);
   var crsString = crsInfo.crsString;
-  if (!crsString) {
-    warnOnce(getGeoTIFFCrsWarning(crsInfo));
+  var crs = null;
+  if (crsString) {
+    try {
+      await initProjLibrary({crs: crsString});
+    } catch(e) {
+      // A projection resource that would not load leaves the string to be
+      // parsed with whatever is already known.
+    }
+    crs = tryParseCrsString(crsString);
+  }
+  if (!crs) {
+    dataset.info = dataset.info || {};
+    warnOnce(getGeoTIFFCrsWarning(crsInfo, crsString ?
+      'Unable to use projection ' + crsString : null));
     return;
   }
-  try {
-    await initProjLibrary({crs: crsString});
-    setDatasetCrsInfo(dataset, getCrsInfo(crsString));
-  } catch(e) {
-    dataset.info = dataset.info || {};
-    warnOnce(getGeoTIFFCrsWarning(crsInfo, e.message || e));
-  }
+  setDatasetCrsInfo(dataset, {crs_string: crsString, crs: crs});
 }
 
 async function getGeoTIFFCrsInfo(image) {

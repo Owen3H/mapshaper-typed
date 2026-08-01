@@ -11,6 +11,7 @@ var BIG_ENDIAN_DEFLATE_FIXTURE = '/Users/matthewbloch/nytweb/2026/mapshaper/rast
 var LARGE_YCBCR_FIXTURE = '/Users/matthewbloch/nytweb/2026/mapshaper/rasters/f5a3e369-efa2-449d-aa74-6f164d6b9103.tif';
 var USER_DEFINED_CRS_FIXTURE = '/Users/matthewbloch/nytweb/2026/mapshaper/rasters/usa-relief.tif';
 var WGS84_GEOTIFF_FIXTURE = 'test/data/geotiff/wgs84-geographic-epsg4326.tif';
+var NO_CRS_GEOTIFF_FIXTURE = 'test/data/geotiff/no-crs-rgb-3x3.tif';
 
 describe('raster layers', function () {
   it('exports raster previews as embedded SVG images', function () {
@@ -216,6 +217,20 @@ describe('raster layers', function () {
     assert(dataset.info.crs_string.includes('+proj=aea'));
     assert(dataset.info.crs_string.includes('+lat_1=29.5'));
     assert(dataset.info.crs_string.includes('+lon_0=-96'));
+  });
+
+  // A raster with no readable CRS is still worth having: it has pixels and a
+  // place of its own to put them in. Only the operations that need to know what
+  // its coordinates mean are unavailable, so the import reports the problem
+  // rather than failing.
+  it('imports a GeoTIFF with no readable CRS metadata', async function () {
+    var dataset = await api.internal.importFileAsync(NO_CRS_GEOTIFF_FIXTURE, {});
+    var lyr = dataset.layers[0];
+    assert.equal(dataset.info.crs, undefined);
+    assert.equal(dataset.info.crs_string, undefined);
+    assert.equal(lyr.raster.grid.width, 3);
+    assert.deepEqual(lyr.raster.grid.bbox, [-15, -15, 15, 15]);
+    assert.deepEqual(api.internal.getLayerBounds(lyr).toArray(), [-15, -15, 15, 15]);
   });
 
   it('imports geographic GeoTIFF EPSG:4326 CRS metadata', async function () {

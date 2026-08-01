@@ -198,14 +198,20 @@ export function ImportControl(gui, opts) {
     }
   }
 
-  function turnOff() {
-    var target;
-    if (catalog) catalog.reset(); // re-enable clickable catalog
+  // Draw and select what was imported. Called when import mode ends, and by
+  // importQueuedFiles() if something else has already ended it.
+  function finishImport() {
     if (importCount > 0) {
       onImportComplete();
       importTotal += importCount;
       importCount = 0;
     }
+  }
+
+  function turnOff() {
+    var target;
+    if (catalog) catalog.reset(); // re-enable clickable catalog
+    finishImport();
     gui.clearProgressMessage();
     initialImport = false; // unset 'quick view' mode, if on
     clearQueuedFiles();
@@ -232,8 +238,13 @@ export function ImportControl(gui, opts) {
       gui.alert(e.message, 'Import error');
     }
     if (gui.getMode() == 'import') {
-      // Mode could also be 'alert' if an error is thrown and handled
-      gui.clearMode();
+      gui.clearMode(); // leaving import mode finishes the import
+    } else {
+      // A popup shown while files were loading (an alert about one file's
+      // metadata, say) takes the app out of import mode, so leaving it is no
+      // longer what finishes the import. Without this, the files that did load
+      // would sit in the catalog undrawn.
+      finishImport();
     }
     if (undoTransaction && imported) {
       addUndoTransactionToHistory(gui, undoTransaction, {

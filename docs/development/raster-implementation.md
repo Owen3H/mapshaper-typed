@@ -169,6 +169,17 @@ The browser GUI must recognize GeoTIFF files as binary before import. If `.tif`
 and `.tiff` are not added to binary detection, the browser file reader may treat
 them as text and corrupt the bytes before the decoder sees them.
 
+A raster whose CRS metadata cannot be read still imports, and is displayed in
+its own coordinates; only the operations that need to know what those
+coordinates mean — reprojecting, basemaps, measuring — are unavailable. The
+import therefore parses a CRS string it is unsure of with
+`tryParseCrsString()`, which returns null instead of stopping, and reports the
+failure with `warnOnce()`. Using the ordinary parser here had two effects in the
+web app that neither the CLI nor the tests could show: `stop()` opens a modal
+popup on its way to throwing, and opening one puts the app in its `alert` mode,
+which took the importer out of `import` mode — and leaving `import` mode is what
+draws what was imported. The raster loaded, and the map stayed blank.
+
 PNG and JPEG import also uses the async raster import path:
 
 - Recognize `.png`, `.jpg`, and `.jpeg` as binary importable primary files.

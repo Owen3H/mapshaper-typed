@@ -1,5 +1,5 @@
 import { AlbersUSA, parseCustomProjection } from '../crs/mapshaper-custom-projections';
-import { stop, print } from '../utils/mapshaper-logging';
+import { getLoggingSetter, setLoggingForCLI, stop, print } from '../utils/mapshaper-logging';
 import { probablyDecimalDegreeBounds } from '../geom/mapshaper-latlon';
 import { getDatasetBounds, datasetIsEmpty } from '../dataset/mapshaper-dataset-utils';
 import utils from '../utils/mapshaper-utils';
@@ -209,6 +209,24 @@ export function getCrsInfo(str) {
     crs_string: str,
     crs: parseCrsString(str)
   };
+}
+
+// Parse a CRS string that may well be unusable, without the failure reaching
+// the user: returns null instead of stopping. This is for CRS metadata read out
+// of a file, where mapshaper is guessing and the caller has a fallback. (In the
+// web app a stop() shows a modal popup as it throws, which is too much for a
+// guess that did not come off, and interrupts whatever the user was doing.)
+export function tryParseCrsString(str) {
+  var revertLogging = getLoggingSetter();
+  var crs = null;
+  setLoggingForCLI();
+  try {
+    crs = parseCrsString(str);
+  } catch(e) {
+    // an unparseable string is one of the expected outcomes here
+  }
+  revertLogging();
+  return crs;
 }
 
 export function parseCrsString(str) {
