@@ -392,6 +392,55 @@ describe('geoparquet row group boundaries', function() {
   });
 });
 
+describe('geoparquet geospatial statistics', function() {
+  // hyparquet-writer picks each thrift wire type from the runtime value, so a
+  // bounding box bound that lands on a whole number goes out as I32 where the
+  // spec requires a double. hyparquet reads such a file back without complaint,
+  // but pyarrow 21+ and GDAL 3.11+ cannot deserialize the footer at all, so
+  // these tests check the encoded bounds rather than a round trip.
+  it('keeps whole-number bounds off the integer thrift type', async function() {
+    var input = {
+      type: 'FeatureCollection',
+      features: [
+        {type: 'Feature', properties: {id: 1}, geometry: {type: 'Point', coordinates: [1, 2]}},
+        {type: 'Feature', properties: {id: 2}, geometry: {type: 'Point', coordinates: [3, 4]}}
+      ]
+    };
+    var boxes = getBoundingBoxes(await writeAndReadMetadata(input));
+    assert.equal(boxes.length, 1);
+    assertBoundsAreDoubles(boxes[0]);
+    // still a cover of the two points, and only just
+    assert.ok(boxes[0].xmin <= 1 && boxes[0].xmax >= 3);
+    assert.ok(boxes[0].ymin <= 2 && boxes[0].ymax >= 4);
+    assert.ok(boxes[0].xmin > 0.99 && boxes[0].xmax < 3.01);
+  });
+
+  it('fixes the bounds in every row group', async function() {
+    var metadata = await writeAndReadMetadata(pointCollection(1000), 'rowgroup=250');
+    var boxes = getBoundingBoxes(metadata);
+    assert.equal(boxes.length, 4);
+    boxes.forEach(assertBoundsAreDoubles);
+  });
+});
+
+function assertBoundsAreDoubles(bbox) {
+  Object.keys(bbox).forEach(function(key) {
+    assert.ok(!Number.isInteger(bbox[key]),
+      'expected ' + key + ' to be encoded as a double, got ' + bbox[key]);
+  });
+}
+
+function getBoundingBoxes(metadata) {
+  var boxes = [];
+  (metadata.row_groups || []).forEach(function(rowGroup) {
+    (rowGroup.columns || []).forEach(function(column) {
+      var stats = column.meta_data && column.meta_data.geospatial_statistics;
+      if (stats && stats.bbox) boxes.push(stats.bbox);
+    });
+  });
+  return boxes;
+}
+
 async function writeAndReadMetadata(input, extraOpts) {
   var cmd = '-i in.json -o format=geoparquet' + (extraOpts ? ' ' + extraOpts : '');
   var output = await api.applyCommands(cmd, {'in.json': input});

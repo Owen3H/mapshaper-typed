@@ -75,8 +75,60 @@ function writeLayer(writer, lyr, dataset, opts, compression, rowGroupOverride) {
       value: JSON.stringify(buildGeoMetadata(Object.keys(geometryTypes), crs))
     }];
   }
+  avoidIntegerBboxBounds(pq.row_groups);
   pq.finish();
   return byteWriter.getBuffer();
+}
+
+// hyparquet-writer (0.14) infers each thrift wire type from the runtime value, so
+// a bounding box bound that lands on a whole number is written as I32 where the
+// Parquet spec requires a double. Readers that parse geospatial statistics
+// (pyarrow 21+, GDAL 3.11+) then fail to deserialize the footer and cannot open
+// the file at all -- which rounded, snapped or integer-grid coordinates make easy
+// to hit. Widening each bound to the adjacent double forces the double path.
+// Reported upstream; remove once the writer carries declared field types.
+function avoidIntegerBboxBounds(rowGroups) {
+  (rowGroups || []).forEach(function(group) {
+    (group.columns || []).forEach(function(col) {
+      var stats = col.meta_data && col.meta_data.geospatial_statistics;
+      if (!stats || !stats.bbox) return;
+      if (!widenIntegerBounds(stats.bbox)) {
+        // Past 2^53 doubles are spaced too widely to step off an integer. Drop
+        // the box rather than write a footer that no reader can parse.
+        delete stats.bbox;
+      }
+    });
+  });
+}
+
+// Nudges whole-number bounds outward, so that the box still covers every
+// geometry in the group: an oversized box only costs a reader the chance to skip
+// the group, while an undersized one would hide rows that match a filter.
+// Returns false if any bound could not be made non-integral.
+function widenIntegerBounds(bbox) {
+  return Object.keys(bbox).every(function(key) {
+    var val = bbox[key];
+    var widened;
+    if (!Number.isInteger(val)) return true;
+    widened = nextDouble(val, /min$/.test(key) ? -1 : 1);
+    if (Number.isInteger(widened)) return false;
+    bbox[key] = widened;
+    return true;
+  });
+}
+
+var nextDoubleFloats = new Float64Array(1);
+var nextDoubleBits = new BigInt64Array(nextDoubleFloats.buffer);
+
+// Returns the adjacent double to @val in the direction of @sign (-1 down, 1 up).
+function nextDouble(val, sign) {
+  if (!Number.isFinite(val)) return val;
+  if (val === 0) return sign > 0 ? Number.MIN_VALUE : -Number.MIN_VALUE;
+  nextDoubleFloats[0] = val;
+  // Incrementing the bit pattern moves a positive double up and a negative one
+  // further down, so the step direction depends on the sign of the value.
+  nextDoubleBits[0] += (val > 0) === (sign > 0) ? 1n : -1n;
+  return nextDoubleFloats[0];
 }
 
 // A shape that survives to this point can still export as null geometry if all
