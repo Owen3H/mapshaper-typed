@@ -596,28 +596,18 @@ Convert a raster layer to a polyline layer of contour lines (isolines). This is
 most often used to trace elevation contours from a digital elevation model, but
 it works on any continuous raster.
 
-Contours are traced from the layer's current pixel values, so they reflect any
-earlier edits in the command sequence. Running `-blur` before `-contours`, for
-example, produces smoother lines than contouring the raw data.
+Running `-blur` before `-contours` produces smoother lines than contouring the raw data.
 
 Values are read at pixel centers, so contour lines span from the center of the
 first pixel to the center of the last, half a pixel inside the raster's bounds.
-Pixels marked as nodata, and pixels left uncovered by a previous `-proj`, are
-excluded: contours stop at the edge of the valid data instead of crossing it.
 
-Traced contours carry a staircase about a pixel wide, which is most visible on
-quantized data such as an elevation model recorded in whole meters. `-contours`
-therefore finishes by smoothing the lines, using an interval of a quarter of a
-pixel that it works out from the raster's resolution and reports on the console.
-The interval is kept well under a pixel because contour lines can run much
-closer together than that on steep ground, and smoothing must not move a line
-far enough to cross its neighbor. Where a line would cross anyway, it is left as
-traced, and the console says how many lines that affected. Use `no-smoothing` to
+`-contours` finishes by smoothing the lines, using an interval of a quarter of a
+pixel. Where smoothing causes lines to cross, the intersecting lines are left unsmoothed. Use `no-smoothing` to
 skip the step and keep the raw traced geometry, which you can then smooth
 yourself with `-smooth`.
 
 By default the contour layer replaces the raster layer. Use `+` to keep the
-raster as well, which is useful for drawing the contours over the image.
+raster as well.
 
 `interval=` Spacing between contour levels. Levels are multiples of this value,
 so `interval=100` gives levels at 100, 200, 300 and so on. If neither
