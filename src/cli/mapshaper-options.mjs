@@ -460,6 +460,10 @@ export function getOptionParser() {
       describe: '[GeoParquet] zstd compression level',
       type: 'integer'
     })
+    .option('rowgroup', {
+      describe: '[GeoParquet] rows per row group (default: sized by data)',
+      type: 'integer'
+    })
     .option('show-all', {
       type: 'flag',
       describe: '[Snapshot] show all layers in Web UI'

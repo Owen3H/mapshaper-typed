@@ -1,6 +1,7 @@
 import api from '../mapshaper.js';
 import assert from 'assert';
 import { parquetMetadataAsync } from 'hyparquet';
+import { planRowGroups, ROW_GROUP_TARGET_BYTES } from '../src/geoparquet/mapshaper-geoparquet-export';
 import { fixPath, captureLogCallsAsync } from './helpers';
 
 describe('geoparquet export', function() {
@@ -193,7 +194,230 @@ describe('geoparquet export', function() {
     }, {});
     assert.equal(roundtrip.info.crs_string, 'epsg:32618');
   });
+
+  it('writes the CRS on the GEOMETRY logical type as well as in the geo metadata', async function() {
+    // A reader that understands the Parquet GEOMETRY logical type ignores the
+    // "geo" metadata; with no CRS on the logical type it assumes OGC:CRS84 and
+    // reports projected data as WGS 84.
+    var output = await api.applyCommands('-i in.json -proj EPSG:26915 -o format=geoparquet',
+      {'in.json': utmPointCollection()});
+    var metadata = await parquetMetadataAsync(toArrayBuffer(output[Object.keys(output)[0]]));
+    var field = metadata.schema.find(function(f) { return f.name == 'geometry'; });
+
+    assert.equal(field.logical_type.type, 'GEOMETRY');
+    var logicalCrs = JSON.parse(field.logical_type.crs);
+    assert.equal(logicalCrs.type, 'ProjectedCRS');
+    assert.equal(logicalCrs.coordinate_system.subtype, 'Cartesian');
+
+    var geo = JSON.parse(getParquetKeyValue(metadata, 'geo'));
+    assert.equal(geo.version, '1.1.0');
+    assert.deepEqual(geo.columns.geometry.crs, logicalCrs);
+  });
+
+  it('leaves the logical type CRS unset when the layer has no CRS', async function() {
+    var input = {
+      type: 'FeatureCollection',
+      features: [{type: 'Feature', properties: {id: 1}, geometry: {type: 'Point', coordinates: [1, 2]}}]
+    };
+    var output = await api.applyCommands('-i in.json -o format=geoparquet', {'in.json': input});
+    var metadata = await parquetMetadataAsync(toArrayBuffer(output[Object.keys(output)[0]]));
+    var field = metadata.schema.find(function(f) { return f.name == 'geometry'; });
+    assert.equal(field.logical_type.type, 'GEOMETRY');
+    assert.equal(field.logical_type.crs, undefined);
+  });
+
+  it('keeps attribute column types when the geometry CRS is written', async function() {
+    var output = await api.applyCommands('-i in.json -proj EPSG:26915 -o format=geoparquet',
+      {'in.json': utmPointCollection({name: 'alpha', count: 3, ratio: 1.5, flag: true})});
+    var fileName = Object.keys(output)[0];
+    var metadata = await parquetMetadataAsync(toArrayBuffer(output[fileName]));
+    var types = {};
+    metadata.schema.forEach(function(f) {
+      if (f.name != 'root') types[f.name] = f.type;
+    });
+    assert.deepEqual(types, {
+      geometry: 'BYTE_ARRAY', name: 'BYTE_ARRAY', count: 'INT32',
+      ratio: 'DOUBLE', flag: 'BOOLEAN'
+    });
+
+    var roundtrip = await api.internal.importContentAsync({
+      parquet: {filename: fileName, content: output[fileName]}
+    }, {});
+    assert.deepEqual(roundtrip.layers[0].data.getRecords()[0],
+      {name: 'alpha', count: 3, ratio: 1.5, flag: true});
+  });
 });
+
+describe('geoparquet row groups', function() {
+  it('writes a single row group for a small layer', async function() {
+    var metadata = await writeAndReadMetadata(pointCollection(2000));
+    assert.equal(metadata.row_groups.length, 1);
+    assert.equal(Number(metadata.row_groups[0].num_rows), 2000);
+  });
+
+  it('sizes row groups by geometry size, not by row count', async function() {
+    // Same number of rows, ~1000x difference in bytes per row: the point layer
+    // belongs in one group, the polygon layer does not.
+    var points = await writeAndReadMetadata(pointCollection(400));
+    var polygons = await writeAndReadMetadata(polygonCollection(400, 1000));
+    assert.equal(points.row_groups.length, 1);
+    assert.ok(polygons.row_groups.length > 1,
+      'expected the polygon layer to be split, got ' + polygons.row_groups.length + ' group(s)');
+  });
+
+  it('keeps the leading row group small so range readers can preview', async function() {
+    var metadata = await writeAndReadMetadata(polygonCollection(400, 1000));
+    var rows = metadata.row_groups.map(function(rg) { return Number(rg.num_rows); });
+    assert.ok(rows[0] < rows[1], 'expected a small leading group, got ' + rows.join(', '));
+    assert.equal(rows.reduce(function(a, b) { return a + b; }), 400);
+  });
+
+  it('uses rowgroup= when given', async function() {
+    var metadata = await writeAndReadMetadata(pointCollection(1000), 'rowgroup=250');
+    assert.deepEqual(metadata.row_groups.map(function(rg) { return Number(rg.num_rows); }),
+      [250, 250, 250, 250]);
+  });
+
+  it('rejects a rowgroup= value that is not a positive number of rows', async function() {
+    await assert.rejects(async function() {
+      await api.applyCommands('-i in.json -o format=geoparquet rowgroup=0',
+        {'in.json': pointCollection(10)});
+    }, /rowgroup= option must be a positive integer/);
+  });
+});
+
+// Sizes that need a multi-gigabyte file to reach end-to-end are checked here
+// against the planner directly.
+describe('geoparquet row group planner', function() {
+  var MB = 1024 * 1024;
+
+  function groupsFor(rowCount, bytesPerRow) {
+    var plan = planRowGroups(rowCount, bytesPerRow);
+    var sizes = Array.isArray(plan) ? plan : [plan];
+    var groups = [];
+    for (var i = 0, start = 0; start < rowCount; i++) {
+      var size = sizes[Math.min(i, sizes.length - 1)];
+      groups.push(Math.min(size, rowCount - start));
+      start += size;
+    }
+    return groups;
+  }
+
+  it('puts a layer smaller than a preview into one group', function() {
+    assert.deepEqual(groupsFor(50000, 20), [50000]);   // 1 MB of points
+    assert.deepEqual(groupsFor(30, 100000), [30]);     // 3 MB of large rows
+  });
+
+  it('splits off a preview once a layer is worth previewing', function() {
+    // 10 MB still fits in a single bulk group, but a range reader shouldn't
+    // have to pull all of it to see the first rows.
+    assert.deepEqual(groupsFor(100, 100000), [10, 90]);
+  });
+
+  it('turns the same row count into different groups as rows get bigger', function() {
+    assert.equal(groupsFor(100000, 20).length, 1);
+    assert.ok(groupsFor(100000, 20000).length > groupsFor(100000, 200).length);
+  });
+
+  it('holds bulk groups near the byte target', function() {
+    var groups = groupsFor(100000, 20000).slice(1);
+    groups.forEach(function(rows) {
+      assert.ok(rows * 20000 <= ROW_GROUP_TARGET_BYTES,
+        'group of ' + rows + ' rows exceeds the target');
+    });
+    // ...and not so far under it that the file is fragmented.
+    assert.ok(groups[0] * 20000 > ROW_GROUP_TARGET_BYTES / 4,
+      'groups are much smaller than the target');
+  });
+
+  it('evens out the bulk groups instead of leaving a runt', function() {
+    // 20001 bulk rows of 20000 bytes would split as 23 groups of 838 rows
+    // followed by 727. Rounding the size down spreads that tail out.
+    var bulk = groupsFor(20053, 20000).slice(1);
+    assert.ok(bulk.length > 1, 'expected several bulk groups, got ' + bulk.length);
+    // A constant group size can't divide the rows exactly, but the shortfall
+    // in the last group is bounded by the number of groups.
+    assert.ok(Math.max.apply(null, bulk) - Math.min.apply(null, bulk) < bulk.length,
+      'uneven bulk groups: ' + bulk.join(', '));
+  });
+
+  it('keeps the preview group around a megabyte', function() {
+    [20, 200, 20000].forEach(function(bytesPerRow) {
+      var preview = groupsFor(1000000, bytesPerRow)[0];
+      assert.ok(preview * bytesPerRow <= 2 * MB,
+        bytesPerRow + ' bytes/row gave a ' + preview * bytesPerRow + ' byte preview');
+    });
+  });
+
+  it('caps the row count so a narrow table does not make unwieldy groups', function() {
+    // A byte target alone would put 16 million 1-byte rows in a group.
+    var groups = groupsFor(3000000, 1);
+    assert.equal(groups.reduce(function(a, b) { return a + b; }), 3000000);
+    groups.forEach(function(rows) {
+      assert.ok(rows <= 1000000, 'group of ' + rows + ' rows exceeds the row cap');
+    });
+  });
+
+  it('always makes progress, even when a single row exceeds the target', function() {
+    assert.deepEqual(groupsFor(3, 400 * MB), [1, 1, 1]);
+  });
+});
+
+async function writeAndReadMetadata(input, extraOpts) {
+  var cmd = '-i in.json -o format=geoparquet' + (extraOpts ? ' ' + extraOpts : '');
+  var output = await api.applyCommands(cmd, {'in.json': input});
+  return parquetMetadataAsync(toArrayBuffer(output[Object.keys(output)[0]]));
+}
+
+function pointCollection(n) {
+  var features = [];
+  for (var i = 0; i < n; i++) {
+    features.push({
+      type: 'Feature',
+      properties: {id: i},
+      geometry: {type: 'Point', coordinates: [-179 + (i * 37) % 358, -84 + (i * 13) % 168]}
+    });
+  }
+  return {type: 'FeatureCollection', features: features};
+}
+
+function polygonCollection(n, vertices) {
+  var features = [];
+  for (var i = 0; i < n; i++) {
+    var cx = -179 + (i * 37) % 358, cy = -84 + (i * 13) % 168;
+    var ring = [];
+    for (var j = 0; j < vertices; j++) {
+      var a = 2 * Math.PI * j / vertices;
+      ring.push([+(cx + 0.4 * Math.cos(a)).toFixed(6), +(cy + 0.4 * Math.sin(a)).toFixed(6)]);
+    }
+    ring.push(ring[0]);
+    features.push({
+      type: 'Feature',
+      properties: {id: i},
+      geometry: {type: 'Polygon', coordinates: [ring]}
+    });
+  }
+  return {type: 'FeatureCollection', features: features};
+}
+
+// Coordinates inside UTM zone 15, so that -proj EPSG:26915 keeps the geometry.
+function utmPointCollection(properties) {
+  return {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      properties: properties || {id: 1},
+      geometry: {type: 'Point', coordinates: [-93, 41]}
+    }]
+  };
+}
+
+function getParquetKeyValue(metadata, key) {
+  var entry = (metadata.key_value_metadata || []).find(function(item) {
+    return item.key == key;
+  });
+  return entry ? entry.value : null;
+}
 
 function getParquetCodecs(metadata) {
   var index = {};

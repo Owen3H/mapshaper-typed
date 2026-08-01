@@ -13,6 +13,7 @@ var dynamicImportModule = Function('id', 'return import(id)');
 export async function exportGeoParquet(dataset, opts, filenameOverride) {
   var writer = await loadGeoParquetWriter();
   var compression = await getGeoParquetCompression(opts);
+  var rowGroupOverride = validateRowGroupSize(opts.rowgroup);
   var extension = opts.extension || 'parquet';
   var files = [];
   if (opts.file) {
@@ -24,17 +25,20 @@ export async function exportGeoParquet(dataset, opts, filenameOverride) {
       return !!feat.geometry;
     });
     var output = buildGeoParquetColumns(features, hasGeometry);
+    var crs = hasGeometry ? getGeoMetadataCrs(dataset) : null;
     var writeOptions = {
       columnData: output.columnData,
       codec: compression.codec,
       compressors: compression.compressors,
-      pageSize: compression.pageSize
+      pageSize: compression.pageSize,
+      rowGroupSize: getRowGroupSize(output.columnData, features.length, rowGroupOverride)
     };
     if (hasGeometry) {
       writeOptions.kvMetadata = [{
         key: 'geo',
-        value: JSON.stringify(buildGeoMetadata(features, dataset))
+        value: JSON.stringify(buildGeoMetadata(features, crs))
       }];
+      applyGeometryColumnCrs(writer, writeOptions, output.geometryColumn, crs);
     } else {
       warn('GeoParquet export: layer has no geometry; writing attribute data only.');
     }
@@ -155,11 +159,161 @@ function getPropertyNames(features) {
   return Object.keys(index);
 }
 
-function buildGeoMetadata(features, dataset) {
+// A reader has to materialize an entire row group, so the meaningful unit is
+// bytes, not rows: a row of point geometry runs to a few dozen bytes where a
+// row of detailed polygon geometry can be tens of kilobytes. Sizing by a fixed
+// row count therefore lands hundreds of times off in either direction, so the
+// group size is derived from an estimate of the encoded row size instead.
+// The estimate ignores Parquet's own encoding, which only ever shrinks a
+// column, so groups tend to come out at half the target or less.
+//
+// The target is well below the 128MB that Hadoop-era guidance suggests, which
+// assumed a row group should fill an HDFS block. Mapshaper holds a whole
+// dataset in memory and needs roughly twenty times the output size to write
+// it, so it tops out around a couple of hundred megabytes -- at 128MB nearly
+// every file it can produce would be a single row group, giving readers no
+// parallelism and nothing to skip when filtering. Measured on a 23MB layer,
+// splitting one group into eight costs 0.03% of file size, so the smaller
+// target is close to free.
+export var ROW_GROUP_TARGET_BYTES = 16 * 1024 * 1024;
+// A small leading group lets a reader fetching byte ranges over HTTP show the
+// start of the table without pulling a full-sized group.
+var ROW_GROUP_PREVIEW_BYTES = 1024 * 1024;
+var ROW_GROUP_MAX_ROWS = 1000000;
+var ROW_GROUP_SAMPLE_ROWS = 1000;
+
+function getRowGroupSize(columnData, rowCount, override) {
+  if (override) return override;
+  if (!rowCount) return undefined; // let the writer apply its own default
+  var bytesPerRow = estimateRowBytes(columnData, rowCount);
+  if (!bytesPerRow) return undefined;
+  return planRowGroups(rowCount, bytesPerRow);
+}
+
+// Returns a rowGroupSize for the Parquet writer: either a row count, or a
+// [preview, bulk] pair where the bulk size repeats for the rest of the file.
+export function planRowGroups(rowCount, bytesPerRow) {
+  var bulkRows = clampRowCount(ROW_GROUP_TARGET_BYTES / bytesPerRow, ROW_GROUP_MAX_ROWS);
+  // Keep the preview well below a full group, otherwise splitting it off buys
+  // a range reader nothing.
+  var previewRows = clampRowCount(ROW_GROUP_PREVIEW_BYTES / bytesPerRow, Math.floor(bulkRows / 4));
+  if (rowCount <= previewRows * 4) {
+    return bulkRows;
+  }
+  // Spread the remaining rows evenly so that the file doesn't end with a runt
+  // group holding a handful of rows.
+  var rest = rowCount - previewRows;
+  var groups = Math.ceil(rest / bulkRows);
+  return [previewRows, Math.ceil(rest / groups)];
+}
+
+function clampRowCount(rows, max) {
+  if (!(rows > 1)) return 1;
+  if (max >= 1 && rows > max) return max;
+  return Math.floor(rows);
+}
+
+function estimateRowBytes(columnData, rowCount) {
+  // Sample at a stride rather than taking a prefix: layers are often sorted or
+  // clustered, so the first rows are not representative.
+  var step = Math.max(1, Math.floor(rowCount / ROW_GROUP_SAMPLE_ROWS));
+  var total = 0;
+  var sampled = 0;
+  for (var i = 0; i < rowCount; i += step) {
+    for (var j = 0; j < columnData.length; j++) {
+      total += estimateValueBytes(columnData[j].data[i]);
+    }
+    sampled++;
+  }
+  return sampled > 0 ? total / sampled : 0;
+}
+
+function estimateValueBytes(value) {
+  if (value === null || value === undefined) return 1;
+  if (typeof value == 'string') return value.length + 4;
+  if (typeof value == 'number' || typeof value == 'bigint') return 8;
+  if (typeof value == 'boolean') return 1;
+  if (value instanceof Date) return 8;
+  if (value instanceof Uint8Array) return value.byteLength + 4;
+  if (utils.isObject(value) && utils.isString(value.type)) {
+    return estimateWkbBytes(value);
+  }
+  return 32; // a JSON-encoded column; the exact width doesn't change the sizing
+}
+
+// WKB spends 1 byte on the byte order and 4 on the geometry type, 4 more on
+// each nested element count, and 16 on each XY position.
+function estimateWkbBytes(geom) {
+  if (!geom || !geom.type) return 1;
+  if (geom.type == 'GeometryCollection') {
+    return (geom.geometries || []).reduce(function(memo, part) {
+      return memo + estimateWkbBytes(part);
+    }, 9);
+  }
+  return 5 + estimateCoordinateBytes(geom.coordinates);
+}
+
+function estimateCoordinateBytes(coords) {
+  if (!Array.isArray(coords)) return 0;
+  if (typeof coords[0] == 'number') return 16;
+  var bytes = 4;
+  for (var i = 0; i < coords.length; i++) {
+    bytes += estimateCoordinateBytes(coords[i]);
+  }
+  return bytes;
+}
+
+function validateRowGroupSize(rowgroup) {
+  if (rowgroup === undefined) return undefined;
+  if (rowgroup >= 1 && Math.floor(rowgroup) === rowgroup) {
+    return rowgroup;
+  }
+  stop('The rowgroup= option must be a positive integer number of rows');
+}
+
+// A reader that understands the Parquet 2.11 GEOMETRY logical type takes the
+// CRS from the logical type and ignores the "geo" metadata. When the logical
+// type carries no CRS the spec default is OGC:CRS84, so projected data was
+// being reported as WGS 84. Write the CRS in both places, as GDAL does, so
+// that GeoParquet 1.x readers keep working.
+function applyGeometryColumnCrs(writer, writeOptions, geometryName, crs) {
+  if (!crs || typeof writer.schemaFromColumnData != 'function') return;
+  var column = writeOptions.columnData.find(function(col) {
+    return col.name === geometryName;
+  });
+  if (!column || column.type != 'GEOMETRY' && column.type != 'GEOGRAPHY') return;
+  var override = {
+    name: geometryName,
+    type: 'BYTE_ARRAY',
+    repetition_type: 'OPTIONAL',
+    logical_type: {type: column.type, crs: JSON.stringify(crs)}
+  };
+  var overrides = {};
+  overrides[geometryName] = override;
+  // The writer rejects a column that declares both a type and a schema, so the
+  // schema has to be derived before the declared types are dropped.
+  var schema = writer.schemaFromColumnData({
+    columnData: writeOptions.columnData.map(function(col) {
+      return col.name === geometryName ? omitColumnType(col) : col;
+    }),
+    schemaOverrides: overrides
+  });
+  writeOptions.schema = schema;
+  writeOptions.columnData = writeOptions.columnData.map(omitColumnType);
+}
+
+function omitColumnType(col) {
+  var copy = {};
+  Object.keys(col).forEach(function(key) {
+    if (key != 'type') copy[key] = col[key];
+  });
+  return copy;
+}
+
+function buildGeoMetadata(features, crs) {
   var geomTypes = utils.uniq(features.map(function(feat) {
     return feat.geometry && feat.geometry.type || null;
   }).filter(Boolean));
-  var crs = getGeoMetadataCrs(dataset);
   var geomMeta = {
     encoding: 'WKB',
     geometry_types: geomTypes

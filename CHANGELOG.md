@@ -1,3 +1,8 @@
+v0.7.50 (unreleased)
+* GeoParquet row groups are now sized by their estimated size in bytes instead of by a fixed row count, which had been making groups a thousand times larger for detailed polygons than for points. Groups target 16MB of uncompressed data, so that a typical file is split into several groups that a reader can scan in parallel and skip past when filtering, rather than the single group a row-count limit produced. A small leading group is kept so that a reader fetching byte ranges can show the start of a table cheaply. Added `-o rowgroup=` to set the number of rows per row group explicitly.
+* Fixed the CRS of GeoParquet output being reported as WGS 84 by readers that support the Parquet GEOMETRY logical type (GDAL 3.11+, pyarrow 21+). The CRS is now written to the logical type as well as to the `geo` metadata, so projected data is no longer mislabeled.
+* Fixed GeoParquet input with a projected CRS being read as its base geographic CRS, which interpreted projected coordinates as longitude and latitude.
+
 v0.7.49
 * Added GeoTIFF output for raster layers (`-o out.tif` or `-o format=geotiff`), keeping the pixels in their source data type, with Deflate compression by default (`compression=none` to store them uncompressed) and the layer's nodata value. A CRS that mapshaper cannot identify by an EPSG code is written to an `.aux.xml` sidecar file.
 * Removed the ten-state limit on undo history in the web UI. Undo states are now discarded only when their restore data exceeds the storage limit.

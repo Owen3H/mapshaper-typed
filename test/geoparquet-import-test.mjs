@@ -68,17 +68,24 @@ describe('geoparquet import helpers', function () {
     assert.equal(geo.columns.geom.crs.id.code, 2269);
   });
 
-  it('finds authority codes nested in CRS metadata', function () {
+  it('finds an authority code on the CRS itself', function () {
     var crs = {
       type: 'ProjectedCRS',
-      base_crs: {
-        id: {
-          authority: 'EPSG',
-          code: 4326
-        }
-      }
+      id: {authority: 'EPSG', code: 26915},
+      base_crs: {id: {authority: 'EPSG', code: 4269}}
     };
-    assert.deepEqual(getGeoParquetAuthority(crs), {org: 'EPSG', code: 4326});
+    assert.deepEqual(getGeoParquetAuthority(crs), {org: 'EPSG', code: 26915});
+  });
+
+  it('does not identify a projected CRS by its base CRS', function () {
+    // base_crs names the geographic CRS the projection is derived from. Using
+    // it as the authority made projected coordinates import as lat/long.
+    var crs = {
+      type: 'ProjectedCRS',
+      name: 'NAD83 / UTM zone 15N',
+      base_crs: {id: {authority: 'EPSG', code: 4269}}
+    };
+    assert.equal(getGeoParquetAuthority(crs), null);
   });
 
   it('converts safe BigInt attribute values to Numbers without warning', function () {

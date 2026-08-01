@@ -367,13 +367,11 @@ function findPrimaryAuthorityId(crs) {
   if (utils.isString(crs)) {
     return parseAuthorityString(crs);
   }
-  var match = parseAuthorityObject(crs.id);
-  if (match) return match;
-  if (crs.base_crs && utils.isObject(crs.base_crs)) {
-    match = parseAuthorityObject(crs.base_crs.id);
-    if (match) return match;
-  }
-  return null;
+  // base_crs identifies the geographic CRS that a projected CRS is derived
+  // from, not the projected CRS itself, so it can't stand in for a missing
+  // top-level id -- doing so reinterpreted projected coordinates as lat/long.
+  // Without an id the caller falls back to converting the PROJJSON to Proj4.
+  return parseAuthorityObject(crs.id);
 }
 
 function parseAuthorityObject(id) {

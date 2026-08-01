@@ -322,6 +322,8 @@ Save content of the target layer(s) to a file or files.
 
 `level=`  (GeoParquet) Set the ZSTD compression level when using `compression=zstd`. Valid values are integers from 1 to 22.
 
+`rowgroup=`  (GeoParquet) Set the number of rows in each row group. By default Mapshaper sizes row groups by their estimated size in bytes rather than by a fixed row count, aiming for around 16MB of uncompressed data per group, so that a layer of points and a layer of detailed polygons both produce groups of a similar size. Set this only if you know the access pattern you are writing for.
+
 `show-all`  [Snapshot] All layers of the exported snapshot will be displayed when opened in the web UI.
 
 **Example**
