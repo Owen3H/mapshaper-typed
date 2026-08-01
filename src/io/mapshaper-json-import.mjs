@@ -42,8 +42,25 @@ export function identifyJSONObject(o) {
   return fmt;
 }
 
+// Guess the number of coordinate pairs in a GeoJSON file from its size, so that
+// the importer can size its coordinate buffers up front instead of growing them
+// a dozen times over (each growth copies the coords accumulated so far and
+// leaves the previous buffer behind, which is what makes peak memory during
+// import roughly double the size of the coordinate data).
+//
+// A pair runs from ~16 bytes ("[-122.42,37.77],") to ~42 at full double
+// precision, so this sits in the middle and errs low: undershooting just means
+// the buffers resume growing from a larger starting point, while overshooting
+// allocates memory that is never used. An attribute-heavy file overshoots, but
+// only reserves more than the growth it replaces past ~69 bytes per pair.
+function estimateGeoJSONPointCount(byteLength) {
+  return Math.round(byteLength / 32);
+}
+
 export function importGeoJSONFile(fileReader, opts) {
-  var importer = new GeoJSONParser(opts);
+  var importer = new GeoJSONParser(utils.defaults({}, opts, {
+    reserved_points: estimateGeoJSONPointCount(fileReader.size())
+  }));
   // For collections, parseGeoJSON() returns the top-level object with its
   // features/geometries array nulled out but all other members intact.
   var obj = parseGeoJSON(fileReader, importer.parseObject);

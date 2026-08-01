@@ -71,11 +71,13 @@ function PathImportStream(drain) {
 // Import path data from a non-topological source (Shapefile, GeoJSON, etc)
 // in preparation for identifying topology.
 // @opts.reserved_points -- estimate of points in dataset, for pre-allocating buffers
+//   (applied when the first path arrives, so that a layer of points -- which
+//   keeps its coords in shapes, not in these buffers -- never allocates it)
 //
 export function PathImporter(opts) {
-  var bufSize = opts.reserved_points > 0 ? opts.reserved_points : 20000,
-      xx = new Float64Array(bufSize),
-      yy = new Float64Array(bufSize),
+  var reservedPoints = opts.reserved_points > 0 ? opts.reserved_points : 0,
+      xx = new Float64Array(20000),
+      yy = new Float64Array(20000),
       shapes = [],
       properties = [],
       nn = [],
@@ -220,7 +222,7 @@ export function PathImporter(opts) {
 
   function checkBuffers(needed) {
     if (needed > xx.length) {
-      var newLen = Math.max(needed, Math.ceil(xx.length * 1.5));
+      var newLen = Math.max(needed, reservedPoints, Math.ceil(xx.length * 1.5));
       xx = utils.extendBuffer(xx, newLen, pointId);
       yy = utils.extendBuffer(yy, newLen, pointId);
     }
