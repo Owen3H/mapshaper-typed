@@ -1,4 +1,4 @@
-import { exportLayerAsGeoJSON } from '../geojson/geojson-export';
+import { getFeatureCursor } from '../geojson/geojson-export';
 import { parseCrsString, parsePrj } from '../crs/mapshaper-projections';
 import { runningInBrowser } from '../mapshaper-env';
 import { getFileExtension } from '../utils/mapshaper-filename-utils';
@@ -20,80 +20,118 @@ export async function exportGeoParquet(dataset, opts, filenameOverride) {
     extension = getFileExtension(opts.file) || extension;
   }
   dataset.layers.forEach(function(lyr) {
-    var features = exportLayerAsGeoJSON(lyr, dataset, opts, true, null);
-    var hasGeometry = features.some(function(feat) {
-      return !!feat.geometry;
-    });
-    var output = buildGeoParquetColumns(features, hasGeometry);
-    var crs = hasGeometry ? getGeoMetadataCrs(dataset) : null;
-    var writeOptions = {
-      columnData: output.columnData,
-      codec: compression.codec,
-      compressors: compression.compressors,
-      pageSize: compression.pageSize,
-      rowGroupSize: getRowGroupSize(output.columnData, features.length, rowGroupOverride)
-    };
-    if (hasGeometry) {
-      writeOptions.kvMetadata = [{
-        key: 'geo',
-        value: JSON.stringify(buildGeoMetadata(features, crs))
-      }];
-      applyGeometryColumnCrs(writer, writeOptions, output.geometryColumn, crs);
-    } else {
-      warn('GeoParquet export: layer has no geometry; writing attribute data only.');
-    }
-    var content = writer.parquetWriteBuffer(writeOptions);
     files.push({
       filename: filenameOverride || (lyr.name + '.' + extension),
-      content: content
+      content: writeLayer(writer, lyr, dataset, opts, compression, rowGroupOverride)
     });
   });
   return files;
 }
 
-function buildGeoParquetColumns(features, includeGeometry) {
-  var geometryName = 'geometry';
-  var names = getPropertyNames(features);
-  var columnData = [];
-  if (features.length === 0) {
+var GEOMETRY_COLUMN = 'geometry';
+
+// Rows are converted and handed to the writer one row group at a time. The
+// GeoJSON form of a geometry is several times larger than the WKB the writer
+// encodes it into, so materializing a whole layer of it was the largest
+// allocation the export made -- larger than the dataset and the output file
+// combined. Converting a group at a time makes that cost a function of the
+// row group size rather than of the layer size.
+function writeLayer(writer, lyr, dataset, opts, compression, rowGroupOverride) {
+  var cursor = getFeatureCursor(lyr, dataset, opts, true);
+  var rowCount = cursor.length;
+  if (rowCount === 0) {
     stop('GeoParquet export requires at least one record');
   }
-  if (includeGeometry) {
-    columnData.push({
-      name: geometryName,
-      data: features.map(function(feat) {
-        return feat.geometry || null;
-      }),
-      type: 'GEOMETRY'
-    });
-  }
-  names.forEach(function(name) {
-    var values = features.map(function(feat) {
-      return feat.properties ? feat.properties[name] : null;
-    });
-    columnData.push(buildAttributeColumn(name, values));
-  });
-  if (columnData.length === 0) {
+  var hasGeometry = layerHasGeometry(lyr);
+  var fields = getFieldTypes(cursor, opts);
+  if (!hasGeometry && fields.length === 0) {
     stop('GeoParquet export requires geometry or attribute data');
   }
-  return {columnData: columnData, geometryColumn: geometryName};
+  if (!hasGeometry) {
+    warn('GeoParquet export: layer has no geometry; writing attribute data only.');
+  }
+  var crs = hasGeometry ? getGeoMetadataCrs(dataset) : null;
+  var byteWriter = new writer.ByteWriter();
+  var pq = new writer.ParquetWriter({
+    writer: byteWriter,
+    schema: buildSchema(writer, fields, hasGeometry, crs),
+    codec: compression.codec,
+    compressors: compression.compressors
+  });
+  var geometryTypes = {};
+  var plan = getRowGroupSize(cursor, fields, hasGeometry, rowCount, rowGroupOverride);
+  eachRowGroupRange(rowCount, plan, function(start, end) {
+    pq.write({
+      columnData: buildChunkColumns(cursor, fields, hasGeometry, start, end, geometryTypes),
+      rowGroupSize: end - start,
+      pageSize: compression.pageSize
+    });
+  });
+  if (hasGeometry) {
+    // Set on the writer rather than passed to the constructor: the geometry
+    // types aren't known until every group has been converted.
+    pq.kvMetadata = [{
+      key: 'geo',
+      value: JSON.stringify(buildGeoMetadata(Object.keys(geometryTypes), crs))
+    }];
+  }
+  pq.finish();
+  return byteWriter.getBuffer();
 }
 
-function buildAttributeColumn(name, values) {
-  var info = inferColumnType(values);
-  return {
-    name: name,
-    data: values.map(function(value) {
-      return normalizeFieldValue(value, info.type);
-    }),
-    type: info.type
-  };
+// A shape that survives to this point can still export as null geometry if all
+// of its paths collapse, in which case the column is written as nulls.
+function layerHasGeometry(lyr) {
+  if (!lyr.geometry_type || !lyr.shapes) return false;
+  return lyr.shapes.some(Boolean);
 }
 
-function inferColumnType(values) {
+function eachRowGroupRange(rowCount, plan, cb) {
+  var sizes = Array.isArray(plan) ? plan : [plan];
+  var start = 0;
+  for (var i = 0; start < rowCount; i++) {
+    var end = Math.min(start + sizes[Math.min(i, sizes.length - 1)], rowCount);
+    cb(start, end);
+    start = end;
+  }
+}
+
+function buildChunkColumns(cursor, fields, hasGeometry, start, end, geometryTypes) {
+  var n = end - start;
+  var geometry = hasGeometry ? new Array(n) : null;
+  var values = fields.map(function() { return new Array(n); });
+  for (var i = 0; i < n; i++) {
+    var feat = cursor.getFeature(start + i);
+    var props = feat.properties;
+    if (hasGeometry) {
+      var geom = feat.geometry || null;
+      geometry[i] = geom;
+      if (geom && geom.type) geometryTypes[geom.type] = true;
+    }
+    for (var j = 0; j < fields.length; j++) {
+      values[j][i] = normalizeFieldValue(props ? props[fields[j].name] : null, fields[j].type);
+    }
+  }
+  var columnData = hasGeometry ? [{name: GEOMETRY_COLUMN, data: geometry}] : [];
+  fields.forEach(function(field, j) {
+    columnData.push({name: field.name, data: values[j]});
+  });
+  return columnData;
+}
+
+function getFieldTypes(cursor, opts) {
+  var properties = cursor.properties;
+  if (!properties) return [];
+  return getPropertyNames(properties, opts).map(function(name) {
+    return {name: name, type: inferColumnType(properties, name)};
+  });
+}
+
+function inferColumnType(properties, name) {
   var type = null;
-  for (var i = 0; i < values.length; i++) {
-    var valueType = inferValueType(values[i]);
+  for (var i = 0; i < properties.length; i++) {
+    var props = properties[i];
+    var valueType = inferValueType(props ? props[name] : null);
     if (!valueType) continue;
     if (!type) {
       type = valueType;
@@ -102,12 +140,11 @@ function inferColumnType(values) {
           (valueType == 'INT32' || valueType == 'DOUBLE')) {
         type = 'DOUBLE';
       } else {
-        type = 'STRING';
-        break;
+        return 'STRING';
       }
     }
   }
-  return {type: type || 'STRING'};
+  return type || 'STRING';
 }
 
 function inferValueType(value) {
@@ -148,12 +185,14 @@ function normalizeFieldValue(value, type) {
   return String(value);
 }
 
-function getPropertyNames(features) {
+function getPropertyNames(properties, opts) {
   var index = {};
-  features.forEach(function(feat) {
-    var props = feat.properties || {};
-    Object.keys(props).forEach(function(name) {
-      index[name] = true;
+  // Hoisted fields are moved to the root of a GeoJSON Feature, so they are not
+  // among a feature's properties and don't become columns.
+  var hoisted = Array.isArray(opts.hoist) ? opts.hoist : [];
+  properties.forEach(function(props) {
+    Object.keys(props || {}).forEach(function(name) {
+      if (hoisted.indexOf(name) == -1) index[name] = true;
     });
   });
   return Object.keys(index);
@@ -182,11 +221,10 @@ var ROW_GROUP_PREVIEW_BYTES = 1024 * 1024;
 var ROW_GROUP_MAX_ROWS = 1000000;
 var ROW_GROUP_SAMPLE_ROWS = 1000;
 
-function getRowGroupSize(columnData, rowCount, override) {
+function getRowGroupSize(cursor, fields, hasGeometry, rowCount, override) {
   if (override) return override;
-  if (!rowCount) return undefined; // let the writer apply its own default
-  var bytesPerRow = estimateRowBytes(columnData, rowCount);
-  if (!bytesPerRow) return undefined;
+  var bytesPerRow = estimateRowBytes(cursor, fields, hasGeometry, rowCount);
+  if (!bytesPerRow) return rowCount; // one group rather than the writer's default
   return planRowGroups(rowCount, bytesPerRow);
 }
 
@@ -213,15 +251,23 @@ function clampRowCount(rows, max) {
   return Math.floor(rows);
 }
 
-function estimateRowBytes(columnData, rowCount) {
+// Converts the sampled rows one at a time and discards them, so that sizing
+// the row groups doesn't itself materialize the layer.
+function estimateRowBytes(cursor, fields, hasGeometry, rowCount) {
   // Sample at a stride rather than taking a prefix: layers are often sorted or
   // clustered, so the first rows are not representative.
   var step = Math.max(1, Math.floor(rowCount / ROW_GROUP_SAMPLE_ROWS));
   var total = 0;
   var sampled = 0;
   for (var i = 0; i < rowCount; i += step) {
-    for (var j = 0; j < columnData.length; j++) {
-      total += estimateValueBytes(columnData[j].data[i]);
+    var feat = cursor.getFeature(i);
+    var props = feat.properties;
+    if (hasGeometry) {
+      total += estimateValueBytes(feat.geometry || null);
+    }
+    for (var j = 0; j < fields.length; j++) {
+      total += estimateValueBytes(
+        normalizeFieldValue(props ? props[fields[j].name] : null, fields[j].type));
     }
     sampled++;
   }
@@ -271,49 +317,40 @@ function validateRowGroupSize(rowgroup) {
   stop('The rowgroup= option must be a positive integer number of rows');
 }
 
+// The schema is derived from the column types alone, before any rows are
+// converted, because each row group is written as it is built and they all
+// have to share one schema.
+//
 // A reader that understands the Parquet 2.11 GEOMETRY logical type takes the
 // CRS from the logical type and ignores the "geo" metadata. When the logical
 // type carries no CRS the spec default is OGC:CRS84, so projected data was
 // being reported as WGS 84. Write the CRS in both places, as GDAL does, so
 // that GeoParquet 1.x readers keep working.
-function applyGeometryColumnCrs(writer, writeOptions, geometryName, crs) {
-  if (!crs || typeof writer.schemaFromColumnData != 'function') return;
-  var column = writeOptions.columnData.find(function(col) {
-    return col.name === geometryName;
+function buildSchema(writer, fields, hasGeometry, crs) {
+  var columnData = hasGeometry ?
+    [{name: GEOMETRY_COLUMN, type: 'GEOMETRY'}] : [];
+  var overrides;
+  fields.forEach(function(field) {
+    columnData.push({name: field.name, type: field.type});
   });
-  if (!column || column.type != 'GEOMETRY' && column.type != 'GEOGRAPHY') return;
-  var override = {
-    name: geometryName,
-    type: 'BYTE_ARRAY',
-    repetition_type: 'OPTIONAL',
-    logical_type: {type: column.type, crs: JSON.stringify(crs)}
-  };
-  var overrides = {};
-  overrides[geometryName] = override;
-  // The writer rejects a column that declares both a type and a schema, so the
-  // schema has to be derived before the declared types are dropped.
-  var schema = writer.schemaFromColumnData({
-    columnData: writeOptions.columnData.map(function(col) {
-      return col.name === geometryName ? omitColumnType(col) : col;
-    }),
+  if (hasGeometry && crs) {
+    overrides = {};
+    overrides[GEOMETRY_COLUMN] = {
+      name: GEOMETRY_COLUMN,
+      type: 'BYTE_ARRAY',
+      repetition_type: 'OPTIONAL',
+      logical_type: {type: 'GEOMETRY', crs: JSON.stringify(crs)}
+    };
+    // An overridden column must not also declare a type.
+    columnData[0] = {name: GEOMETRY_COLUMN};
+  }
+  return writer.schemaFromColumnData({
+    columnData: columnData,
     schemaOverrides: overrides
   });
-  writeOptions.schema = schema;
-  writeOptions.columnData = writeOptions.columnData.map(omitColumnType);
 }
 
-function omitColumnType(col) {
-  var copy = {};
-  Object.keys(col).forEach(function(key) {
-    if (key != 'type') copy[key] = col[key];
-  });
-  return copy;
-}
-
-function buildGeoMetadata(features, crs) {
-  var geomTypes = utils.uniq(features.map(function(feat) {
-    return feat.geometry && feat.geometry.type || null;
-  }).filter(Boolean));
+function buildGeoMetadata(geomTypes, crs) {
   var geomMeta = {
     encoding: 'WKB',
     geometry_types: geomTypes
@@ -365,13 +402,19 @@ function getProjjsonFromProj4Converter(mproj) {
   return null;
 }
 
+function isGeoParquetWriter(mod) {
+  return !!mod && typeof mod.ParquetWriter == 'function' &&
+    typeof mod.ByteWriter == 'function' &&
+    typeof mod.schemaFromColumnData == 'function';
+}
+
 async function loadGeoParquetWriter() {
   if (runningInBrowser()) {
     var mod = require('hyparquet-writer');
-    if (mod && mod.default && !mod.parquetWriteBuffer) {
+    if (mod && mod.default && !isGeoParquetWriter(mod)) {
       mod = mod.default;
     }
-    if (!mod || !mod.parquetWriteBuffer) {
+    if (!isGeoParquetWriter(mod)) {
       stop('GeoParquet writer library is not loaded');
     }
     return mod;
@@ -380,7 +423,7 @@ async function loadGeoParquetWriter() {
     writerPromise = dynamicImportModule('hyparquet-writer');
   }
   var nodeMod = await writerPromise;
-  return nodeMod.default && !nodeMod.parquetWriteBuffer ? nodeMod.default : nodeMod;
+  return nodeMod.default && !isGeoParquetWriter(nodeMod) ? nodeMod.default : nodeMod;
 }
 
 async function getGeoParquetCompression(opts) {

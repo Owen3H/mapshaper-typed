@@ -363,6 +363,35 @@ describe('geoparquet row group planner', function() {
   });
 });
 
+// Rows are converted and handed to the writer one row group at a time, so the
+// group boundaries must not be able to affect the contents.
+describe('geoparquet row group boundaries', function() {
+  it('writes the same rows however the layer is divided into groups', async function() {
+    var input = polygonCollection(60, 8);
+    input.features.forEach(function(feat, i) {
+      // a mix of types, plus nulls that fall in different groups
+      feat.properties.name = i % 5 === 0 ? null : 'row ' + i;
+      feat.properties.ratio = i % 3 === 0 ? null : i / 4;
+      feat.properties.flag = i % 2 === 0;
+    });
+    var layers = [];
+    for (var opt of ['rowgroup=1', 'rowgroup=7', 'rowgroup=59', 'rowgroup=1000', '']) {
+      var output = await api.applyCommands(
+        '-i in.json -o format=geoparquet' + (opt ? ' ' + opt : ''), {'in.json': input});
+      var name = Object.keys(output)[0];
+      var dataset = await api.internal.importContentAsync({
+        parquet: {filename: name, content: output[name]}
+      }, {});
+      layers.push(dataset.layers[0]);
+    }
+    layers.forEach(function(lyr) {
+      assert.deepEqual(lyr.data.getRecords(), layers[0].data.getRecords());
+      assert.deepEqual(lyr.shapes, layers[0].shapes);
+    });
+    assert.equal(layers[0].data.getRecords().length, 60);
+  });
+});
+
 async function writeAndReadMetadata(input, extraOpts) {
   var cmd = '-i in.json -o format=geoparquet' + (extraOpts ? ' ' + extraOpts : '');
   var output = await api.applyCommands(cmd, {'in.json': input});

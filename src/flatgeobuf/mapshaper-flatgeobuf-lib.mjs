@@ -78,61 +78,87 @@ function buildHeaderWithCRS(headerMeta, crsMeta) {
   return builder.asUint8Array();
 }
 
-function serializeWithColumns(geojson, columns) {
-  var headerMeta = {
-    geometryType: inferGeometryType(geojson.features),
-    columns: columns,
-    envelope: null,
-    featuresCount: geojson.features.length,
-    indexNodeSize: 0,
-    crs: null,
-    title: null,
-    description: null,
-    metadata: null
-  };
-  var header = buildHeader(headerMeta);
-  var features = geojson.features.map(function(feature) {
+// source: a feature cursor, {length, getFeature(i)}. Features are pulled and
+// encoded one at a time rather than as a collection, because the GeoJSON form
+// of a layer is several times larger than the FlatGeobuf it encodes into.
+function serializeWithColumns(source, columns) {
+  if (source.length === 0) {
+    throw new Error('Could not infer geometry type for collection of features.');
+  }
+  // The header precedes the features and declares the collection's geometry
+  // type, but that type isn't known until every feature has been seen. Assume
+  // the layer is homogeneous, which nearly all are, and encode again as
+  // Unknown in the rare case that it isn't.
+  return encodeCollection(source, columns, null) ||
+    encodeCollection(source, columns, GeometryType.Unknown);
+}
+
+// Returns null if forcedType is null and the features turn out to have more
+// than one geometry type.
+function encodeCollection(source, columns, forcedType) {
+  var headerMeta = null;
+  var sink = null;
+  for (var i = 0; i < source.length; i++) {
+    var feature = source.getFeature(i);
+    var type = GeometryType[feature.geometry.type] || GeometryType.Unknown;
+    if (!headerMeta) {
+      headerMeta = {
+        geometryType: forcedType === null ? type : forcedType,
+        columns: columns,
+        envelope: null,
+        featuresCount: source.length,
+        indexNodeSize: 0,
+        crs: null,
+        title: null,
+        description: null,
+        metadata: null
+      };
+      sink = new ByteSink(magicbytes.length + estimateEncodedBytes(source));
+      sink.append(magicbytes);
+      sink.append(buildHeader(headerMeta));
+    } else if (forcedType === null && type != headerMeta.geometryType) {
+      return null;
+    }
     var geometry = feature.geometry.type == 'GeometryCollection' ?
       parseGC(feature.geometry) :
       parseGeometry(feature.geometry);
     omitRedundantGeometryType(geometry, headerMeta.geometryType);
-    return buildFeature(geometry, normalizeProperties(feature.properties, columns), headerMeta);
-  });
-  var featureBytes = features.reduce(function(sum, feature) {
-    return sum + feature.length;
-  }, 0);
-  var output = new Uint8Array(magicbytes.length + header.length + featureBytes);
-  var offset = magicbytes.length;
-  output.set(header, offset);
-  offset += header.length;
-  features.forEach(function(feature) {
-    output.set(feature, offset);
-    offset += feature.length;
-  });
-  output.set(magicbytes);
-  return output;
+    sink.append(buildFeature(geometry, normalizeProperties(feature.properties, columns), headerMeta));
+  }
+  return sink.toBytes();
 }
+
+// Encoding the first feature is the only sample available before the buffer
+// has to be allocated; overshooting costs a resize, which is why it is loose.
+function estimateEncodedBytes(source) {
+  return Math.max(source.length * 64, 1024);
+}
+
+function ByteSink(initialSize) {
+  this.bytes = new Uint8Array(initialSize);
+  this.length = 0;
+}
+
+ByteSink.prototype.append = function(chunk) {
+  if (this.length + chunk.length > this.bytes.length) {
+    var size = this.bytes.length;
+    while (size < this.length + chunk.length) size *= 2;
+    var grown = new Uint8Array(size);
+    grown.set(this.bytes.subarray(0, this.length));
+    this.bytes = grown;
+  }
+  this.bytes.set(chunk, this.length);
+  this.length += chunk.length;
+};
+
+ByteSink.prototype.toBytes = function() {
+  return this.bytes.subarray(0, this.length);
+};
 
 function omitRedundantGeometryType(geometry, headerType) {
   if (headerType != GeometryType.Unknown && geometry.type == headerType) {
     geometry.type = GeometryType.Unknown;
   }
-}
-
-function inferGeometryType(features) {
-  var type;
-  features.forEach(function(feature) {
-    var next = GeometryType[feature.geometry.type] || GeometryType.Unknown;
-    if (type === undefined) {
-      type = next;
-    } else if (type != next) {
-      type = GeometryType.Unknown;
-    }
-  });
-  if (type === undefined) {
-    throw new Error('Could not infer geometry type for collection of features.');
-  }
-  return type;
 }
 
 function normalizeProperties(properties, columns) {

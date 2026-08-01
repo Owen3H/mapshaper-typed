@@ -48,13 +48,53 @@ export function exportGeoJSON(dataset, opts) {
   });
 }
 
-// Return an array of Features or Geometries as objects or strings
+// Returns a cursor for generating a layer's Features (or Geometries) one at a
+// time. A caller that can consume features incrementally should use this
+// instead of exportLayerAsGeoJSON(), which holds the entire layer in memory --
+// the GeoJSON form of a coordinate is many times larger than its binary form,
+// so materializing a whole layer of detailed geometry is usually the largest
+// allocation an exporter makes.
 //
-export function exportLayerAsGeoJSON(lyr, dataset, opts, asFeatures, ofmt) {
+// getFeature() returns null for a null geometry when asFeatures is false, so
+// that such shapes can be left out of a GeometryCollection.
+export function getFeatureCursor(lyr, dataset, opts, asFeatures) {
   var properties = exportProperties(lyr.data, opts),
       shapes = lyr.shapes,
       ids = exportIds(lyr.data, opts),
-      items, stringify;
+      exporter = GeoJSON.exporters[lyr.geometry_type];
+
+  if (properties && shapes && properties.length !== shapes.length) {
+    error("Mismatch between number of properties and number of shapes");
+  }
+
+  return {
+    length: (shapes || properties || []).length,
+    properties: properties,
+    getFeature: function(i) {
+      var shape = shapes ? shapes[i] : null,
+          geom = shape ? exporter(shape, dataset.arcs, opts) : null,
+          obj;
+      if (!asFeatures) {
+        return geom || null;
+      }
+      obj = composeFeature(geom, properties ? properties[i] : null, opts);
+      if (ids) {
+        obj.id = ids[i];
+      }
+      if (opts.no_null_props && !obj.properties) {
+        obj.properties = {};
+      }
+      return obj;
+    }
+  };
+}
+
+// Return an array of Features or Geometries as objects or strings
+//
+export function exportLayerAsGeoJSON(lyr, dataset, opts, asFeatures, ofmt) {
+  var cursor = getFeatureCursor(lyr, dataset, opts, asFeatures),
+      items = [],
+      stringify, obj, i;
 
   if (opts.ndjson) {
     stringify = stringifyAsNDJSON;
@@ -64,42 +104,20 @@ export function exportLayerAsGeoJSON(lyr, dataset, opts, asFeatures, ofmt) {
     stringify = JSON.stringify;
   }
 
-  if (properties && shapes && properties.length !== shapes.length) {
-    error("Mismatch between number of properties and number of shapes");
-  }
-
-  return (shapes || properties || []).reduce(function(memo, o, i) {
-    var shape = shapes ? shapes[i] : null,
-        exporter = GeoJSON.exporters[lyr.geometry_type],
-        geom = shape ? exporter(shape, dataset.arcs, opts) : null,
-        obj = null;
-
-    if (asFeatures) {
-      obj = composeFeature(geom, properties ? properties[i] : null, opts);
-      if (ids) {
-        obj.id = ids[i];
-      }
-      if (opts.no_null_props && !obj.properties) {
-        obj.properties = {};
-      }
-    } else if (!geom) {
-      return memo; // don't add null objects to GeometryCollection
-    } else {
-      obj = geom;
-    }
+  for (i = 0; i < cursor.length; i++) {
+    obj = cursor.getFeature(i);
+    if (!asFeatures && !obj) continue; // don't add null objects to GeometryCollection
     if (ofmt) {
       // stringify features as soon as they are generated, to reduce the
       // number of JS objects in memory (so larger files can be exported)
       obj = stringify(obj);
       if (ofmt == 'buffer') {
         obj = encodeString(obj, 'utf8');
-        // obj = stringToBuffer(obj);
-        // obj = new Buffer(obj, 'utf8');
       }
     }
-    memo.push(obj);
-    return memo;
-  }, []);
+    items.push(obj);
+  }
+  return items;
 }
 
 function composeFeature(geom, properties, opts) {

@@ -35,6 +35,44 @@ describe('flatgeobuf export', function () {
     assert.deepEqual(dataset.layers[0].data.getRecords().map(rec => rec.name), ['alpha', 'beta']);
   });
 
+  // The header declares the collection's geometry type and is written before
+  // any features, so a layer that turns out to hold more than one type has to
+  // be encoded a second time.
+  it('round-trips a layer holding more than one geometry type', async function () {
+    var square = function(x) {
+      return [[[x, 0], [x + 1, 0], [x + 1, 1], [x, 1], [x, 0]]];
+    };
+    var input = {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        properties: {name: 'single'},
+        geometry: {type: 'Polygon', coordinates: square(0)}
+      }, {
+        type: 'Feature',
+        properties: {name: 'multi'},
+        geometry: {type: 'MultiPolygon', coordinates: [square(5), square(8)]}
+      }, {
+        type: 'Feature',
+        properties: {name: 'single2'},
+        geometry: {type: 'Polygon', coordinates: square(12)}
+      }]
+    };
+    var output = await api.applyCommands('-i in.json -o format=flatgeobuf', {'in.json': input});
+    var fgbName = Object.keys(output)[0];
+    var dataset = await api.internal.importContentAsync({
+      fgb: {filename: fgbName, content: output[fgbName]}
+    }, {});
+    var lyr = dataset.layers[0];
+    assert.equal(lyr.geometry_type, 'polygon');
+    assert.deepEqual(lyr.data.getRecords().map(rec => rec.name),
+      ['single', 'multi', 'single2']);
+    // the middle feature keeps both of its parts
+    assert.equal(lyr.shapes[0].length, 1);
+    assert.equal(lyr.shapes[1].length, 2);
+    assert.equal(lyr.shapes[2].length, 1);
+  });
+
   it('exports one .fgb file per layer', async function () {
     var a = {
       type: 'FeatureCollection',

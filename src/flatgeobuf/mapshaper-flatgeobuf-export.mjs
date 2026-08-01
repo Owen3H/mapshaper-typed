@@ -1,4 +1,4 @@
-import { exportLayerAsGeoJSON } from '../geojson/geojson-export';
+import { getFeatureCursor } from '../geojson/geojson-export';
 import {
   serializeWithColumns,
   getHeaderMeta,
@@ -27,9 +27,12 @@ export function exportFlatGeobuf(dataset, opts) {
   }
   var crsMeta = resolveOutputCRS(dataset);
   return dataset.layers.map(function(lyr) {
-    var geojson = getFeatureCollection(lyr, dataset, opts);
+    var cursor = getFeatureCursor(lyr, dataset, opts, true);
+    if (cursor.length === 0) {
+      stop('FlatGeobuf export does not support empty layers');
+    }
     var columns = getFlatGeobufColumns(lyr);
-    var content = serializeWithColumns(geojson, columns);
+    var content = serializeWithColumns(cursor, columns);
     var filename = lyr.name + '.' + extension;
     if (crsMeta) {
       content = rewriteHeaderWithCRS(content, crsMeta);
@@ -41,17 +44,6 @@ export function exportFlatGeobuf(dataset, opts) {
       filename: filename
     };
   });
-}
-
-function getFeatureCollection(lyr, dataset, opts) {
-  var features = exportLayerAsGeoJSON(lyr, dataset, opts, true, null);
-  if (features.length === 0) {
-    stop('FlatGeobuf export does not support empty layers');
-  }
-  return {
-    type: 'FeatureCollection',
-    features: features
-  };
 }
 
 function getFlatGeobufColumns(lyr) {
