@@ -228,7 +228,7 @@ Save content of the target layer(s) to a file or files.
 
 `<file>|<directory>|-`  Name of output file or directory. Use `-` to export text-based formats to `/dev/stdout`.
 
-`format=shapefile|geojson|topojson|flatgeobuf|geopackage|geoparquet|json|dbf|csv|tsv|svg` Specify output format. If the `format=` option is missing, Mapshaper tries to infer the format from the output filename. If no filename is given, Mapshaper exports to the same format as the input format. The `json` format is an array of objects containing data properties for each feature.
+`format=shapefile|geojson|topojson|flatgeobuf|geopackage|geoparquet|geotiff|json|dbf|csv|tsv|svg` Specify output format. If the `format=` option is missing, Mapshaper tries to infer the format from the output filename. If no filename is given, Mapshaper exports to the same format as the input format. The `json` format is an array of objects containing data properties for each feature. The `geotiff` format takes raster layers only; every other format takes vector or table layers only, apart from `svg` and `msx`, which accept both.
 
 `target=` Specify layer(s) to export (comma-separated list). The default target is the output layer(s) of the previous command. Use `target=*` to select all layers.
 
@@ -318,9 +318,11 @@ Save content of the target layer(s) to a file or files.
 
 `decimal-comma`  (CSV) Export numbers with decimal commas instead of decimal points (common in Europe and elsewhere).
 
-`compression=`  (GeoParquet) Select Parquet column compression. One of: `snappy` `zstd` `none`. The default is `snappy`.
+`compression=`  (GeoParquet) Select Parquet column compression. One of: `snappy` `zstd` `none`. The default is `snappy`. (GeoTIFF) One of: `deflate` `none`. The default is `deflate`.
 
 `level=`  (GeoParquet) Set the ZSTD compression level when using `compression=zstd`. Valid values are integers from 1 to 22.
+
+`rowgroup=`  (GeoParquet) Set the number of rows in each row group. By default Mapshaper sizes row groups by their estimated size in bytes rather than by a fixed row count, aiming for around 16MB of uncompressed data per group, so that a layer of points and a layer of detailed polygons both produce groups of a similar size. Set this only if you know the access pattern you are writing for.
 
 `show-all`  [Snapshot] All layers of the exported snapshot will be displayed when opened in the web UI.
 
@@ -594,24 +596,18 @@ Convert a raster layer to a polyline layer of contour lines (isolines). This is
 most often used to trace elevation contours from a digital elevation model, but
 it works on any continuous raster.
 
-Contours are traced from the layer's current pixel values, so they reflect any
-earlier edits in the command sequence. Running `-blur` before `-contours`, for
-example, produces smoother lines than contouring the raw data.
+Running `-blur` before `-contours` produces smoother lines than contouring the raw data.
 
 Values are read at pixel centers, so contour lines span from the center of the
 first pixel to the center of the last, half a pixel inside the raster's bounds.
-Pixels marked as nodata, and pixels left uncovered by a previous `-proj`, are
-excluded: contours stop at the edge of the valid data instead of crossing it.
 
-Traced contours carry a one-pixel staircase, which is most visible on quantized
-data such as an elevation model recorded in whole meters. `-contours` therefore
-finishes by smoothing the lines, using an interval of one pixel that it works
-out from the raster's resolution and reports on the console. Smoothing also
-reduces the vertex count substantially. Use `no-smoothing` to skip the step and
-keep the raw traced geometry, which you can then smooth yourself with `-smooth`.
+`-contours` finishes by smoothing the lines, using an interval of a quarter of a
+pixel. Where smoothing causes lines to cross, the intersecting lines are left unsmoothed. Use `no-smoothing` to
+skip the step and keep the raw traced geometry, which you can then smooth
+yourself with `-smooth`.
 
 By default the contour layer replaces the raster layer. Use `+` to keep the
-raster as well, which is useful for drawing the contours over the image.
+raster as well.
 
 `interval=` Spacing between contour levels. Levels are multiples of this value,
 so `interval=100` gives levels at 100, 200, 300 and so on. If neither

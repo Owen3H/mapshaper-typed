@@ -209,11 +209,11 @@ mapshaper states.geojson \
 mapshaper countries_wgs84.shp encoding=latin1 -info
 </code></pre>
 </section>
-<section class="cmd-section" data-id="-o-output" data-name="-o (output)" data-options="format json target force gzip zip cut-table drop-table precision fix-geometry bbox-index encoding field-order id-field bbox extension prettify singles quantization no-quantization presimplify topojson-precision ndjson gj2008 reverse-winding combine-layers geojson-type no-null-props hoist metadata crs id width height max-height margin pixels id-prefix svg-data svg-scale raster-res linked-images jpeg-quality delimiter decimal-comma compression snappy zstd none level show-all"><h3 id="-o-output">-o (output)</h3>
+<section class="cmd-section" data-id="-o-output" data-name="-o (output)" data-options="format json geotiff svg msx target force gzip zip cut-table drop-table precision fix-geometry bbox-index encoding field-order id-field bbox extension prettify singles quantization no-quantization presimplify topojson-precision ndjson gj2008 reverse-winding combine-layers geojson-type no-null-props hoist metadata crs id width height max-height margin pixels id-prefix svg-data svg-scale raster-res linked-images jpeg-quality delimiter decimal-comma compression snappy zstd none deflate level rowgroup show-all"><h3 id="-o-output">-o (output)</h3>
 <p>Save content of the target layer(s) to a file or files.</p>
 <p><strong>Options</strong></p>
 <p><code>&lt;file&gt;|&lt;directory&gt;|-</code>  Name of output file or directory. Use <code>-</code> to export text-based formats to <code>/dev/stdout</code>.</p>
-<p><code>format=shapefile|geojson|topojson|flatgeobuf|geopackage|geoparquet|json|dbf|csv|tsv|svg</code> Specify output format. If the <code>format=</code> option is missing, Mapshaper tries to infer the format from the output filename. If no filename is given, Mapshaper exports to the same format as the input format. The <code>json</code> format is an array of objects containing data properties for each feature.</p>
+<p><code>format=shapefile|geojson|topojson|flatgeobuf|geopackage|geoparquet|geotiff|json|dbf|csv|tsv|svg</code> Specify output format. If the <code>format=</code> option is missing, Mapshaper tries to infer the format from the output filename. If no filename is given, Mapshaper exports to the same format as the input format. The <code>json</code> format is an array of objects containing data properties for each feature. The <code>geotiff</code> format takes raster layers only; every other format takes vector or table layers only, apart from <code>svg</code> and <code>msx</code>, which accept both.</p>
 <p><code>target=</code> Specify layer(s) to export (comma-separated list). The default target is the output layer(s) of the previous command. Use <code>target=*</code> to select all layers.</p>
 <p><code>force</code>  Allow output files to overwrite input files (without this option, overwriting input files is not allowed).</p>
 <p><code>gzip</code>  Apply gzip compression to output files.</p>
@@ -258,8 +258,9 @@ mapshaper countries_wgs84.shp encoding=latin1 -info
 <p><code>point-symbol=square</code>  (SVG) Use squares instead of circles to symbolize point data.</p>
 <p><code>delimiter=</code>  (CSV) Set the field delimiter for CSV/delimited text output; e.g. <code>delimiter=|</code>.</p>
 <p><code>decimal-comma</code>  (CSV) Export numbers with decimal commas instead of decimal points (common in Europe and elsewhere).</p>
-<p><code>compression=</code>  (GeoParquet) Select Parquet column compression. One of: <code>snappy</code> <code>zstd</code> <code>none</code>. The default is <code>snappy</code>.</p>
+<p><code>compression=</code>  (GeoParquet) Select Parquet column compression. One of: <code>snappy</code> <code>zstd</code> <code>none</code>. The default is <code>snappy</code>. (GeoTIFF) One of: <code>deflate</code> <code>none</code>. The default is <code>deflate</code>.</p>
 <p><code>level=</code>  (GeoParquet) Set the ZSTD compression level when using <code>compression=zstd</code>. Valid values are integers from 1 to 22.</p>
+<p><code>rowgroup=</code>  (GeoParquet) Set the number of rows in each row group. By default Mapshaper sizes row groups by their estimated size in bytes rather than by a fixed row count, aiming for around 16MB of uncompressed data per group, so that a layer of points and a layer of detailed polygons both produce groups of a similar size. Set this only if you know the access pattern you are writing for.</p>
 <p><code>show-all</code>  [Snapshot] All layers of the exported snapshot will be displayed when opened in the web UI.</p>
 <p><strong>Example</strong></p>
 <pre><code class="hljs language-bash"><span class="hljs-comment"># Convert all the Shapefiles in one directory into GeoJSON</span>
@@ -432,21 +433,15 @@ mapshaper data.json \
 <p>Convert a raster layer to a polyline layer of contour lines (isolines). This is
 most often used to trace elevation contours from a digital elevation model, but
 it works on any continuous raster.</p>
-<p>Contours are traced from the layer&#39;s current pixel values, so they reflect any
-earlier edits in the command sequence. Running <code>-blur</code> before <code>-contours</code>, for
-example, produces smoother lines than contouring the raw data.</p>
+<p>Running <code>-blur</code> before <code>-contours</code> produces smoother lines than contouring the raw data.</p>
 <p>Values are read at pixel centers, so contour lines span from the center of the
-first pixel to the center of the last, half a pixel inside the raster&#39;s bounds.
-Pixels marked as nodata, and pixels left uncovered by a previous <code>-proj</code>, are
-excluded: contours stop at the edge of the valid data instead of crossing it.</p>
-<p>Traced contours carry a one-pixel staircase, which is most visible on quantized
-data such as an elevation model recorded in whole meters. <code>-contours</code> therefore
-finishes by smoothing the lines, using an interval of one pixel that it works
-out from the raster&#39;s resolution and reports on the console. Smoothing also
-reduces the vertex count substantially. Use <code>no-smoothing</code> to skip the step and
-keep the raw traced geometry, which you can then smooth yourself with <code>-smooth</code>.</p>
+first pixel to the center of the last, half a pixel inside the raster&#39;s bounds.</p>
+<p><code>-contours</code> finishes by smoothing the lines, using an interval of a quarter of a
+pixel. Where smoothing causes lines to cross, the intersecting lines are left unsmoothed. Use <code>no-smoothing</code> to
+skip the step and keep the raw traced geometry, which you can then smooth
+yourself with <code>-smooth</code>.</p>
 <p>By default the contour layer replaces the raster layer. Use <code>+</code> to keep the
-raster as well, which is useful for drawing the contours over the image.</p>
+raster as well.</p>
 <p><code>interval=</code> Spacing between contour levels. Levels are multiples of this value,
 so <code>interval=100</code> gives levels at 100, 200, 300 and so on. If neither
 <code>interval=</code> nor <code>levels=</code> is given, mapshaper picks a round interval that

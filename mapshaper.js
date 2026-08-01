@@ -336,7 +336,7 @@
     return arr;
   }
 
-  function repeat(times, func) {
+  function repeat$1(times, func) {
     var values = [],
         val;
     for (var i=0; i<times; i++) {
@@ -1115,7 +1115,7 @@
     parseIntlNumber, parseNumber: parseNumber$1, parseString, pickOne, pluck,
     pluralSuffix, promisify,
     quicksort: quicksort$1, quicksortPartition,
-    range, regexEscape, reorderArray: reorderArray$1, repeat, repeatString,
+    range, regexEscape, reorderArray: reorderArray$1, repeat: repeat$1, repeatString,
     replaceArray, rpad, rtrim,
     shuffle, some, sortArrayIndex, sortOn, splitLines, sum: sum$1,
     toArray: toArray$1, toBuffer, trim, trimQuotes,
@@ -1409,7 +1409,7 @@
   // path/bound helpers, forming a cycle).
 
 
-  function layerHasGeometry(lyr) {
+  function layerHasGeometry$1(lyr) {
     return layerHasPaths(lyr) || layerHasPoints(lyr);
   }
 
@@ -2054,7 +2054,7 @@
   // also consider using ellipsoidal formulas where greater accuracy might be important.
   var R$3 = WGS84.SEMIMAJOR_AXIS;
   var D2R$8 = Math.PI / 180;
-  var R2D$7 = 180 / Math.PI;
+  var R2D$8 = 180 / Math.PI;
 
   // Equirectangular projection
   function degreesToMeters(deg) {
@@ -2336,7 +2336,7 @@
     __proto__: null,
     D2R: D2R$8,
     R: R$3,
-    R2D: R2D$7,
+    R2D: R2D$8,
     bearing: bearing,
     bearing2D: bearing2D,
     containsBounds: containsBounds,
@@ -6087,7 +6087,7 @@
     insertFieldValues: insertFieldValues,
     isolateLayer: isolateLayer,
     layerHasAttributeData: layerHasAttributeData,
-    layerHasGeometry: layerHasGeometry,
+    layerHasGeometry: layerHasGeometry$1,
     layerHasNonNullData: layerHasNonNullData,
     layerHasNonNullShapes: layerHasNonNullShapes,
     layerHasPaths: layerHasPaths,
@@ -6572,7 +6572,7 @@
 
 
   var D2R$7 = Math.PI / 180;
-  var R2D$6 = 180 / Math.PI;
+  var R2D$7 = 180 / Math.PI;
   var EPS$3 = 1e-12;
 
   // Build a forward-only spherical polyhedral projection.
@@ -6790,7 +6790,7 @@
             config.rotation[2] * D2R$7,
             true
           );
-          return [normalizeLongitude$1(q[0] * R2D$6 + lon0), q[1] * R2D$6];
+          return [normalizeLongitude$1(q[0] * R2D$7 + lon0), q[1] * R2D$7];
         });
         var paths = splitPathAtAntimeridian$3(
           interpolateGreatCircle(endpoints[0], endpoints[1], 0.05)
@@ -7094,7 +7094,7 @@
     var av = degreesToVector$2(a[0], a[1]);
     var bv = degreesToVector$2(b[0], b[1]);
     var angle = Math.acos(clamp$2(dot$2(av, bv), -1, 1));
-    var n = Math.max(1, Math.ceil(angle * R2D$6 / interval));
+    var n = Math.max(1, Math.ceil(angle * R2D$7 / interval));
     var sinAngle = Math.sin(angle);
     var points = [];
     for (var i = 0; i <= n; i++) {
@@ -7167,8 +7167,8 @@
 
   function vectorToDegrees$2(p) {
     return [
-      Math.atan2(p[1], p[0]) * R2D$6,
-      Math.asin(clamp$2(p[2], -1, 1)) * R2D$6
+      Math.atan2(p[1], p[0]) * R2D$7,
+      Math.asin(clamp$2(p[2], -1, 1)) * R2D$7
     ];
   }
 
@@ -7236,7 +7236,7 @@
 
 
   var D2R$6 = Math.PI / 180;
-  var R2D$5 = 180 / Math.PI;
+  var R2D$6 = 180 / Math.PI;
   var SQRT3$2 = Math.sqrt(3);
   var GRAY_Z = Math.sqrt(5 + 2 * Math.sqrt(5)) / Math.sqrt(15);
   var GRAY_EL = Math.sqrt(8) / Math.sqrt(5 + Math.sqrt(5));
@@ -7297,12 +7297,12 @@
         xy.y = p[1];
       }
     };
-    P.__projection_topology = engine.getTopology(P.lam0 * R2D$5);
+    P.__projection_topology = engine.getTopology(P.lam0 * R2D$6);
     P.__projected_outline = engine.outline;
   }
 
   function createAiroceanFaces() {
-    var theta = Math.atan(0.5) * R2D$5;
+    var theta = Math.atan(0.5) * R2D$6;
     var vertices = [[0, 90], [0, -90]];
     var faces;
     var sites;
@@ -7435,8 +7435,8 @@
 
   function vectorToDegrees$1(p) {
     return [
-      Math.atan2(p[1], p[0]) * R2D$5,
-      Math.asin(Math.max(-1, Math.min(1, p[2]))) * R2D$5
+      Math.atan2(p[1], p[0]) * R2D$6,
+      Math.asin(Math.max(-1, Math.min(1, p[2]))) * R2D$6
     ];
   }
 
@@ -7485,7 +7485,7 @@
    */
 
   var D2R$5 = Math.PI / 180;
-  var R2D$4 = 180 / Math.PI;
+  var R2D$5 = 180 / Math.PI;
 
   function createCahillKeyesRaw(mg) {
     return createCahillKeyesTransform(mg, false);
@@ -7497,12 +7497,12 @@
 
     return function(lambda, phi) {
       if (faceOnly) {
-        var lon = lambda * R2D$4;
+        var lon = lambda * R2D$5;
         var side = lon < 0 ? -1 : lon > 0 ? 1 : 0;
-        var local = mp2xy(Math.abs(lon), Math.abs(phi * R2D$4));
+        var local = mp2xy(Math.abs(lon), Math.abs(phi * R2D$5));
         return [local[0], side * local[1]];
       }
-      var res = ll2mp(lambda * R2D$4, phi * R2D$4);
+      var res = ll2mp(lambda * R2D$5, phi * R2D$5);
       var xy = mp2xy(res[0], res[1]);
       var p = [xy[0], res[2] * xy[1]];
       return mj2g(p, res[3]);
@@ -7999,7 +7999,7 @@
 
 
   var D2R$3 = Math.PI / 180;
-  var R2D$3 = 180 / Math.PI;
+  var R2D$4 = 180 / Math.PI;
   var RADIAL_BOUNDARY_STRENGTH = 1;
   var OCTAHEDRON = createOctahedron();
   var BUTTERFLY_PARENTS = [-1, 0, 0, 1, 0, 1, 4, 5];
@@ -8054,7 +8054,7 @@
         xy.y = p[1];
       }
     };
-    P.__projection_topology = engine.getTopology(P.lam0 * R2D$3);
+    P.__projection_topology = engine.getTopology(P.lam0 * R2D$4);
     if (engine.removeOutlineExtremeConnectors) {
       P.__remove_outline_extreme_connectors = true;
     }
@@ -8374,8 +8374,8 @@
 
   function vectorToDegrees(p) {
     return [
-      Math.atan2(p[1], p[0]) * R2D$3,
-      Math.asin(Math.max(-1, Math.min(1, p[2]))) * R2D$3
+      Math.atan2(p[1], p[0]) * R2D$4,
+      Math.asin(Math.max(-1, Math.min(1, p[2]))) * R2D$4
     ];
   }
 
@@ -8430,7 +8430,7 @@
 
 
   var D2R$2 = Math.PI / 180;
-  var R2D$2 = 180 / Math.PI;
+  var R2D$3 = 180 / Math.PI;
   var HALF_PI = Math.PI / 2;
   var SQRT2$1 = Math.sqrt(2);
   var SQRT3$1 = Math.sqrt(3);
@@ -8487,7 +8487,7 @@
       xy.x = p[0];
       xy.y = p[1];
     };
-    P.__projection_topology = engine.getTopology(P.lam0 * R2D$2);
+    P.__projection_topology = engine.getTopology(P.lam0 * R2D$3);
     P.__projected_outline = engine.outline;
   }
 
@@ -8577,8 +8577,8 @@
             boundary: sector.sphericalBoundary.map(function(p) {
               var q = fromCanonical(p[0], p[1], orientation);
               return [
-                normalizeLongitude$1(q[0] * R2D$2 + lon0),
-                q[1] * R2D$2
+                normalizeLongitude$1(q[0] * R2D$3 + lon0),
+                q[1] * R2D$3
               ];
             })
           };
@@ -9165,8 +9165,8 @@
         var y = edge[0][1] + (edge[1][1] - edge[0][1]) * t;
         var p = inverse(x * EDGE_SCALE, y * EDGE_SCALE);
         path.push([
-          normalizeLongitude$1(p[0] * R2D$2 + lon0),
-          p[1] * R2D$2
+          normalizeLongitude$1(p[0] * R2D$3 + lon0),
+          p[1] * R2D$3
         ]);
       }
       return memo.concat(splitPathAtAntimeridian$2(path));
@@ -9462,11 +9462,11 @@
 
 
   var D2R$1 = Math.PI / 180;
-  var R2D$1 = 180 / Math.PI;
+  var R2D$2 = 180 / Math.PI;
   var SQRT2 = Math.sqrt(2);
   var SQRT3 = Math.sqrt(3);
   var ASIN_ONE_THIRD = Math.asin(1 / 3);
-  var MARKLEY_LATITUDE = Math.acos(1 / 3) * 0.5 * R2D$1;
+  var MARKLEY_LATITUDE = Math.acos(1 / 3) * 0.5 * R2D$2;
   var LAYOUT_PERIOD = 8;
   var MARKLEY_LAYOUT_PHASE = -2;
   var CALM_LAYOUT_PHASE = -1.5;
@@ -9506,9 +9506,9 @@
 
   var TETRAHEDRON_VERTICES = [
     [0, 90],
-    [-180, -ASIN_ONE_THIRD * R2D$1],
-    [-60, -ASIN_ONE_THIRD * R2D$1],
-    [60, -ASIN_ONE_THIRD * R2D$1]
+    [-180, -ASIN_ONE_THIRD * R2D$2],
+    [-60, -ASIN_ONE_THIRD * R2D$2],
+    [60, -ASIN_ONE_THIRD * R2D$2]
   ];
 
   var TETRAHEDRON_FACES = [
@@ -9562,7 +9562,7 @@
       xy.x = p[0];
       xy.y = p[1];
     };
-    P.__projection_topology = engine.getTopology(P.lam0 * R2D$1);
+    P.__projection_topology = engine.getTopology(P.lam0 * R2D$2);
     P.__projected_outline = engine.outline;
     P.__graticule_precision = 1;
   }
@@ -9787,7 +9787,7 @@
       var boundary = face.map(function(p) {
         var q = rotateSphericalRadians(
           p[0] * D2R$1, p[1] * D2R$1, rotation, true);
-        return [normalizeLongitude$1(q[0] * R2D$1), q[1] * R2D$1];
+        return [normalizeLongitude$1(q[0] * R2D$2), q[1] * R2D$2];
       });
       boundary.push(boundary[0].concat());
       return {id: id, boundary: boundary};
@@ -9905,7 +9905,7 @@
           stats.failed_count++;
           continue;
         }
-        path.push([normalizeLongitude$1(p[0] * R2D$1 + lon0), p[1] * R2D$1]);
+        path.push([normalizeLongitude$1(p[0] * R2D$2 + lon0), p[1] * R2D$2]);
       }
       return memo.concat(splitPathAtAntimeridian$1(path));
     }, []).map(function(path) {
@@ -10447,6 +10447,24 @@
     };
   }
 
+  // Parse a CRS string that may well be unusable, without the failure reaching
+  // the user: returns null instead of stopping. This is for CRS metadata read out
+  // of a file, where mapshaper is guessing and the caller has a fallback. (In the
+  // web app a stop() shows a modal popup as it throws, which is too much for a
+  // guess that did not come off, and interrupts whatever the user was doing.)
+  function tryParseCrsString(str) {
+    var revertLogging = getLoggingSetter();
+    var crs = null;
+    setLoggingForCLI();
+    try {
+      crs = parseCrsString$1(str);
+    } catch(e) {
+      // an unparseable string is one of the expected outcomes here
+    }
+    revertLogging();
+    return crs;
+  }
+
   function parseCrsString$1(str) {
     var defn = getProjDefn(str);  // defn is a string or a Proj object
     var P;
@@ -10701,6 +10719,7 @@
     setDatasetCrsInfo: setDatasetCrsInfo,
     setProjectionLoader: setProjectionLoader,
     toLngLat: toLngLat,
+    tryParseCrsString: tryParseCrsString,
     wkt1ToProj: wkt1ToProj,
     wkt2ToProj: wkt2ToProj,
     wktToProj: wktToProj
@@ -12867,7 +12886,7 @@
 
   function datasetHasGeometry(dataset) {
     return utils.some(dataset.layers, function(lyr) {
-      return layerHasGeometry(lyr);
+      return layerHasGeometry$1(lyr);
     });
   }
 
@@ -14082,6 +14101,28 @@
           d: function () { return ~c; }
       };
   };
+  // Adler32
+  var adler = function () {
+      var a = 1, b = 0;
+      return {
+          p: function (d) {
+              // closures have awful performance
+              var n = a, m = b;
+              var l = d.length | 0;
+              for (var i = 0; i != l;) {
+                  var e = Math.min(i + 2655, l);
+                  for (; i < e; ++i)
+                      m += n += d[i];
+                  n = (n & 65535) + 15 * (n >> 16), m = (m & 65535) + 15 * (m >> 16);
+              }
+              a = n, b = m;
+          },
+          d: function () {
+              a %= 65521, b %= 65521;
+              return (a & 255) << 24 | (a & 0xFF00) << 8 | (b & 255) << 8 | (b >> 8);
+          }
+      };
+  };
   // deflate with opts
   var dopt = function (dat, opt, pre, post, st) {
       if (!st) {
@@ -14166,7 +14207,7 @@
   };
   // base async inflate fn
   var bInflt = function () { return [u8, u16, i32, fleb, fdeb, clim, fl, fd, flrm, fdrm, rev, ec, hMap, max, bits, bits16, shft, slc, err, inflt, inflateSync, pbf, gopt]; };
-  var bDflt = function () { return [u8, u16, i32, fleb, fdeb, clim, revfl, revfd, flm, flt, fdm, fdt, rev, deo, et, hMap, wbits, wbits16, hTree, ln, lc, clen, wfblk, wblk, shft, slc, dflt, dopt, deflateSync, pbf]; };
+  var bDflt = function () { return [u8, u16, i32, fleb, fdeb, clim, revfl, revfd, flm, flt, fdm, fdt, rev, deo, et, hMap, wbits, wbits16, hTree, ln, lc, clen, wfblk, wblk, shft, slc, dflt, dopt, deflateSync$1, pbf]; };
   // gzip extra
   var gze = function () { return [gzh, gzhl, wbytes, crc, crct]; };
   // gunzip extra
@@ -14229,6 +14270,17 @@
   };
   // gzip header length
   var gzhl = function (o) { return 10 + (o.filename ? o.filename.length + 1 : 0); };
+  // zlib header
+  var zlh = function (c, o) {
+      var lv = o.level, fl = lv == 0 ? 0 : lv < 6 ? 1 : lv == 9 ? 3 : 2;
+      c[0] = 120, c[1] = (fl << 6) | (o.dictionary && 32);
+      c[1] |= 31 - ((c[0] << 8) | c[1]) % 31;
+      if (o.dictionary) {
+          var h = adler();
+          h.p(o.dictionary);
+          wbytes(c, 2, h.d());
+      }
+  };
   function deflate(data, opts, cb) {
       if (!cb)
           cb = opts, opts = {};
@@ -14236,7 +14288,7 @@
           err(7);
       return cbify(data, opts, [
           bDflt,
-      ], function (ev) { return pbf(deflateSync(ev.data[0], ev.data[1])); }, 0, cb);
+      ], function (ev) { return pbf(deflateSync$1(ev.data[0], ev.data[1])); }, 0, cb);
   }
   /**
    * Compresses data with DEFLATE without any wrapper
@@ -14244,7 +14296,7 @@
    * @param opts The compression options
    * @returns The deflated version of the data
    */
-  function deflateSync(data, opts) {
+  function deflateSync$1(data, opts) {
       return dopt(data, opts || {}, 0, 0);
   }
   function inflate(data, opts, cb) {
@@ -14312,6 +14364,20 @@
       if (st + 8 > data.length)
           err(6, 'invalid gzip data');
       return inflt(data.subarray(st, -8), { i: 2 }, opts && opts.out || new u8(gzl(data)), opts && opts.dictionary);
+  }
+  /**
+   * Compress data with Zlib
+   * @param data The data to compress
+   * @param opts The compression options
+   * @returns The zlib-compressed version of the data
+   */
+  function zlibSync(data, opts) {
+      if (!opts)
+          opts = {};
+      var a = adler();
+      a.p(data);
+      var d = dopt(data, opts, opts.dictionary ? 6 : 2, 4);
+      return zlh(d, opts), wbytes(d, d.length - 4, a.d()), d;
   }
   // flatten a directory structure
   var fltn = function (d, p, t, o) {
@@ -14568,7 +14634,7 @@
               cbl(null, file);
           else if (size < 160000) {
               try {
-                  cbl(null, deflateSync(file, p));
+                  cbl(null, deflateSync$1(file, p));
               }
               catch (e) {
                   cbl(e, null);
@@ -14606,7 +14672,7 @@
           var exl = exfl(p.extra);
           if (s > 65535)
               err(11);
-          var d = compression ? deflateSync(file, p) : file, l = d.length;
+          var d = compression ? deflateSync$1(file, p) : file, l = d.length;
           var c = crc();
           c.p(file);
           files.push(mrg(p, {
@@ -17475,6 +17541,12 @@
     sortIntersections: sortIntersections
   });
 
+  // Reverting an arc can leave it crossing a neighbor that is still modified, so
+  // the check is repeated; each pass reverts more arcs than the last, and the
+  // unmodified geometry is the floor.
+  var MAX_REPAIR_PASSES = 10;
+
+
   // arcs: ArcCollection containing original coordinates
   function getRepairFunction(arcs) {
     var arcsOrig = arcs.getCopy();
@@ -17536,6 +17608,73 @@
     });
   }
 
+  // Remove intersections from a whole-collection edit (such as smoothing) by
+  // putting the arcs that cross back the way they were. Reverting per arc, rather
+  // than per vertex, is what suits an edit that resamples a path: the modified and
+  // original versions of an arc need not share a vertex count.
+  //
+  // arcs: modified arcs, edited in place
+  // arcsOrig: the same arcs, in the same order, before the edit
+  // Returns {reverted: number of arcs put back, remaining: crossings left}
+  function repairCrossedArcs(arcs, arcsOrig) {
+    var intersections = findSegmentIntersections(arcs, {});
+    var reverted = null;
+    var pass = 0;
+    while (intersections.length > 0 && pass++ < MAX_REPAIR_PASSES) {
+      reverted = reverted || new Uint8Array(arcs.size());
+      // Nothing new to try: the arcs that cross are already unmodified.
+      if (markCrossedArcs(intersections, arcs, reverted) === 0) break;
+      revertArcs(arcs, arcsOrig, reverted);
+      intersections = findSegmentIntersections(arcs, {});
+    }
+    return {
+      reverted: reverted ? countMarked(reverted) : 0,
+      remaining: intersections.length
+    };
+  }
+
+  // Flags the arcs taking part in each intersection; returns how many were newly
+  // flagged.
+  function markCrossedArcs(intersections, arcs, marked) {
+    var ii = arcs.getVertexData().ii;
+    var added = 0;
+    intersections.forEach(function(o) {
+      [findArcIdFromVertexId(o.a[0], ii), findArcIdFromVertexId(o.b[0], ii)]
+        .forEach(function(arcId) {
+          if (marked[arcId]) return;
+          marked[arcId] = 1;
+          added++;
+        });
+    });
+    return added;
+  }
+
+  function revertArcs(arcs, arcsOrig, marked) {
+    var mod = arcs.getVertexData();
+    var orig = arcsOrig.getVertexData();
+    var nn = [], xx = [], yy = [];
+    var i, j, src, start, len;
+    for (i = 0; i < marked.length; i++) {
+      src = marked[i] ? orig : mod;
+      start = src.ii[i];
+      len = src.nn[i];
+      nn.push(len);
+      for (j = 0; j < len; j++) {
+        xx.push(src.xx[start + j]);
+        yy.push(src.yy[start + j]);
+      }
+    }
+    arcs.updateVertexData(nn, xx, yy);
+  }
+
+  function countMarked(marked) {
+    var count = 0;
+    for (var i = 0; i < marked.length; i++) {
+      if (marked[i]) count++;
+    }
+    return count;
+  }
+
   // idx: index of an arc endpoint
   function findMatchingEndpoints(idx, data) {
     var ii = data.ii, nn = data.nn, xx = data.xx, yy = data.yy;
@@ -17554,6 +17693,13 @@
     }
     return matches;
   }
+
+  var SegmentIntersectionRepair = /*#__PURE__*/Object.freeze({
+    __proto__: null,
+    getRepairFunction: getRepairFunction,
+    repairCrossedArcs: repairCrossedArcs,
+    repairSegmentIntersections: repairSegmentIntersections
+  });
 
   function roundToSignificantDigits(n, d) {
     return +n.toPrecision(d);
@@ -22299,7 +22445,7 @@
       return;
     }
     layers.forEach(function(lyr) {
-      if (!layerHasGeometry(lyr)) return;
+      if (!layerHasGeometry$1(lyr)) return;
       if (lyr.geometry_type == 'polygon' && opts.rewind) {
         profileStart('rewindPolygons');
         rewindPolygons(lyr, dataset.arcs);
@@ -22595,13 +22741,53 @@
     });
   }
 
-  // Return an array of Features or Geometries as objects or strings
+  // Returns a cursor for generating a layer's Features (or Geometries) one at a
+  // time. A caller that can consume features incrementally should use this
+  // instead of exportLayerAsGeoJSON(), which holds the entire layer in memory --
+  // the GeoJSON form of a coordinate is many times larger than its binary form,
+  // so materializing a whole layer of detailed geometry is usually the largest
+  // allocation an exporter makes.
   //
-  function exportLayerAsGeoJSON(lyr, dataset, opts, asFeatures, ofmt) {
+  // getFeature() returns null for a null geometry when asFeatures is false, so
+  // that such shapes can be left out of a GeometryCollection.
+  function getFeatureCursor(lyr, dataset, opts, asFeatures) {
     var properties = exportProperties(lyr.data, opts),
         shapes = lyr.shapes,
         ids = exportIds(lyr.data, opts),
-        stringify;
+        exporter = GeoJSON.exporters[lyr.geometry_type];
+
+    if (properties && shapes && properties.length !== shapes.length) {
+      error("Mismatch between number of properties and number of shapes");
+    }
+
+    return {
+      length: (shapes || properties || []).length,
+      properties: properties,
+      getFeature: function(i) {
+        var shape = shapes ? shapes[i] : null,
+            geom = shape ? exporter(shape, dataset.arcs, opts) : null,
+            obj;
+        if (!asFeatures) {
+          return geom || null;
+        }
+        obj = composeFeature(geom, properties ? properties[i] : null, opts);
+        if (ids) {
+          obj.id = ids[i];
+        }
+        if (opts.no_null_props && !obj.properties) {
+          obj.properties = {};
+        }
+        return obj;
+      }
+    };
+  }
+
+  // Return an array of Features or Geometries as objects or strings
+  //
+  function exportLayerAsGeoJSON(lyr, dataset, opts, asFeatures, ofmt) {
+    var cursor = getFeatureCursor(lyr, dataset, opts, asFeatures),
+        items = [],
+        stringify, obj, i;
 
     if (opts.ndjson) {
       stringify = stringifyAsNDJSON;
@@ -22611,42 +22797,20 @@
       stringify = JSON.stringify;
     }
 
-    if (properties && shapes && properties.length !== shapes.length) {
-      error("Mismatch between number of properties and number of shapes");
-    }
-
-    return (shapes || properties || []).reduce(function(memo, o, i) {
-      var shape = shapes ? shapes[i] : null,
-          exporter = GeoJSON.exporters[lyr.geometry_type],
-          geom = shape ? exporter(shape, dataset.arcs, opts) : null,
-          obj = null;
-
-      if (asFeatures) {
-        obj = composeFeature(geom, properties ? properties[i] : null, opts);
-        if (ids) {
-          obj.id = ids[i];
-        }
-        if (opts.no_null_props && !obj.properties) {
-          obj.properties = {};
-        }
-      } else if (!geom) {
-        return memo; // don't add null objects to GeometryCollection
-      } else {
-        obj = geom;
-      }
+    for (i = 0; i < cursor.length; i++) {
+      obj = cursor.getFeature(i);
+      if (!asFeatures && !obj) continue; // don't add null objects to GeometryCollection
       if (ofmt) {
         // stringify features as soon as they are generated, to reduce the
         // number of JS objects in memory (so larger files can be exported)
         obj = stringify(obj);
         if (ofmt == 'buffer') {
           obj = encodeString(obj, 'utf8');
-          // obj = stringToBuffer(obj);
-          // obj = new Buffer(obj, 'utf8');
         }
       }
-      memo.push(obj);
-      return memo;
-    }, []);
+      items.push(obj);
+    }
+    return items;
   }
 
   function composeFeature(geom, properties, opts) {
@@ -22967,6 +23131,7 @@
     exportLayerAsGeoJSON: exportLayerAsGeoJSON,
     exportProperties: exportProperties,
     getDatasetBbox: getDatasetBbox,
+    getFeatureCursor: getFeatureCursor,
     getIdField: getIdField,
     preserveOriginalCRS: preserveOriginalCRS,
     useFeatureCollection: useFeatureCollection,
@@ -28525,6 +28690,19 @@ ${svg}
     return require('zlib').gzipSync(content, opts);
   }
 
+  // Compress to a zlib stream (a deflate stream wrapped in a zlib header and
+  // checksum). This is what TIFF's Deflate compression expects, unlike the gzip
+  // wrapper used for .gz files.
+  function deflateSync(content, opts) {
+    if (typeof content == 'string') {
+      content = strToU8(content);
+    }
+    if (runningInBrowser()) {
+      return zlibSync(content, opts);
+    }
+    return require('zlib').deflateSync(content, opts);
+  }
+
   async function gzipAsync(content, opts) {
     if (typeof content == 'string') {
       content = strToU8(content);
@@ -28559,6 +28737,7 @@ ${svg}
 
   var Gzip = /*#__PURE__*/Object.freeze({
     __proto__: null,
+    deflateSync: deflateSync,
     gunzipAsync: gunzipAsync,
     gunzipSync: gunzipSync,
     gzipAsync: gzipAsync,
@@ -31642,54 +31821,87 @@ ${svg}
     return builder.asUint8Array();
   }
 
-  function serializeWithColumns(geojson, columns) {
-    var headerMeta = {
-      geometryType: inferGeometryType(geojson.features),
-      columns: columns,
-      featuresCount: geojson.features.length};
-    var header = buildHeader(headerMeta);
-    var features = geojson.features.map(function(feature) {
+  // source: a feature cursor, {length, getFeature(i)}. Features are pulled and
+  // encoded one at a time rather than as a collection, because the GeoJSON form
+  // of a layer is several times larger than the FlatGeobuf it encodes into.
+  function serializeWithColumns(source, columns) {
+    if (source.length === 0) {
+      throw new Error('Could not infer geometry type for collection of features.');
+    }
+    // The header precedes the features and declares the collection's geometry
+    // type, but that type isn't known until every feature has been seen. Assume
+    // the layer is homogeneous, which nearly all are, and encode again as
+    // Unknown in the rare case that it isn't.
+    return encodeCollection(source, columns, null) ||
+      encodeCollection(source, columns, GeometryType.Unknown);
+  }
+
+  // Returns null if forcedType is null and the features turn out to have more
+  // than one geometry type.
+  function encodeCollection(source, columns, forcedType) {
+    var headerMeta = null;
+    var sink = null;
+    for (var i = 0; i < source.length; i++) {
+      var feature = source.getFeature(i);
+      var type = GeometryType[feature.geometry.type] || GeometryType.Unknown;
+      if (!headerMeta) {
+        headerMeta = {
+          geometryType: forcedType === null ? type : forcedType,
+          columns: columns,
+          envelope: null,
+          featuresCount: source.length,
+          indexNodeSize: 0,
+          crs: null,
+          title: null,
+          description: null,
+          metadata: null
+        };
+        sink = new ByteSink(magicbytes.length + estimateEncodedBytes(source));
+        sink.append(magicbytes);
+        sink.append(buildHeader(headerMeta));
+      } else if (forcedType === null && type != headerMeta.geometryType) {
+        return null;
+      }
       var geometry = feature.geometry.type == 'GeometryCollection' ?
         parseGC(feature.geometry) :
         parseGeometry(feature.geometry);
       omitRedundantGeometryType(geometry, headerMeta.geometryType);
-      return buildFeature(geometry, normalizeProperties(feature.properties, columns), headerMeta);
-    });
-    var featureBytes = features.reduce(function(sum, feature) {
-      return sum + feature.length;
-    }, 0);
-    var output = new Uint8Array(magicbytes.length + header.length + featureBytes);
-    var offset = magicbytes.length;
-    output.set(header, offset);
-    offset += header.length;
-    features.forEach(function(feature) {
-      output.set(feature, offset);
-      offset += feature.length;
-    });
-    output.set(magicbytes);
-    return output;
+      sink.append(buildFeature(geometry, normalizeProperties(feature.properties, columns), headerMeta));
+    }
+    return sink.toBytes();
   }
+
+  // Encoding the first feature is the only sample available before the buffer
+  // has to be allocated; overshooting costs a resize, which is why it is loose.
+  function estimateEncodedBytes(source) {
+    return Math.max(source.length * 64, 1024);
+  }
+
+  function ByteSink(initialSize) {
+    this.bytes = new Uint8Array(initialSize);
+    this.length = 0;
+  }
+
+  ByteSink.prototype.append = function(chunk) {
+    if (this.length + chunk.length > this.bytes.length) {
+      var size = this.bytes.length;
+      while (size < this.length + chunk.length) size *= 2;
+      var grown = new Uint8Array(size);
+      grown.set(this.bytes.subarray(0, this.length));
+      this.bytes = grown;
+    }
+    this.bytes.set(chunk, this.length);
+    this.length += chunk.length;
+  };
+
+  ByteSink.prototype.toBytes = function() {
+    return this.bytes.subarray(0, this.length);
+  };
 
   function omitRedundantGeometryType(geometry, headerType) {
     if (headerType != GeometryType.Unknown && geometry.type == headerType) {
       geometry.type = GeometryType.Unknown;
     }
-  }
-
-  function inferGeometryType(features) {
-    var type;
-    features.forEach(function(feature) {
-      var next = GeometryType[feature.geometry.type] || GeometryType.Unknown;
-      if (type === undefined) {
-        type = next;
-      } else if (type != next) {
-        type = GeometryType.Unknown;
-      }
-    });
-    if (type === undefined) {
-      throw new Error('Could not infer geometry type for collection of features.');
-    }
-    return type;
   }
 
   function normalizeProperties(properties, columns) {
@@ -31751,9 +31963,12 @@ ${svg}
     }
     var crsMeta = resolveOutputCRS(dataset);
     return dataset.layers.map(function(lyr) {
-      var geojson = getFeatureCollection(lyr, dataset, opts);
+      var cursor = getFeatureCursor(lyr, dataset, opts, true);
+      if (cursor.length === 0) {
+        stop$1('FlatGeobuf export does not support empty layers');
+      }
       var columns = getFlatGeobufColumns(lyr);
-      var content = serializeWithColumns(geojson, columns);
+      var content = serializeWithColumns(cursor, columns);
       var filename = lyr.name + '.' + extension;
       if (crsMeta) {
         content = rewriteHeaderWithCRS(content, crsMeta);
@@ -31765,17 +31980,6 @@ ${svg}
         filename: filename
       };
     });
-  }
-
-  function getFeatureCollection(lyr, dataset, opts) {
-    var features = exportLayerAsGeoJSON(lyr, dataset, opts, true, null);
-    if (features.length === 0) {
-      stop$1('FlatGeobuf export does not support empty layers');
-    }
-    return {
-      type: 'FeatureCollection',
-      features: features
-    };
   }
 
   function getFlatGeobufColumns(lyr) {
@@ -32473,83 +32677,177 @@ ${svg}
   async function exportGeoParquet(dataset, opts, filenameOverride) {
     var writer = await loadGeoParquetWriter();
     var compression = await getGeoParquetCompression(opts);
+    var rowGroupOverride = validateRowGroupSize(opts.rowgroup);
     var extension = opts.extension || 'parquet';
     var files = [];
     if (opts.file) {
       extension = getFileExtension(opts.file) || extension;
     }
     dataset.layers.forEach(function(lyr) {
-      var features = exportLayerAsGeoJSON(lyr, dataset, opts, true, null);
-      var hasGeometry = features.some(function(feat) {
-        return !!feat.geometry;
-      });
-      var output = buildGeoParquetColumns(features, hasGeometry);
-      var writeOptions = {
-        columnData: output.columnData,
-        codec: compression.codec,
-        compressors: compression.compressors,
-        pageSize: compression.pageSize
-      };
-      if (hasGeometry) {
-        writeOptions.kvMetadata = [{
-          key: 'geo',
-          value: JSON.stringify(buildGeoMetadata(features, dataset))
-        }];
-      } else {
-        warn('GeoParquet export: layer has no geometry; writing attribute data only.');
-      }
-      var content = writer.parquetWriteBuffer(writeOptions);
       files.push({
         filename: filenameOverride || (lyr.name + '.' + extension),
-        content: content
+        content: writeLayer(writer, lyr, dataset, opts, compression, rowGroupOverride)
       });
     });
     return files;
   }
 
-  function buildGeoParquetColumns(features, includeGeometry) {
-    var geometryName = 'geometry';
-    var names = getPropertyNames(features);
-    var columnData = [];
-    if (features.length === 0) {
+  var GEOMETRY_COLUMN = 'geometry';
+
+  // Rows are converted and handed to the writer one row group at a time. The
+  // GeoJSON form of a geometry is several times larger than the WKB the writer
+  // encodes it into, so materializing a whole layer of it was the largest
+  // allocation the export made -- larger than the dataset and the output file
+  // combined. Converting a group at a time makes that cost a function of the
+  // row group size rather than of the layer size.
+  function writeLayer(writer, lyr, dataset, opts, compression, rowGroupOverride) {
+    var cursor = getFeatureCursor(lyr, dataset, opts, true);
+    var rowCount = cursor.length;
+    if (rowCount === 0) {
       stop$1('GeoParquet export requires at least one record');
     }
-    if (includeGeometry) {
-      columnData.push({
-        name: geometryName,
-        data: features.map(function(feat) {
-          return feat.geometry || null;
-        }),
-        type: 'GEOMETRY'
-      });
-    }
-    names.forEach(function(name) {
-      var values = features.map(function(feat) {
-        return feat.properties ? feat.properties[name] : null;
-      });
-      columnData.push(buildAttributeColumn(name, values));
-    });
-    if (columnData.length === 0) {
+    var hasGeometry = layerHasGeometry(lyr);
+    var fields = getFieldTypes(cursor, opts);
+    if (!hasGeometry && fields.length === 0) {
       stop$1('GeoParquet export requires geometry or attribute data');
     }
-    return {columnData: columnData, geometryColumn: geometryName};
+    if (!hasGeometry) {
+      warn('GeoParquet export: layer has no geometry; writing attribute data only.');
+    }
+    var crs = hasGeometry ? getGeoMetadataCrs(dataset) : null;
+    var byteWriter = new writer.ByteWriter();
+    var pq = new writer.ParquetWriter({
+      writer: byteWriter,
+      schema: buildSchema(writer, fields, hasGeometry, crs),
+      codec: compression.codec,
+      compressors: compression.compressors
+    });
+    var geometryTypes = {};
+    var plan = getRowGroupSize(cursor, fields, hasGeometry, rowCount, rowGroupOverride);
+    eachRowGroupRange(rowCount, plan, function(start, end) {
+      pq.write({
+        columnData: buildChunkColumns(cursor, fields, hasGeometry, start, end, geometryTypes),
+        rowGroupSize: end - start,
+        pageSize: compression.pageSize
+      });
+    });
+    if (hasGeometry) {
+      // Set on the writer rather than passed to the constructor: the geometry
+      // types aren't known until every group has been converted.
+      pq.kvMetadata = [{
+        key: 'geo',
+        value: JSON.stringify(buildGeoMetadata(Object.keys(geometryTypes), crs))
+      }];
+    }
+    avoidIntegerBboxBounds(pq.row_groups);
+    pq.finish();
+    return byteWriter.getBuffer();
   }
 
-  function buildAttributeColumn(name, values) {
-    var info = inferColumnType(values);
-    return {
-      name: name,
-      data: values.map(function(value) {
-        return normalizeFieldValue(value, info.type);
-      }),
-      type: info.type
-    };
+  // hyparquet-writer (0.14) infers each thrift wire type from the runtime value, so
+  // a bounding box bound that lands on a whole number is written as I32 where the
+  // Parquet spec requires a double. Readers that parse geospatial statistics
+  // (pyarrow 21+, GDAL 3.11+) then fail to deserialize the footer and cannot open
+  // the file at all -- which rounded, snapped or integer-grid coordinates make easy
+  // to hit. Widening each bound to the adjacent double forces the double path.
+  // Reported upstream; remove once the writer carries declared field types.
+  function avoidIntegerBboxBounds(rowGroups) {
+    (rowGroups || []).forEach(function(group) {
+      (group.columns || []).forEach(function(col) {
+        var stats = col.meta_data && col.meta_data.geospatial_statistics;
+        if (!stats || !stats.bbox) return;
+        if (!widenIntegerBounds(stats.bbox)) {
+          // Past 2^53 doubles are spaced too widely to step off an integer. Drop
+          // the box rather than write a footer that no reader can parse.
+          delete stats.bbox;
+        }
+      });
+    });
   }
 
-  function inferColumnType(values) {
+  // Nudges whole-number bounds outward, so that the box still covers every
+  // geometry in the group: an oversized box only costs a reader the chance to skip
+  // the group, while an undersized one would hide rows that match a filter.
+  // Returns false if any bound could not be made non-integral.
+  function widenIntegerBounds(bbox) {
+    return Object.keys(bbox).every(function(key) {
+      var val = bbox[key];
+      var widened;
+      if (!Number.isInteger(val)) return true;
+      widened = nextDouble(val, /min$/.test(key) ? -1 : 1);
+      if (Number.isInteger(widened)) return false;
+      bbox[key] = widened;
+      return true;
+    });
+  }
+
+  var nextDoubleFloats = new Float64Array(1);
+  var nextDoubleBits = new BigInt64Array(nextDoubleFloats.buffer);
+
+  // Returns the adjacent double to @val in the direction of @sign (-1 down, 1 up).
+  function nextDouble(val, sign) {
+    if (!Number.isFinite(val)) return val;
+    if (val === 0) return sign > 0 ? Number.MIN_VALUE : -Number.MIN_VALUE;
+    nextDoubleFloats[0] = val;
+    // Incrementing the bit pattern moves a positive double up and a negative one
+    // further down, so the step direction depends on the sign of the value.
+    nextDoubleBits[0] += (val > 0) === (sign > 0) ? 1n : -1n;
+    return nextDoubleFloats[0];
+  }
+
+  // A shape that survives to this point can still export as null geometry if all
+  // of its paths collapse, in which case the column is written as nulls.
+  function layerHasGeometry(lyr) {
+    if (!lyr.geometry_type || !lyr.shapes) return false;
+    return lyr.shapes.some(Boolean);
+  }
+
+  function eachRowGroupRange(rowCount, plan, cb) {
+    var sizes = Array.isArray(plan) ? plan : [plan];
+    var start = 0;
+    for (var i = 0; start < rowCount; i++) {
+      var end = Math.min(start + sizes[Math.min(i, sizes.length - 1)], rowCount);
+      cb(start, end);
+      start = end;
+    }
+  }
+
+  function buildChunkColumns(cursor, fields, hasGeometry, start, end, geometryTypes) {
+    var n = end - start;
+    var geometry = hasGeometry ? new Array(n) : null;
+    var values = fields.map(function() { return new Array(n); });
+    for (var i = 0; i < n; i++) {
+      var feat = cursor.getFeature(start + i);
+      var props = feat.properties;
+      if (hasGeometry) {
+        var geom = feat.geometry || null;
+        geometry[i] = geom;
+        if (geom && geom.type) geometryTypes[geom.type] = true;
+      }
+      for (var j = 0; j < fields.length; j++) {
+        values[j][i] = normalizeFieldValue(props ? props[fields[j].name] : null, fields[j].type);
+      }
+    }
+    var columnData = hasGeometry ? [{name: GEOMETRY_COLUMN, data: geometry}] : [];
+    fields.forEach(function(field, j) {
+      columnData.push({name: field.name, data: values[j]});
+    });
+    return columnData;
+  }
+
+  function getFieldTypes(cursor, opts) {
+    var properties = cursor.properties;
+    if (!properties) return [];
+    return getPropertyNames(properties, opts).map(function(name) {
+      return {name: name, type: inferColumnType(properties, name)};
+    });
+  }
+
+  function inferColumnType(properties, name) {
     var type = null;
-    for (var i = 0; i < values.length; i++) {
-      var valueType = inferValueType(values[i]);
+    for (var i = 0; i < properties.length; i++) {
+      var props = properties[i];
+      var valueType = inferValueType(props ? props[name] : null);
       if (!valueType) continue;
       if (!type) {
         type = valueType;
@@ -32558,12 +32856,11 @@ ${svg}
             (valueType == 'INT32' || valueType == 'DOUBLE')) {
           type = 'DOUBLE';
         } else {
-          type = 'STRING';
-          break;
+          return 'STRING';
         }
       }
     }
-    return {type: type || 'STRING'};
+    return type || 'STRING';
   }
 
   function inferValueType(value) {
@@ -32604,22 +32901,172 @@ ${svg}
     return String(value);
   }
 
-  function getPropertyNames(features) {
+  function getPropertyNames(properties, opts) {
     var index = {};
-    features.forEach(function(feat) {
-      var props = feat.properties || {};
-      Object.keys(props).forEach(function(name) {
-        index[name] = true;
+    // Hoisted fields are moved to the root of a GeoJSON Feature, so they are not
+    // among a feature's properties and don't become columns.
+    var hoisted = Array.isArray(opts.hoist) ? opts.hoist : [];
+    properties.forEach(function(props) {
+      Object.keys(props || {}).forEach(function(name) {
+        if (hoisted.indexOf(name) == -1) index[name] = true;
       });
     });
     return Object.keys(index);
   }
 
-  function buildGeoMetadata(features, dataset) {
-    var geomTypes = utils.uniq(features.map(function(feat) {
-      return feat.geometry && feat.geometry.type || null;
-    }).filter(Boolean));
-    var crs = getGeoMetadataCrs(dataset);
+  // A reader has to materialize an entire row group, so the meaningful unit is
+  // bytes, not rows: a row of point geometry runs to a few dozen bytes where a
+  // row of detailed polygon geometry can be tens of kilobytes. Sizing by a fixed
+  // row count therefore lands hundreds of times off in either direction, so the
+  // group size is derived from an estimate of the encoded row size instead.
+  // The estimate ignores Parquet's own encoding, which only ever shrinks a
+  // column, so groups tend to come out at half the target or less.
+  //
+  // The target is well below the 128MB that Hadoop-era guidance suggests, which
+  // assumed a row group should fill an HDFS block. Mapshaper holds a whole
+  // dataset in memory and needs roughly twenty times the output size to write
+  // it, so it tops out around a couple of hundred megabytes -- at 128MB nearly
+  // every file it can produce would be a single row group, giving readers no
+  // parallelism and nothing to skip when filtering. Measured on a 23MB layer,
+  // splitting one group into eight costs 0.03% of file size, so the smaller
+  // target is close to free.
+  var ROW_GROUP_TARGET_BYTES = 16 * 1024 * 1024;
+  // A small leading group lets a reader fetching byte ranges over HTTP show the
+  // start of the table without pulling a full-sized group.
+  var ROW_GROUP_PREVIEW_BYTES = 1024 * 1024;
+  var ROW_GROUP_MAX_ROWS = 1000000;
+  var ROW_GROUP_SAMPLE_ROWS = 1000;
+
+  function getRowGroupSize(cursor, fields, hasGeometry, rowCount, override) {
+    if (override) return override;
+    var bytesPerRow = estimateRowBytes(cursor, fields, hasGeometry, rowCount);
+    if (!bytesPerRow) return rowCount; // one group rather than the writer's default
+    return planRowGroups(rowCount, bytesPerRow);
+  }
+
+  // Returns a rowGroupSize for the Parquet writer: either a row count, or a
+  // [preview, bulk] pair where the bulk size repeats for the rest of the file.
+  function planRowGroups(rowCount, bytesPerRow) {
+    var bulkRows = clampRowCount(ROW_GROUP_TARGET_BYTES / bytesPerRow, ROW_GROUP_MAX_ROWS);
+    // Keep the preview well below a full group, otherwise splitting it off buys
+    // a range reader nothing.
+    var previewRows = clampRowCount(ROW_GROUP_PREVIEW_BYTES / bytesPerRow, Math.floor(bulkRows / 4));
+    if (rowCount <= previewRows * 4) {
+      return bulkRows;
+    }
+    // Spread the remaining rows evenly so that the file doesn't end with a runt
+    // group holding a handful of rows.
+    var rest = rowCount - previewRows;
+    var groups = Math.ceil(rest / bulkRows);
+    return [previewRows, Math.ceil(rest / groups)];
+  }
+
+  function clampRowCount(rows, max) {
+    if (!(rows > 1)) return 1;
+    if (max >= 1 && rows > max) return max;
+    return Math.floor(rows);
+  }
+
+  // Converts the sampled rows one at a time and discards them, so that sizing
+  // the row groups doesn't itself materialize the layer.
+  function estimateRowBytes(cursor, fields, hasGeometry, rowCount) {
+    // Sample at a stride rather than taking a prefix: layers are often sorted or
+    // clustered, so the first rows are not representative.
+    var step = Math.max(1, Math.floor(rowCount / ROW_GROUP_SAMPLE_ROWS));
+    var total = 0;
+    var sampled = 0;
+    for (var i = 0; i < rowCount; i += step) {
+      var feat = cursor.getFeature(i);
+      var props = feat.properties;
+      if (hasGeometry) {
+        total += estimateValueBytes(feat.geometry || null);
+      }
+      for (var j = 0; j < fields.length; j++) {
+        total += estimateValueBytes(
+          normalizeFieldValue(props ? props[fields[j].name] : null, fields[j].type));
+      }
+      sampled++;
+    }
+    return sampled > 0 ? total / sampled : 0;
+  }
+
+  function estimateValueBytes(value) {
+    if (value === null || value === undefined) return 1;
+    if (typeof value == 'string') return value.length + 4;
+    if (typeof value == 'number' || typeof value == 'bigint') return 8;
+    if (typeof value == 'boolean') return 1;
+    if (value instanceof Date) return 8;
+    if (value instanceof Uint8Array) return value.byteLength + 4;
+    if (utils.isObject(value) && utils.isString(value.type)) {
+      return estimateWkbBytes(value);
+    }
+    return 32; // a JSON-encoded column; the exact width doesn't change the sizing
+  }
+
+  // WKB spends 1 byte on the byte order and 4 on the geometry type, 4 more on
+  // each nested element count, and 16 on each XY position.
+  function estimateWkbBytes(geom) {
+    if (!geom || !geom.type) return 1;
+    if (geom.type == 'GeometryCollection') {
+      return (geom.geometries || []).reduce(function(memo, part) {
+        return memo + estimateWkbBytes(part);
+      }, 9);
+    }
+    return 5 + estimateCoordinateBytes(geom.coordinates);
+  }
+
+  function estimateCoordinateBytes(coords) {
+    if (!Array.isArray(coords)) return 0;
+    if (typeof coords[0] == 'number') return 16;
+    var bytes = 4;
+    for (var i = 0; i < coords.length; i++) {
+      bytes += estimateCoordinateBytes(coords[i]);
+    }
+    return bytes;
+  }
+
+  function validateRowGroupSize(rowgroup) {
+    if (rowgroup === undefined) return undefined;
+    if (rowgroup >= 1 && Math.floor(rowgroup) === rowgroup) {
+      return rowgroup;
+    }
+    stop$1('The rowgroup= option must be a positive integer number of rows');
+  }
+
+  // The schema is derived from the column types alone, before any rows are
+  // converted, because each row group is written as it is built and they all
+  // have to share one schema.
+  //
+  // A reader that understands the Parquet 2.11 GEOMETRY logical type takes the
+  // CRS from the logical type and ignores the "geo" metadata. When the logical
+  // type carries no CRS the spec default is OGC:CRS84, so projected data was
+  // being reported as WGS 84. Write the CRS in both places, as GDAL does, so
+  // that GeoParquet 1.x readers keep working.
+  function buildSchema(writer, fields, hasGeometry, crs) {
+    var columnData = hasGeometry ?
+      [{name: GEOMETRY_COLUMN, type: 'GEOMETRY'}] : [];
+    var overrides;
+    fields.forEach(function(field) {
+      columnData.push({name: field.name, type: field.type});
+    });
+    if (hasGeometry && crs) {
+      overrides = {};
+      overrides[GEOMETRY_COLUMN] = {
+        name: GEOMETRY_COLUMN,
+        type: 'BYTE_ARRAY',
+        repetition_type: 'OPTIONAL',
+        logical_type: {type: 'GEOMETRY', crs: JSON.stringify(crs)}
+      };
+      // An overridden column must not also declare a type.
+      columnData[0] = {name: GEOMETRY_COLUMN};
+    }
+    return writer.schemaFromColumnData({
+      columnData: columnData,
+      schemaOverrides: overrides
+    });
+  }
+
+  function buildGeoMetadata(geomTypes, crs) {
     var geomMeta = {
       encoding: 'WKB',
       geometry_types: geomTypes
@@ -32671,13 +33118,19 @@ ${svg}
     return null;
   }
 
+  function isGeoParquetWriter(mod) {
+    return !!mod && typeof mod.ParquetWriter == 'function' &&
+      typeof mod.ByteWriter == 'function' &&
+      typeof mod.schemaFromColumnData == 'function';
+  }
+
   async function loadGeoParquetWriter() {
     if (runningInBrowser()) {
       var mod = require$1('hyparquet-writer');
-      if (mod && mod.default && !mod.parquetWriteBuffer) {
+      if (mod && mod.default && !isGeoParquetWriter(mod)) {
         mod = mod.default;
       }
-      if (!mod || !mod.parquetWriteBuffer) {
+      if (!isGeoParquetWriter(mod)) {
         stop$1('GeoParquet writer library is not loaded');
       }
       return mod;
@@ -32686,7 +33139,7 @@ ${svg}
       writerPromise = dynamicImportModule$2('hyparquet-writer');
     }
     var nodeMod = await writerPromise;
-    return nodeMod.default && !nodeMod.parquetWriteBuffer ? nodeMod.default : nodeMod;
+    return nodeMod.default && !isGeoParquetWriter(nodeMod) ? nodeMod.default : nodeMod;
   }
 
   async function getGeoParquetCompression(opts) {
@@ -32770,6 +33223,960 @@ ${svg}
     return codec;
   }
 
+  // A minimal TIFF/GeoTIFF encoder, used by -o format=geotiff.
+  //
+  // This is hand-rolled rather than delegating to the geotiff dependency, whose
+  // writer silently corrupts signed integer samples (its type table omits
+  // Int8/16/32Array, so it falls back to writing 64-bit floats while the tags
+  // still declare integer samples), tags data as Deflate without compressing it,
+  // and builds its IFD in a fixed 1000-byte buffer that long ASCII tags overrun.
+  //
+  // Output is a classic (32-bit) little-endian TIFF with band-interleaved,
+  // strip-based data, which is what our grids already look like in memory.
+
+
+  var TIFF_TYPES = {
+    ASCII: 2,
+    SHORT: 3,
+    LONG: 4,
+    DOUBLE: 12
+  };
+
+  var TYPE_SIZES = {
+    2: 1,
+    3: 2,
+    4: 4,
+    12: 8
+  };
+
+  // Baseline tags, plus the GeoTIFF and GDAL extensions we need. Tags must appear
+  // in the IFD in ascending numeric order.
+  var TAGS = {
+    ImageWidth: 256,
+    ImageLength: 257,
+    BitsPerSample: 258,
+    Compression: 259,
+    PhotometricInterpretation: 262,
+    StripOffsets: 273,
+    SamplesPerPixel: 277,
+    RowsPerStrip: 278,
+    StripByteCounts: 279,
+    PlanarConfiguration: 284,
+    Software: 305,
+    ExtraSamples: 338,
+    SampleFormat: 339,
+    ModelPixelScale: 33550,
+    ModelTiepoint: 33922,
+    GeoKeyDirectory: 34735,
+    GeoDoubleParams: 34736,
+    GDAL_NODATA: 42113
+  };
+
+  // The geo keys this writer knows how to emit, each with its id and its value
+  // type. A key's type is fixed by the GeoTIFF spec: the short-valued keys hold
+  // codes and the double-valued ones hold measurements, in degrees or in the
+  // projection's linear units.
+  var GEO_KEYS = {
+    GTModelTypeGeoKey: [1024, 'short'],
+    GTRasterTypeGeoKey: [1025, 'short'],
+    GeographicTypeGeoKey: [2048, 'short'],
+    GeogGeodeticDatumGeoKey: [2050, 'short'],
+    GeogAngularUnitsGeoKey: [2054, 'short'],
+    GeogEllipsoidGeoKey: [2056, 'short'],
+    GeogSemiMajorAxisGeoKey: [2057, 'double'],
+    GeogSemiMinorAxisGeoKey: [2058, 'double'],
+    GeogInvFlatteningGeoKey: [2059, 'double'],
+    GeogPrimeMeridianLongGeoKey: [2061, 'double'],
+    ProjectedCSTypeGeoKey: [3072, 'short'],
+    ProjectionGeoKey: [3074, 'short'],
+    ProjCoordTransGeoKey: [3075, 'short'],
+    ProjLinearUnitsGeoKey: [3076, 'short'],
+    ProjLinearUnitSizeGeoKey: [3077, 'double'],
+    ProjStdParallel1GeoKey: [3078, 'double'],
+    ProjStdParallel2GeoKey: [3079, 'double'],
+    ProjNatOriginLongGeoKey: [3080, 'double'],
+    ProjNatOriginLatGeoKey: [3081, 'double'],
+    ProjFalseEastingGeoKey: [3082, 'double'],
+    ProjFalseNorthingGeoKey: [3083, 'double'],
+    ProjFalseOriginLongGeoKey: [3084, 'double'],
+    ProjFalseOriginLatGeoKey: [3085, 'double'],
+    ProjFalseOriginEastingGeoKey: [3086, 'double'],
+    ProjFalseOriginNorthingGeoKey: [3087, 'double'],
+    ProjCenterLongGeoKey: [3088, 'double'],
+    ProjCenterLatGeoKey: [3089, 'double'],
+    ProjScaleAtNatOriginGeoKey: [3092, 'double'],
+    ProjScaleAtCenterGeoKey: [3093, 'double'],
+    ProjAzimuthAngleGeoKey: [3094, 'double'],
+    ProjStraightVertPoleLongGeoKey: [3095, 'double'],
+    ProjRectifiedGridAngleGeoKey: [3096, 'double']
+  };
+
+  var COMPRESSION_NONE = 1;
+  var COMPRESSION_DEFLATE = 8;
+  var PHOTOMETRIC_BLACK_IS_ZERO = 1;
+  var PHOTOMETRIC_RGB = 2;
+  var PLANAR_CONFIG_CHUNKY = 1; // band-interleaved, matching grid.samples
+  var EXTRA_SAMPLE_UNSPECIFIED = 0;
+  var EXTRA_SAMPLE_UNASSOCIATED_ALPHA = 2;
+  var SAMPLE_FORMAT_UINT = 1;
+  var SAMPLE_FORMAT_INT = 2;
+  var SAMPLE_FORMAT_FLOAT = 3;
+
+  // Rows are grouped into strips of about this size, so that a large raster is
+  // compressed in independent chunks instead of one enormous one. Each strip
+  // costs 8 bytes of tag data, so this trades a small header against the memory
+  // a single compression call has to hold.
+  var TARGET_STRIP_BYTES = 256 * 1024;
+
+  // grid: a mapshaper raster grid (width, height, bands, samples, bbox, nodata)
+  // opts.geoKeys: GeoTIFF geo keys to write, e.g. {ProjectedCSTypeGeoKey: 32615}
+  // opts.compress: false to store samples uncompressed
+  // Returns a Uint8Array holding the whole file.
+  function encodeGeoTIFF(grid, opts) {
+    opts = opts || {};
+    var compress = opts.compress !== false;
+    var rowsPerStrip = getRowsPerStrip(grid);
+    var strips = encodeStrips(grid, rowsPerStrip, compress);
+    var entries = getTagEntries(grid, strips, rowsPerStrip, compress, opts.geoKeys);
+    var layout = getFileLayout(entries, strips);
+    var bytes = new Uint8Array(layout.fileSize);
+    var view = new DataView(bytes.buffer);
+    setStripOffsets(entries, strips, layout.stripDataOffset);
+    writeHeader(view);
+    writeIfd(view, bytes, entries, layout);
+    writeStrips(bytes, strips, layout.stripDataOffset);
+    return bytes;
+  }
+
+  function writeHeader(view) {
+    view.setUint8(0, 0x49); // 'II' -- little-endian byte order
+    view.setUint8(1, 0x49);
+    view.setUint16(2, 42, true); // TIFF magic number
+    view.setUint32(4, 8, true); // offset of the first IFD
+  }
+
+  function writeIfd(view, bytes, entries, layout) {
+    var offset = layout.ifdOffset;
+    var valueOffset = layout.valueDataOffset;
+    view.setUint16(offset, entries.length, true);
+    offset += 2;
+    entries.forEach(function(entry) {
+      var size = getEntryDataSize(entry);
+      view.setUint16(offset, entry.tag, true);
+      view.setUint16(offset + 2, entry.type, true);
+      view.setUint32(offset + 4, entry.count, true);
+      if (size <= 4) {
+        // Small values live in the entry itself, left-aligned in the 4 bytes.
+        writeEntryValues(view, bytes, entry, offset + 8);
+      } else {
+        view.setUint32(offset + 8, valueOffset, true);
+        writeEntryValues(view, bytes, entry, valueOffset);
+        valueOffset += size + (size % 2); // value blocks start on a word boundary
+      }
+      offset += 12;
+    });
+    view.setUint32(offset, 0, true); // no second IFD
+  }
+
+  function writeEntryValues(view, bytes, entry, offset) {
+    var values = entry.values;
+    if (entry.type == TIFF_TYPES.ASCII) {
+      writeAsciiValue(bytes, values, offset);
+      return;
+    }
+    for (var i = 0; i < values.length; i++) {
+      if (entry.type == TIFF_TYPES.SHORT) {
+        view.setUint16(offset + i * 2, values[i], true);
+      } else if (entry.type == TIFF_TYPES.LONG) {
+        view.setUint32(offset + i * 4, values[i], true);
+      } else if (entry.type == TIFF_TYPES.DOUBLE) {
+        view.setFloat64(offset + i * 8, values[i], true);
+      } else {
+        error('Unsupported TIFF field type:', entry.type);
+      }
+    }
+  }
+
+  // ASCII fields are NUL-terminated, and the terminator is counted.
+  function writeAsciiValue(bytes, str, offset) {
+    for (var i = 0; i < str.length; i++) {
+      bytes[offset + i] = str.charCodeAt(i) & 0x7f;
+    }
+    bytes[offset + str.length] = 0;
+  }
+
+  function getEntryDataSize(entry) {
+    return TYPE_SIZES[entry.type] * entry.count;
+  }
+
+  function getFileLayout(entries, strips) {
+    var ifdOffset = 8;
+    var ifdSize = 2 + entries.length * 12 + 4;
+    var valueDataOffset = ifdOffset + ifdSize;
+    var valueDataSize = entries.reduce(function(memo, entry) {
+      var size = getEntryDataSize(entry);
+      return size <= 4 ? memo : memo + size + (size % 2);
+    }, 0);
+    var stripDataOffset = valueDataOffset + valueDataSize;
+    var stripDataSize = strips.reduce(function(memo, strip) {
+      return memo + strip.length;
+    }, 0);
+    return {
+      ifdOffset: ifdOffset,
+      valueDataOffset: valueDataOffset,
+      stripDataOffset: stripDataOffset,
+      fileSize: stripDataOffset + stripDataSize
+    };
+  }
+
+  // StripOffsets can only be filled in once the size of the tag data is known.
+  function setStripOffsets(entries, strips, stripDataOffset) {
+    var entry = findEntry(entries, TAGS.StripOffsets);
+    var offset = stripDataOffset;
+    strips.forEach(function(strip, i) {
+      entry.values[i] = offset;
+      offset += strip.length;
+    });
+  }
+
+  function writeStrips(bytes, strips, stripDataOffset) {
+    var offset = stripDataOffset;
+    strips.forEach(function(strip) {
+      bytes.set(strip, offset);
+      offset += strip.length;
+    });
+  }
+
+  function findEntry(entries, tag) {
+    return entries.filter(function(entry) {
+      return entry.tag == tag;
+    })[0];
+  }
+
+  function encodeStrips(grid, rowsPerStrip, compress) {
+    var sampleBytes = getSampleBytes(grid.samples);
+    var bytesPerRow = getBytesPerRow(grid);
+    var strips = [];
+    var row = 0;
+    var start, end, chunk;
+    while (row < grid.height) {
+      start = row * bytesPerRow;
+      end = Math.min(start + rowsPerStrip * bytesPerRow, sampleBytes.length);
+      chunk = sampleBytes.subarray(start, end);
+      strips.push(compress ? deflateSync(chunk) : chunk);
+      row += rowsPerStrip;
+    }
+    return strips;
+  }
+
+  function getRowsPerStrip(grid) {
+    var rows = Math.floor(TARGET_STRIP_BYTES / Math.max(getBytesPerRow(grid), 1));
+    return Math.max(1, Math.min(rows, grid.height));
+  }
+
+  function getBytesPerRow(grid) {
+    return getBytesPerSample(grid.samples) * grid.bands * grid.width;
+  }
+
+  // TIFF stores samples in the file's byte order, which is little-endian here.
+  // Typed arrays use the platform's order, so a byte view can be handed straight
+  // to the encoder on a little-endian machine (all common ones) and needs
+  // swapping otherwise.
+  function getSampleBytes(samples) {
+    var bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
+    var size = getBytesPerSample(samples);
+    if (size == 1 || platformIsLittleEndian()) return bytes;
+    return swapByteOrder(bytes, size);
+  }
+
+  function platformIsLittleEndian() {
+    var probe = new Uint16Array([1]);
+    return new Uint8Array(probe.buffer)[0] === 1;
+  }
+
+  function swapByteOrder(bytes, size) {
+    var swapped = new Uint8Array(bytes.length);
+    for (var i = 0; i < bytes.length; i += size) {
+      for (var j = 0; j < size; j++) {
+        swapped[i + j] = bytes[i + size - 1 - j];
+      }
+    }
+    return swapped;
+  }
+
+  function getBytesPerSample(samples) {
+    return samples.BYTES_PER_ELEMENT || 1;
+  }
+
+  function getSampleFormat(samples) {
+    if (samples instanceof Float32Array || samples instanceof Float64Array) {
+      return SAMPLE_FORMAT_FLOAT;
+    }
+    if (samples instanceof Int8Array || samples instanceof Int16Array ||
+        samples instanceof Int32Array) {
+      return SAMPLE_FORMAT_INT;
+    }
+    if (samples instanceof Uint8Array || samples instanceof Uint8ClampedArray ||
+        samples instanceof Uint16Array || samples instanceof Uint32Array) {
+      return SAMPLE_FORMAT_UINT;
+    }
+    error('Unsupported raster sample type');
+  }
+
+  function getTagEntries(grid, strips, rowsPerStrip, compress, geoKeys) {
+    var bands = grid.bands;
+    var bytesPerSample = getBytesPerSample(grid.samples);
+    var entries = [
+      long(TAGS.ImageWidth, [grid.width]),
+      long(TAGS.ImageLength, [grid.height]),
+      short(TAGS.BitsPerSample, repeat(bytesPerSample * 8, bands)),
+      short(TAGS.Compression, [compress ? COMPRESSION_DEFLATE : COMPRESSION_NONE]),
+      short(TAGS.PhotometricInterpretation, [getPhotometricInterpretation$1(bands)]),
+      long(TAGS.StripOffsets, repeat(0, strips.length)), // filled in after layout
+      short(TAGS.SamplesPerPixel, [bands]),
+      long(TAGS.RowsPerStrip, [rowsPerStrip]),
+      long(TAGS.StripByteCounts, strips.map(function(strip) {
+        return strip.length;
+      })),
+      short(TAGS.PlanarConfiguration, [PLANAR_CONFIG_CHUNKY]),
+      ascii(TAGS.Software, 'mapshaper'),
+      short(TAGS.SampleFormat, repeat(getSampleFormat(grid.samples), bands))
+    ];
+    var extraSamples = getExtraSamples(bands);
+    if (extraSamples) {
+      entries.push(short(TAGS.ExtraSamples, extraSamples));
+    }
+    entries = entries.concat(getGeoreferencingEntries(grid, geoKeys));
+    if (grid.nodata !== null && grid.nodata !== undefined) {
+      // GDAL stores this value as text, and reads it back with a float parser
+      // that accepts both integers and "nan".
+      entries.push(ascii(TAGS.GDAL_NODATA, String(grid.nodata)));
+    }
+    return entries.sort(function(a, b) {
+      return a.tag - b.tag;
+    });
+  }
+
+  // Three or more bands are rendered as RGB(A) elsewhere in mapshaper, so they
+  // are tagged that way here; anything else is a measurement raster whose first
+  // band is the one to display.
+  function getPhotometricInterpretation$1(bands) {
+    return bands >= 3 ? PHOTOMETRIC_RGB : PHOTOMETRIC_BLACK_IS_ZERO;
+  }
+
+  // Bands beyond the ones the photometric interpretation accounts for have to be
+  // declared as extra samples. A fourth band is treated as alpha, matching the
+  // renderer; other extras are left unspecified rather than guessing at them.
+  function getExtraSamples(bands) {
+    var colorBands = bands >= 3 ? 3 : 1;
+    var extras = repeat(EXTRA_SAMPLE_UNSPECIFIED, bands - colorBands);
+    if (extras.length === 0) return null;
+    if (bands == 4) extras[0] = EXTRA_SAMPLE_UNASSOCIATED_ALPHA;
+    return extras;
+  }
+
+  function getGeoreferencingEntries(grid, geoKeys) {
+    var bbox = grid.bbox;
+    var dx = Math.abs(bbox[2] - bbox[0]) / grid.width;
+    var dy = Math.abs(bbox[3] - bbox[1]) / grid.height;
+    var entries = [
+      // Pixel scale is unsigned; the tiepoint anchors the grid at its top-left
+      // corner, which is where row 0 of the samples begins.
+      double(TAGS.ModelPixelScale, [dx, dy, 0]),
+      double(TAGS.ModelTiepoint, [0, 0, 0, bbox[0], bbox[3], 0])
+    ];
+    return entries.concat(getGeoKeyEntries(geoKeys));
+  }
+
+  // The geo keys live in a directory tag of their own: a four-short header
+  // (version, revision, minor revision, key count) followed by four shorts per
+  // key. A short-valued key keeps its value in the directory; a double-valued one
+  // points into the GeoDoubleParams tag, which holds them all end to end.
+  function getGeoKeyEntries(geoKeys) {
+    var names = Object.keys(geoKeys || {}).filter(function(name) {
+      return name in GEO_KEYS && isFinite(geoKeys[name]);
+    }).sort(function(a, b) {
+      return GEO_KEYS[a][0] - GEO_KEYS[b][0];
+    });
+    var values = [1, 1, 0, names.length];
+    var doubles = [];
+    if (names.length === 0) return [];
+    names.forEach(function(name) {
+      var id = GEO_KEYS[name][0];
+      if (GEO_KEYS[name][1] == 'double') {
+        values.push(id, TAGS.GeoDoubleParams, 1, doubles.length);
+        doubles.push(geoKeys[name]);
+      } else {
+        values.push(id, 0, 1, geoKeys[name]);
+      }
+    });
+    var entries = [short(TAGS.GeoKeyDirectory, values)];
+    if (doubles.length > 0) {
+      entries.push(double(TAGS.GeoDoubleParams, doubles));
+    }
+    return entries;
+  }
+
+  function repeat(val, count) {
+    var arr = [];
+    for (var i = 0; i < count; i++) arr.push(val);
+    return arr;
+  }
+
+  function short(tag, values) {
+    return {tag: tag, type: TIFF_TYPES.SHORT, count: values.length, values: values};
+  }
+
+  function long(tag, values) {
+    return {tag: tag, type: TIFF_TYPES.LONG, count: values.length, values: values};
+  }
+
+  function double(tag, values) {
+    return {tag: tag, type: TIFF_TYPES.DOUBLE, count: values.length, values: values};
+  }
+
+  function ascii(tag, str) {
+    return {tag: tag, type: TIFF_TYPES.ASCII, count: str.length + 1, values: str};
+  }
+
+  var GeoTIFFEncode = /*#__PURE__*/Object.freeze({
+    __proto__: null,
+    encodeGeoTIFF: encodeGeoTIFF
+  });
+
+  // Translate between mapshaper's CRS objects and the GeoTIFF geo keys that
+  // describe a projection, in both directions.
+  //
+  // A GeoTIFF names a projection either by an authority code or by spelling it
+  // out: a coordinate transformation code plus the parameters it takes. This
+  // module handles the second, longer form, which is the only way to write a
+  // projection that has no EPSG code, and the only way to read one back.
+  //
+  // The key-by-key layout follows what GDAL writes for the same projection, since
+  // that is what other software is used to reading.
+
+
+  var R2D$1 = 180 / Math.PI;
+
+  // The coordinate transformation codes of the GeoTIFF spec, and where each
+  // projection's parameters go. Projections missing from this table, including
+  // mapshaper's interrupted and polyhedral ones, have no GeoTIFF representation.
+  //
+  // ct: the ProjCoordTransGeoKey code
+  // proj: the proj4 name to read the code back as, when it differs from the entry
+  // origin: the geo keys that carry lon_0 and lat_0
+  // falseXY: the pair that carries x_0 and y_0
+  // scale: the key that carries k_0, for projections that take one
+  // parallels: whether the standard-parallel keys carry lat_ts or lat_1 and lat_2
+  // azimuth: the projection is skewed by an +alpha angle
+  // encodeOnly: another entry with the same code is the one to read it back as
+  var PROJECTIONS = {
+    tmerc: {ct: 1, origin: 'nat', falseXY: 'nat', scale: 'nat'},
+    utm: {ct: 1, origin: 'nat', falseXY: 'nat', scale: 'nat', proj: 'tmerc', encodeOnly: true},
+    // Oblique Mercator comes in two variants, which differ in whether the false
+    // easting and northing are applied at the projection center or at the point
+    // where its skewed axis crosses the equator. GDAL identifies the first by its
+    // EPSG method code rather than by a GeoTIFF transformation code.
+    omerc: {ct: 9815, origin: 'center', falseXY: 'nat', scale: 'center', azimuth: true},
+    omercNoUoff: {ct: 3, origin: 'center', falseXY: 'nat', scale: 'center', azimuth: true, proj: 'omerc', noUoff: true},
+    merc: {ct: 7, origin: 'nat', falseXY: 'nat', scale: 'nat'},
+    // Mercator's scale can be set either by a scale factor at the equator or by a
+    // parallel of true scale, and the two are alternatives.
+    mercStdParallel: {ct: 7, origin: 'nat', falseXY: 'nat', parallels: 'lat_ts', proj: 'merc'},
+    lcc: {ct: 8, origin: 'falseOrigin', falseXY: 'falseOrigin', parallels: 'lat_1_2'},
+    // With a single standard parallel the cone touches the globe, and the scale
+    // factor at that parallel becomes a parameter.
+    lcc1sp: {ct: 9, origin: 'nat', falseXY: 'nat', scale: 'nat', proj: 'lcc', tangentParallel: true},
+    laea: {ct: 10, origin: 'center', falseXY: 'nat'},
+    aea: {ct: 11, origin: 'nat', falseXY: 'nat', parallels: 'lat_1_2'},
+    aeqd: {ct: 12, origin: 'center', falseXY: 'nat'},
+    eqdc: {ct: 13, origin: 'nat', falseXY: 'nat', parallels: 'lat_1_2'},
+    stere: {ct: 14, origin: 'center', falseXY: 'nat', scale: 'nat'},
+    sterePolar: {ct: 15, origin: 'polar', falseXY: 'nat', scale: 'nat', proj: 'stere'},
+    sterea: {ct: 16, origin: 'nat', falseXY: 'nat', scale: 'nat'},
+    eqc: {ct: 17, origin: 'center', falseXY: 'nat', parallels: 'lat_ts'},
+    cass: {ct: 18, origin: 'nat', falseXY: 'nat'},
+    gnom: {ct: 19, origin: 'center', falseXY: 'nat'},
+    mill: {ct: 20, origin: 'center', falseXY: 'nat'},
+    ortho: {ct: 21, origin: 'center', falseXY: 'nat'},
+    poly: {ct: 22, origin: 'nat', falseXY: 'nat', scale: 'nat'},
+    robin: {ct: 23, origin: 'centerLong', falseXY: 'nat'},
+    sinu: {ct: 24, origin: 'centerLong', falseXY: 'nat'},
+    vandg: {ct: 25, origin: 'centerLong', falseXY: 'nat'}
+  };
+
+  var ORIGIN_KEYS = {
+    nat: ['ProjNatOriginLongGeoKey', 'ProjNatOriginLatGeoKey'],
+    center: ['ProjCenterLongGeoKey', 'ProjCenterLatGeoKey'],
+    centerLong: ['ProjCenterLongGeoKey', null],
+    falseOrigin: ['ProjFalseOriginLongGeoKey', 'ProjFalseOriginLatGeoKey'],
+    // A polar stereographic projection's longitude is the meridian running down
+    // the map, and its latitude is the parallel of true scale.
+    polar: ['ProjStraightVertPoleLongGeoKey', 'ProjNatOriginLatGeoKey']
+  };
+
+  var FALSE_XY_KEYS = {
+    nat: ['ProjFalseEastingGeoKey', 'ProjFalseNorthingGeoKey'],
+    falseOrigin: ['ProjFalseOriginEastingGeoKey', 'ProjFalseOriginNorthingGeoKey']
+  };
+
+  var SCALE_KEYS = {
+    nat: 'ProjScaleAtNatOriginGeoKey',
+    center: 'ProjScaleAtCenterGeoKey'
+  };
+
+  // Geographic CRS codes for the datums that mapshaper can name.
+  var DATUM_CODES = {
+    WGS84: 4326,
+    NAD83: 4269,
+    NAD27: 4267
+  };
+
+  var LINEAR_UNIT_CODES = [
+    [1, 9001], // metre
+    [0.3048, 9002], // international foot
+    [0.3048006096012192, 9003] // US survey foot
+  ];
+
+  var USER_DEFINED = 32767;
+  var ANGULAR_DEGREE = 9102;
+  var MODEL_TYPE_PROJECTED$1 = 1;
+  var MODEL_TYPE_GEOGRAPHIC$1 = 2;
+
+  // The proj4 parameters that describe a projection's shape and placement, as
+  // opposed to the ellipsoid it sits on. These are the ones this module claims;
+  // everything else in a proj4 string is left alone.
+  var PROJECTION_PARAMS = ['proj', 'lat_0', 'lon_0', 'lonc', 'lat_1', 'lat_2',
+    'lat_ts', 'k', 'k_0', 'x_0', 'y_0', 'alpha', 'gamma', 'zone', 'south',
+    'no_uoff', 'no_off', 'no_rot'];
+
+  // Returns geo keys describing a CRS, or null if it has no GeoTIFF
+  // representation. Callers add the raster-type key.
+  function getCrsGeoKeys(crs) {
+    var proj4 = getProj4(crs);
+    var params = proj4 ? parseProj4Params(proj4) : null;
+    // A mixed projection is several projections in one frame, which a GeoTIFF
+    // cannot describe. Its proj4 string mentions only the main one, so it has to
+    // be excluded by hand rather than by failing to match the table.
+    if (!params || crs.__mixed_crs) return null;
+    return crs.is_latlong ? getGeographicGeoKeys(crs, params) :
+      getProjectedGeoKeys(crs, params);
+  }
+
+  function getProj4(crs) {
+    try {
+      return crsToProj4(crs);
+    } catch(e) {
+      return null;
+    }
+  }
+
+  function getGeographicGeoKeys(crs, params) {
+    return Object.assign({
+      GTModelTypeGeoKey: MODEL_TYPE_GEOGRAPHIC$1
+    }, getDatumGeoKeys(crs, params));
+  }
+
+  function getProjectedGeoKeys(crs, params) {
+    var defn = getEncodingDefn(crs, params);
+    var keys;
+    if (!defn) return null;
+    keys = Object.assign({
+      GTModelTypeGeoKey: MODEL_TYPE_PROJECTED$1
+    }, getDatumGeoKeys(crs, params), {
+      // The projection is spelled out in the keys below rather than named by a
+      // code, which is what "user-defined" announces.
+      ProjectedCSTypeGeoKey: USER_DEFINED,
+      ProjectionGeoKey: USER_DEFINED,
+      ProjCoordTransGeoKey: defn.ct
+    }, getLinearUnitGeoKeys(crs));
+    Object.assign(keys, getProjectionParamGeoKeys(crs, params, defn));
+    return keys;
+  }
+
+  // Picks the table entry for a projection, including the cases where one proj4
+  // name maps to two coordinate transformations.
+  function getEncodingDefn(crs, params) {
+    var name = params.proj;
+    if (name == 'lcc' && !hasSecondParallel(params)) {
+      name = 'lcc1sp';
+    } else if (name == 'stere' && isPolarLatitude(crs.phi0 * R2D$1)) {
+      name = 'sterePolar';
+    } else if (name == 'merc' && isFinite(params.lat_ts)) {
+      name = 'mercStdParallel';
+    } else if (name == 'omerc' && params.no_uoff) {
+      name = 'omercNoUoff';
+    }
+    return PROJECTIONS[name] || null;
+  }
+
+  function hasSecondParallel(params) {
+    return isFinite(params.lat_2) && params.lat_2 !== params.lat_1;
+  }
+
+  function isPolarLatitude(deg) {
+    return Math.abs(deg) > 89.999;
+  }
+
+  function getProjectionParamGeoKeys(crs, params, defn) {
+    var origin = ORIGIN_KEYS[defn.origin];
+    var falseXY = FALSE_XY_KEYS[defn.falseXY];
+    var keys = {};
+    keys[origin[0]] = getOriginLongitude(crs, params, defn);
+    if (origin[1]) keys[origin[1]] = getOriginLatitude(crs, params, defn);
+    keys[falseXY[0]] = crs.x0;
+    keys[falseXY[1]] = crs.y0;
+    if (defn.scale) keys[SCALE_KEYS[defn.scale]] = crs.k0;
+    if (defn.parallels == 'lat_ts') {
+      keys.ProjStdParallel1GeoKey = getTrueScaleLatitude(params);
+    } else if (defn.parallels == 'lat_1_2') {
+      keys.ProjStdParallel1GeoKey = isFinite(params.lat_1) ? params.lat_1 : 0;
+      keys.ProjStdParallel2GeoKey = isFinite(params.lat_2) ? params.lat_2 : params.lat_1;
+    }
+    if (defn.azimuth) {
+      keys.ProjAzimuthAngleGeoKey = params.alpha;
+      // The angle from the skew axis to the map's vertical. Absent, it equals the
+      // azimuth, which is how proj4 treats it too.
+      keys.ProjRectifiedGridAngleGeoKey = isFinite(params.gamma) ?
+        params.gamma : params.alpha;
+    }
+    return keys;
+  }
+
+  // An oblique Mercator's center longitude is given by +lonc, which proj4 keeps
+  // separate from the +lon_0 of other projections.
+  function getOriginLongitude(crs, params, defn) {
+    if (defn.azimuth && isFinite(params.lonc)) return params.lonc;
+    return degrees$1(crs.lam0);
+  }
+
+  // A polar stereographic projection is anchored at a pole, so the latitude in
+  // its keys is the parallel of true scale rather than the origin.
+  function getOriginLatitude(crs, params, defn) {
+    if (defn.origin == 'polar' && isFinite(params.lat_ts)) return params.lat_ts;
+    return degrees$1(crs.phi0);
+  }
+
+  // An angle in degrees, cleaned up: the CRS object holds radians, so a whole
+  // number of degrees comes back as 96.00000000000001 without this. Nine decimal
+  // places is a fraction of a millimeter on the ground.
+  function degrees$1(rad) {
+    return round(rad * R2D$1, 9);
+  }
+
+  function round(val, digits) {
+    var k = Math.pow(10, digits);
+    return Math.round(val * k) / k;
+  }
+
+  function getTrueScaleLatitude(params) {
+    if (isFinite(params.lat_ts)) return params.lat_ts;
+    if (isFinite(params.lat_1)) return params.lat_1;
+    return 0;
+  }
+
+  // The ellipsoid and datum, which a projected CRS carries as well as a
+  // geographic one.
+  function getDatumGeoKeys(crs, params) {
+    var code = DATUM_CODES[String(params.datum).toUpperCase()] || 0;
+    var keys = {
+      GeographicTypeGeoKey: code || USER_DEFINED,
+      GeogAngularUnitsGeoKey: ANGULAR_DEGREE,
+      // Written even when the datum is named by a code, so that a reader which
+      // does not recognize the code still has the shape of the earth.
+      GeogSemiMajorAxisGeoKey: crs.a,
+      GeogPrimeMeridianLongGeoKey: degrees$1(crs.from_greenwich || 0)
+    };
+    if (!code) {
+      keys.GeogGeodeticDatumGeoKey = USER_DEFINED;
+      keys.GeogEllipsoidGeoKey = USER_DEFINED;
+    }
+    if (crs.es > 0) {
+      keys.GeogInvFlatteningGeoKey = round(1 / (1 - Math.sqrt(1 - crs.es)), 9);
+    } else {
+      keys.GeogSemiMinorAxisGeoKey = crs.a; // a sphere
+    }
+    return keys;
+  }
+
+  function getLinearUnitGeoKeys(crs) {
+    var size = crs.to_meter || 1;
+    var match = LINEAR_UNIT_CODES.filter(function(pair) {
+      return Math.abs(pair[0] - size) < 1e-12;
+    })[0];
+    if (match) return {ProjLinearUnitsGeoKey: match[1]};
+    return {
+      ProjLinearUnitsGeoKey: USER_DEFINED,
+      ProjLinearUnitSizeGeoKey: size
+    };
+  }
+
+  // Reads back the projection that getCrsGeoKeys() writes: returns the proj4
+  // parameters naming the projection and placing it on the globe, as a string, or
+  // null if the keys describe a projection this module does not know.
+  //
+  // The ellipsoid, datum and units are not included, because a caller reading a
+  // file written by other software has better sources for those.
+  function getGeoKeyProjection(keys) {
+    var defn = getDecodingDefn(keys);
+    var origin, falseXY, params;
+    if (!defn) return null;
+    origin = ORIGIN_KEYS[defn.origin];
+    falseXY = FALSE_XY_KEYS[defn.falseXY];
+    params = {proj: defn.proj || getProjectionName(defn)};
+    addProjParam(params, defn.azimuth ? 'lonc' : 'lon_0', keys[origin[0]]);
+    if (origin[1]) {
+      Object.assign(params, getDecodedLatitude(keys[origin[1]], defn));
+    }
+    addProjParam(params, 'x_0', keys[falseXY[0]]);
+    addProjParam(params, 'y_0', keys[falseXY[1]]);
+    if (defn.scale) addProjParam(params, 'k_0', keys[SCALE_KEYS[defn.scale]]);
+    if (defn.parallels == 'lat_ts') {
+      addProjParam(params, 'lat_ts', keys.ProjStdParallel1GeoKey);
+    } else if (defn.parallels == 'lat_1_2') {
+      addProjParam(params, 'lat_1', keys.ProjStdParallel1GeoKey);
+      addProjParam(params, 'lat_2', keys.ProjStdParallel2GeoKey);
+    }
+    if (defn.azimuth) {
+      addProjParam(params, 'alpha', keys.ProjAzimuthAngleGeoKey);
+      addProjParam(params, 'gamma', keys.ProjRectifiedGridAngleGeoKey);
+      if (defn.noUoff) params.no_uoff = true;
+    }
+    return formatProj4Params(params);
+  }
+
+  function getDecodingDefn(keys) {
+    var ct = keys && keys.ProjCoordTransGeoKey;
+    var names;
+    if (!ct || ct == USER_DEFINED) return null;
+    if (ct == PROJECTIONS.merc.ct) {
+      return isFinite(keys.ProjStdParallel1GeoKey) ?
+        PROJECTIONS.mercStdParallel : PROJECTIONS.merc;
+    }
+    names = Object.keys(PROJECTIONS).filter(function(name) {
+      return PROJECTIONS[name].ct === ct && !PROJECTIONS[name].encodeOnly;
+    });
+    return names.length == 1 ? PROJECTIONS[names[0]] : null;
+  }
+
+  function getProjectionName(defn) {
+    return Object.keys(PROJECTIONS).filter(function(name) {
+      return PROJECTIONS[name] === defn;
+    })[0];
+  }
+
+  // The latitude in a polar stereographic projection's keys is the parallel of
+  // true scale; which pole the map is centered on follows from its sign.
+  function getDecodedLatitude(val, defn) {
+    var params = {};
+    if (!isFinite(val)) return params;
+    if (defn.origin == 'polar') {
+      params.lat_ts = val;
+      params.lat_0 = val < 0 ? -90 : 90;
+    } else {
+      params.lat_0 = val;
+    }
+    if (defn.tangentParallel) {
+      // A one-parallel conic touches the globe at its origin latitude, which
+      // proj4 wants stated as the standard parallel.
+      params.lat_1 = params.lat_0;
+    }
+    return params;
+  }
+
+  function addProjParam(params, name, val) {
+    if (isFinite(val)) params[name] = val;
+  }
+
+  // Replaces the projection parameters of a proj4 string with a different set,
+  // leaving its ellipsoid, datum and unit parameters in place. Used to correct a
+  // projection that another parser has read loosely.
+  function replaceProj4Projection(str, projectionStr) {
+    var params = parseProj4Params(str) || {};
+    var kept = {};
+    Object.keys(params).forEach(function(name) {
+      if (PROJECTION_PARAMS.indexOf(name) == -1) kept[name] = params[name];
+    });
+    return projectionStr + ' ' + formatProj4Params(kept);
+  }
+
+  function formatProj4Params(params) {
+    return Object.keys(params).map(function(name) {
+      return params[name] === true ? '+' + name : '+' + name + '=' + params[name];
+    }).join(' ');
+  }
+
+  // Reads the parameters that mproj keeps inside a projection's own state, and so
+  // does not expose on the CRS object, out of the proj4 string that describes it.
+  // Numeric values come back as numbers, flags as true.
+  function parseProj4Params(str) {
+    var params = {};
+    String(str).split(/\s+/).forEach(function(part) {
+      var match = /^\+([a-z_0-9]+)(?:=(.*))?$/i.exec(part);
+      var val;
+      if (!match) return;
+      val = match[2];
+      params[match[1]] = val === undefined ? true :
+        val !== '' && isFinite(Number(val)) ? Number(val) : val;
+    });
+    return params.proj ? params : null;
+  }
+
+  var GeoTIFFGeoKeys = /*#__PURE__*/Object.freeze({
+    __proto__: null,
+    getCrsGeoKeys: getCrsGeoKeys,
+    getGeoKeyProjection: getGeoKeyProjection,
+    replaceProj4Projection: replaceProj4Projection
+  });
+
+  // GeoTIFF's model type: is the raster referenced to a projected or a
+  // geographic CRS?
+  var MODEL_TYPE_PROJECTED = 1;
+  var MODEL_TYPE_GEOGRAPHIC = 2;
+  // The raster covers areas, i.e. a coordinate refers to a pixel's corner rather
+  // than its center. This matches how mapshaper's grid bbox is defined.
+  var RASTER_TYPE_AREA = 1;
+  // GDAL's "persistent auxiliary metadata" sidecar, which it reads for any raster
+  // it opens. Unlike the .prj file that accompanies a shapefile, this is a
+  // sidecar that GDAL-based software (QGIS included) actually consults for a
+  // GeoTIFF's CRS.
+  var AUX_EXT = '.aux.xml';
+
+  function exportGeoTIFF(dataset, opts) {
+    var extension = opts.extension ||
+      (opts.file ? getFileExtension(opts.file) : '') || 'tif';
+    var crs = getOutputCrs(dataset);
+    var files = [];
+    dataset.layers.forEach(function(lyr) {
+      var filename = lyr.name + '.' + extension;
+      files.push({
+        filename: filename,
+        content: encodeRasterLayer(lyr, crs, opts)
+      });
+      // A projection that GeoTIFF has no way to describe travels in a sidecar
+      // file instead.
+      if (crs.code || crs.geoKeys) return;
+      if (crs.wkt) {
+        files.push({
+          filename: filename + AUX_EXT,
+          content: getAuxXml(crs.wkt)
+        });
+        message('Wrote the CRS of', filename, 'to a', AUX_EXT, 'file, because GeoTIFF has no way to describe this projection. Keep the two files together.');
+      } else {
+        message('Wrote', filename, 'without CRS metadata (mapshaper could not derive it for this dataset). Other software will read the coordinates without knowing what they refer to.');
+      }
+    });
+    return files;
+  }
+
+  function encodeRasterLayer(lyr, crs, opts) {
+    var grid = layerHasRaster(lyr) ? getRasterGrid(lyr.raster) : null;
+    if (!grid || !grid.samples) {
+      stop$1('GeoTIFF output requires a raster layer with pixel data');
+    }
+    if (!grid.bbox) {
+      stop$1('Unable to export a raster layer without georeferencing');
+    }
+    if (!(grid.width > 0 && grid.height > 0) ||
+        grid.samples.length < grid.width * grid.height * grid.bands) {
+      stop$1('Unable to export a raster layer with incomplete pixel data');
+    }
+    if (rasterGridIsRotated(grid)) {
+      // Georeferencing is written as a tiepoint plus a pixel scale, which cannot
+      // express rotation or skew.
+      stop$1('Exporting a rotated or skewed raster is not supported');
+    }
+    return encodeGeoTIFF(grid, {
+      geoKeys: getGeoKeys(crs),
+      compress: getCompressionSetting(opts)
+    });
+  }
+
+  function getCompressionSetting(opts) {
+    var arg = opts.compression;
+    if (!arg || arg == 'deflate') return true;
+    if (arg == 'none') return false;
+    stop$1('Unsupported GeoTIFF compression:', arg);
+  }
+
+  function getGeoKeys(crs) {
+    var keys = {GTRasterTypeGeoKey: RASTER_TYPE_AREA};
+    if (crs.code) {
+      // An EPSG code says everything, including which datum realization the
+      // coordinates are in, so it is preferred to spelling the projection out.
+      keys.GTModelTypeGeoKey = crs.isLatLng ? MODEL_TYPE_GEOGRAPHIC : MODEL_TYPE_PROJECTED;
+      keys[crs.isLatLng ? 'GeographicTypeGeoKey' : 'ProjectedCSTypeGeoKey'] = crs.code;
+      return keys;
+    }
+    // Otherwise the projection is written out parameter by parameter. Failing
+    // that, the raster is georeferenced but says nothing about what its
+    // coordinates refer to, and the CRS goes in a sidecar file.
+    return Object.assign(keys, crs.geoKeys || {});
+  }
+
+  // Describe the dataset's CRS in the forms the writer can use: an EPSG code,
+  // a set of geo keys spelling the projection out, and a WKT string for the
+  // sidecar file. Returns {code, geoKeys, isLatLng, wkt}, any member of which may
+  // be missing.
+  function getOutputCrs(dataset) {
+    var info = (dataset && dataset.info) || {};
+    var crsInfo = tryGetCrsInfo(dataset);
+    var crs = crsInfo && crsInfo.crs;
+    var code = getEpsgCode(info, crs);
+    return {
+      code: code,
+      geoKeys: code || !crs ? null : getCrsGeoKeys(crs),
+      isLatLng: !!crs && isLatLngCRS(crs),
+      wkt: getOutputWkt(info, crs)
+    };
+  }
+
+  function tryGetCrsInfo(dataset) {
+    try {
+      // Besides reading the dataset's CRS metadata, this infers WGS-84 from
+      // lat-long-looking bounds.
+      return getDatasetCrsInfo(dataset);
+    } catch(e) {
+      return null;
+    }
+  }
+
+  function getEpsgCode(info, crs) {
+    var authority = parseAuthorityCodeString(info.crs_string) ||
+      parseAuthorityCodeFromWkt(info.wkt1);
+    if (authority && authority.org == 'EPSG') return authority.code;
+    if (info.geopackage_crs &&
+        String(info.geopackage_crs.organization || '').toUpperCase() == 'EPSG') {
+      return info.geopackage_crs.organization_coordsys_id ||
+        info.geopackage_crs.srs_id || null;
+    }
+    // The two CRSes that mapshaper can recognize from a projection definition
+    // alone; they also cover its wgs84 and webmercator aliases, which arrive here
+    // without a code.
+    if (crs && isWGS84(crs)) return 4326;
+    if (crs && isWebMercator(crs)) return 3857;
+    return null;
+  }
+
+  function getOutputWkt(info, crs) {
+    if (info.wkt1) return info.wkt1; // the CRS as the user supplied it
+    if (!crs) return null;
+    try {
+      // WKT2 carries more of a projection's parameters than WKT1 does.
+      return crsToWkt2(crs) || crsToPrj(crs) || null;
+    } catch(e) {
+      return null;
+    }
+  }
+
+  function getAuxXml(wkt) {
+    return '<PAMDataset>\n  <SRS>' + escapeXml(wkt) + '</SRS>\n</PAMDataset>\n';
+  }
+
+  function escapeXml(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
   function getOutputFormat(dataset, opts) {
     var outFile = opts.file || null,
         inFmt = dataset.info && dataset.info.input_formats && dataset.info.input_formats[0],
@@ -32815,6 +34222,8 @@ ${svg}
       format = 'flatgeobuf';
     } else if (ext == 'parquet' || ext == 'geoparquet') {
       format = 'geoparquet';
+    } else if (ext == 'tif' || ext == 'tiff') {
+      format = 'geotiff';
     } else if (ext == 'svg') {
       format = 'svg';
     } else if (ext == 'kml' || ext == 'kmz') {
@@ -32876,8 +34285,11 @@ ${svg}
     var format = getOutputFormat(datasets[0], opts);
     var files;
     validateRasterExportFormat(datasets, format);
-    if (format != 'geoparquet' && (opts.compression || opts.level !== undefined)) {
-      error('The compression= and level= options only apply to GeoParquet output');
+    if (format != 'geoparquet' && opts.level !== undefined) {
+      error('The level= option only applies to GeoParquet output');
+    }
+    if (format != 'geoparquet' && format != 'geotiff' && opts.compression) {
+      error('The compression= option only applies to GeoParquet and GeoTIFF output');
     }
     if (format == PACKAGE_EXT) {
       opts = utils.defaults({compact: true}, opts);
@@ -32946,14 +34358,28 @@ ${svg}
   }
 
   function validateRasterExportFormat(datasets, format) {
+    if (format == 'geotiff') {
+      if (datasetsHaveVectorLayers(datasets)) {
+        stop$1('GeoTIFF output requires raster layers; use -target to select them');
+      }
+      return;
+    }
     if (!datasetsHaveRasterLayers(datasets)) return;
     if (format == 'svg' || format == PACKAGE_EXT) return;
-    stop$1('Raster layers can only be exported as SVG or ' + PACKAGE_EXT + ' files');
+    stop$1('Raster layers can only be exported as GeoTIFF, SVG or ' + PACKAGE_EXT + ' files');
   }
 
   function datasetsHaveRasterLayers(datasets) {
     return datasets.some(function(dataset) {
       return dataset.layers && dataset.layers.some(layerHasRaster);
+    });
+  }
+
+  function datasetsHaveVectorLayers(datasets) {
+    return datasets.some(function(dataset) {
+      return dataset.layers && dataset.layers.some(function(lyr) {
+        return !layerHasRaster(lyr);
+      });
     });
   }
 
@@ -33017,7 +34443,8 @@ ${svg}
     json: exportJSON,
     flatgeobuf: exportFlatGeobuf,
     svg: exportSVG,
-    kml: exportKML
+    kml: exportKML,
+    geotiff: exportGeoTIFF
   };
 
 
@@ -34014,7 +35441,7 @@ ${svg}
   });
 
   function isSupportedOutputFormat(fmt) {
-    var types = ['geojson', 'topojson', 'json', 'dsv', 'dbf', 'shapefile', 'svg', 'kml', PACKAGE_EXT, 'flatgeobuf', 'geopackage', 'geoparquet'];
+    var types = ['geojson', 'topojson', 'json', 'dsv', 'dbf', 'shapefile', 'svg', 'kml', PACKAGE_EXT, 'flatgeobuf', 'geopackage', 'geoparquet', 'geotiff'];
     return types.indexOf(fmt) > -1;
   }
 
@@ -34032,6 +35459,7 @@ ${svg}
       flatgeobuf: 'Flatgeobuf',
       geopackage: 'GeoPackage',
       geoparquet: 'GeoParquet',
+      geotiff: 'GeoTIFF',
       svg: 'SVG'
     }[fmt] || '';
   }
@@ -35447,7 +36875,7 @@ ${svg}
         }
       })
       .option('format', {
-        describe: 'options: shapefile,geojson,topojson,flatgeobuf,geopackage,geoparquet,json,dbf,csv,tsv,svg'
+        describe: 'options: shapefile,geojson,topojson,flatgeobuf,geopackage,geoparquet,geotiff,json,dbf,csv,tsv,svg'
       })
       .option('target', targetOpt)
       .option('force', {
@@ -35641,10 +37069,14 @@ ${svg}
         describe: '[CSV] export numbers with decimal commas not points'
       })
       .option('compression', {
-        describe: '[GeoParquet] options: snappy,zstd,none (default is snappy)'
+        describe: '[GeoParquet] snappy,zstd,none (default snappy) [GeoTIFF] deflate,none'
       })
       .option('level', {
         describe: '[GeoParquet] zstd compression level',
+        type: 'integer'
+      })
+      .option('rowgroup', {
+        describe: '[GeoParquet] rows per row group (default: sized by data)',
         type: 'integer'
       })
       .option('show-all', {
@@ -38916,11 +40348,13 @@ ${svg}
   // Import path data from a non-topological source (Shapefile, GeoJSON, etc)
   // in preparation for identifying topology.
   // @opts.reserved_points -- estimate of points in dataset, for pre-allocating buffers
+  //   (applied when the first path arrives, so that a layer of points -- which
+  //   keeps its coords in shapes, not in these buffers -- never allocates it)
   //
   function PathImporter(opts) {
-    var bufSize = opts.reserved_points > 0 ? opts.reserved_points : 20000,
-        xx = new Float64Array(bufSize),
-        yy = new Float64Array(bufSize),
+    var reservedPoints = opts.reserved_points > 0 ? opts.reserved_points : 0,
+        xx = new Float64Array(20000),
+        yy = new Float64Array(20000),
         shapes = [],
         properties = [],
         nn = [],
@@ -39064,7 +40498,7 @@ ${svg}
 
     function checkBuffers(needed) {
       if (needed > xx.length) {
-        var newLen = Math.max(needed, Math.ceil(xx.length * 1.5));
+        var newLen = Math.max(needed, reservedPoints, Math.ceil(xx.length * 1.5));
         xx = utils.extendBuffer(xx, newLen, pointId);
         yy = utils.extendBuffer(yy, newLen, pointId);
       }
@@ -40216,8 +41650,25 @@ ${svg}
     return fmt;
   }
 
+  // Guess the number of coordinate pairs in a GeoJSON file from its size, so that
+  // the importer can size its coordinate buffers up front instead of growing them
+  // a dozen times over (each growth copies the coords accumulated so far and
+  // leaves the previous buffer behind, which is what makes peak memory during
+  // import roughly double the size of the coordinate data).
+  //
+  // A pair runs from ~16 bytes ("[-122.42,37.77],") to ~42 at full double
+  // precision, so this sits in the middle and errs low: undershooting just means
+  // the buffers resume growing from a larger starting point, while overshooting
+  // allocates memory that is never used. An attribute-heavy file overshoots, but
+  // only reserves more than the growth it replaces past ~69 bytes per pair.
+  function estimateGeoJSONPointCount(byteLength) {
+    return Math.round(byteLength / 32);
+  }
+
   function importGeoJSONFile(fileReader, opts) {
-    var importer = new GeoJSONParser(opts);
+    var importer = new GeoJSONParser(utils.defaults({}, opts, {
+      reserved_points: estimateGeoJSONPointCount(fileReader.size())
+    }));
     // For collections, parseGeoJSON() returns the top-level object with its
     // features/geometries array nulled out but all other members intact.
     var obj = parseGeoJSON(fileReader, importer.parseObject);
@@ -41339,13 +42790,11 @@ ${svg}
     if (utils.isString(crs)) {
       return parseAuthorityString(crs);
     }
-    var match = parseAuthorityObject(crs.id);
-    if (match) return match;
-    if (crs.base_crs && utils.isObject(crs.base_crs)) {
-      match = parseAuthorityObject(crs.base_crs.id);
-      if (match) return match;
-    }
-    return null;
+    // base_crs identifies the geographic CRS that a projected CRS is derived
+    // from, not the projected CRS itself, so it can't stand in for a missing
+    // top-level id -- doing so reinterpreted projected coordinates as lat/long.
+    // Without an id the caller falls back to converting the PROJJSON to Proj4.
+    return parseAuthorityObject(crs.id);
   }
 
   function parseAuthorityObject(id) {
@@ -41733,20 +43182,31 @@ ${svg}
     };
   }
 
+  // Reads the CRS a GeoTIFF claims, if mapshaper can make sense of it. A file
+  // with no usable CRS metadata still imports: the raster keeps the coordinates
+  // in its own georeferencing, and only the things that need to know what those
+  // coordinates mean (reprojecting, basemaps, measuring) are unavailable. So a
+  // CRS that cannot be read is reported and set aside, never raised as an error.
   async function importGeoTIFFCrs(dataset, image) {
     var crsInfo = await getGeoTIFFCrsInfo(image);
     var crsString = crsInfo.crsString;
-    if (!crsString) {
-      warnOnce(getGeoTIFFCrsWarning(crsInfo));
+    var crs = null;
+    if (crsString) {
+      try {
+        await initProjLibrary({crs: crsString});
+      } catch(e) {
+        // A projection resource that would not load leaves the string to be
+        // parsed with whatever is already known.
+      }
+      crs = tryParseCrsString(crsString);
+    }
+    if (!crs) {
+      dataset.info = dataset.info || {};
+      warnOnce(getGeoTIFFCrsWarning(crsInfo, crsString ?
+        'Unable to use projection ' + crsString : null));
       return;
     }
-    try {
-      await initProjLibrary({crs: crsString});
-      setDatasetCrsInfo(dataset, getCrsInfo(crsString));
-    } catch(e) {
-      dataset.info = dataset.info || {};
-      warnOnce(getGeoTIFFCrsWarning(crsInfo, e.message || e));
-    }
+    setDatasetCrsInfo(dataset, {crs_string: crsString, crs: crs});
   }
 
   async function getGeoTIFFCrsInfo(image) {
@@ -41774,17 +43234,37 @@ ${svg}
     return code > 0 && code != 32767;
   }
 
+  // Reads a projection that the file spells out in its geo keys, rather than
+  // naming by a code.
+  //
+  // The bulk of the work is done by the geokeys-to-proj4 library, which knows the
+  // EPSG database and so reads datums, ellipsoids and units thoroughly. Its
+  // reading of the projection parameters themselves is loose, though: it drops
+  // the central meridian of a polar stereographic projection, the azimuth of an
+  // oblique Mercator, and the true-scale parallel of a Mercator. So the
+  // projection part of its answer is replaced with mapshaper's own reading of the
+  // same keys, for the projections mapshaper knows how to write.
   async function getGeoTIFFCustomProjection(keys) {
     var converted = await getGeoTIFFProj4FromGeoKeys(keys);
-    if (converted.crsString) return converted;
-    if (keys.ProjectedCSTypeGeoKey != 32767 && keys.ProjectionGeoKey != 32767) return converted;
-    if (keys.ProjCoordTransGeoKey == 11) {
-      return {
-        crsString: getGeoTIFFAlbersProjection(keys),
-        warning: converted.warning
-      };
+    var projection = getGeoKeyProjection(keys);
+    if (!projection) return converted;
+    if (converted.crsString) {
+      return {crsString: replaceProj4Projection(converted.crsString, projection)};
     }
-    return converted;
+    return {
+      crsString: getGeoTIFFEllipsoidProjection(keys, projection),
+      warning: converted.warning
+    };
+  }
+
+  // A last resort for a file whose datum the library could not read: the
+  // projection as mapshaper reads it, on an ellipsoid taken straight from the
+  // geo keys.
+  function getGeoTIFFEllipsoidProjection(keys, projection) {
+    var units = getGeoTIFFLinearUnits(keys);
+    var ellipsoid = getGeoTIFFEllipsoid(keys);
+    if (!units || !ellipsoid) return null;
+    return projection + ' ' + ellipsoid + ' ' + units;
   }
 
   async function getGeoTIFFProj4FromGeoKeys(keys) {
@@ -41811,27 +43291,6 @@ ${svg}
       parseError: parseError || null,
       converterDetails: converterDetails || null
     });
-  }
-
-  function getGeoTIFFAlbersProjection(keys) {
-    var units = getGeoTIFFLinearUnits(keys);
-    var ellipsoid = getGeoTIFFEllipsoid(keys);
-    if (!units || !ellipsoid ||
-        !isFinite(keys.ProjStdParallel1GeoKey) || !isFinite(keys.ProjStdParallel2GeoKey) ||
-        !isFinite(keys.ProjNatOriginLatGeoKey) || !isFinite(keys.ProjNatOriginLongGeoKey)) {
-      return null;
-    }
-    return [
-      '+proj=aea',
-      '+lat_1=' + keys.ProjStdParallel1GeoKey,
-      '+lat_2=' + keys.ProjStdParallel2GeoKey,
-      '+lat_0=' + keys.ProjNatOriginLatGeoKey,
-      '+lon_0=' + keys.ProjNatOriginLongGeoKey,
-      '+x_0=' + (keys.ProjFalseEastingGeoKey || 0),
-      '+y_0=' + (keys.ProjFalseNorthingGeoKey || 0),
-      ellipsoid,
-      units
-    ].join(' ');
   }
 
   function getGeoTIFFLinearUnits(keys) {
@@ -44269,7 +45728,7 @@ ${svg}
     var targetPoints = [];
     var targetPointLayers = [];
     var targetFlags, otherFlags, transform;
-    dataset.layers.filter(layerHasGeometry).forEach(function(lyr) {
+    dataset.layers.filter(layerHasGeometry$1).forEach(function(lyr) {
       var hits = [],
           misses = [],
           test;
@@ -47203,7 +48662,7 @@ ${svg}
 
     function stopIfBufferReachesPole(shape, dist) {
       var maxAbsLat = 0;
-      var angularDist = dist / R$3 * R2D$7;
+      var angularDist = dist / R$3 * R2D$8;
       (shape || []).forEach(function(path) {
         latLngPathIter.init(path);
         while (latLngPathIter.hasNext()) {
@@ -53996,7 +55455,7 @@ ${svg}
     var maxAbsLat = Math.max(Math.abs(bounds.ymin), Math.abs(bounds.ymax));
     var maxPositiveDistance = getMaxPositiveBufferDistance(lyr, dataset, opts);
     if (!(maxPositiveDistance > 0)) return false;
-    return maxAbsLat + maxPositiveDistance / R$3 * R2D$7 >= 90 - POLAR_BUFFER_MARGIN_DEGREES;
+    return maxAbsLat + maxPositiveDistance / R$3 * R2D$8 >= 90 - POLAR_BUFFER_MARGIN_DEGREES;
   }
 
   function getMaxPositiveBufferDistance(lyr, dataset, opts) {
@@ -55248,7 +56707,7 @@ ${svg}
   }
 
   function getCoordinateDistance(distance, arcs) {
-    return arcs.isPlanar() ? distance : distance / R$3 * R2D$7;
+    return arcs.isPlanar() ? distance : distance / R$3 * R2D$8;
   }
 
   // @shapeIndex: chunk-bounds index of the source shape (see buildShapeSegmentIndex)
@@ -55709,7 +57168,7 @@ ${svg}
       geometries = bboxExpressionToGeometries(opts.bbox, targetLyr, targetDataset);
 
     } else {
-      if (!layerHasGeometry(targetLyr)) {
+      if (!layerHasGeometry$1(targetLyr)) {
         stop$1("Layer is missing geometric shapes");
       }
       geometries = shapesToBoxGeometries(targetLyr, targetDataset, opts);
@@ -55977,8 +57436,8 @@ ${svg}
       p[1] *= D2R$8;
       var rotate = inv ? rotatePointInv : rotatePoint;
       rotate(p, a, b, c);
-      p[0] *= R2D$7;
-      p[1] *= R2D$7;
+      p[0] *= R2D$8;
+      p[1] *= R2D$8;
       return p;
     };
   }
@@ -56885,7 +58344,7 @@ ${svg}
     // polygon layer, @clipData). This avoids performing unnecessary intersection
     // tests on each line segment.
     var layers = dataset.layers.filter(function(lyr) {
-      return layerHasGeometry(lyr) && !layerIsFullyEnclosed(lyr, dataset, clipData);
+      return layerHasGeometry$1(lyr) && !layerIsFullyEnclosed(lyr, dataset, clipData);
     });
     if (layers.length > 0) {
       clipLayersInPlace(layers, clipData, dataset, 'clip', getInternalClipOpts());
@@ -58726,7 +60185,7 @@ ${svg}
 
   cmd.proj = function(dataset, catalog, opts, targetLayers) {
     var srcInfo, destInfo, destStr;
-    var implicitlyProjectedNames = getImplicitlyTargetedLayerNames(dataset, targetLayers, layerHasGeometry);
+    var implicitlyProjectedNames = getImplicitlyTargetedLayerNames(dataset, targetLayers, layerHasGeometry$1);
     // A preserved GeoJSON "crs" member becomes invalid once the CRS changes.
     deleteGeoJSONMetadataCRS(dataset);
     if (opts.init) {
@@ -62377,13 +63836,34 @@ ${svg}
   var MAX_CONTOUR_LEVELS = 2000;
   var TARGET_LEVEL_COUNT = 15;
 
-  // Marching squares traces a staircase with treads one pixel wide, so smoothing
-  // at one pixel is what removes the stepping. Measured against an analytic cone
-  // quantized to whole meters (as elevation models usually are), one pixel gives
-  // the lowest deviation from the true contour: 0.16 px, against 0.29 px
-  // unsmoothed and 0.18 px at 1.5 px. On unquantized float data, where there is
-  // no staircase to remove, the cost is under 0.1 px.
-  var SMOOTHING_PIXELS = 1;
+  // Marching squares traces a staircase with treads about one pixel wide, and the
+  // smoother halves the amplitude of detail at roughly five times the distance it
+  // is given, so a quarter of a pixel is already aimed squarely at the stepping.
+  //
+  // The distance also sets how far the line may move, and that is what limits it
+  // from above: neighboring contours are as far apart as the contour interval
+  // divided by the local gradient, which on a coarse grid over steep ground is a
+  // small fraction of a pixel. (In test/data/features/contours/sample2_detail.tif
+  // -- 11x11 pixels -- lines run as close as 0.1 px.) A distance of one pixel
+  // therefore let lines walk over their neighbors: 40 crossings on that file and
+  // 346 on a 1200x1053 DEM, against none at a quarter pixel and one pixel of
+  // visible detail lost for nothing.
+  var SMOOTHING_PIXELS = 0.25;
+
+  // Smallest gap, as a fraction of a cell, that a traced vertex is kept from the
+  // grid point at either end of the edge it crosses.
+  //
+  // A sample whose value is exactly the contour level -- common, since elevations
+  // are usually whole units and levels are round numbers -- puts the crossing
+  // exactly on that grid point. Every cell around the point does the same, so two
+  // branches of the contour meet there instead of passing by. Touching is
+  // harmless in the traced line, but smoothing moves the branches and turns each
+  // touch into a crossing, and no smoothing distance is small enough to avoid it.
+  // Holding vertices a tenth of a cell clear leaves the branches far enough apart
+  // to survive smoothing: on a 1200x1053 DEM this took the crossings that
+  // survived from 67 to 2. Only applied when the lines are going to be smoothed;
+  // with no-smoothing the crossings are placed exactly.
+  var CORNER_CLEARANCE = 0.1;
 
   // A degree of longitude vanishes at the poles; keep the implied pixel width
   // from collapsing to zero there.
@@ -62442,7 +63922,7 @@ ${svg}
     levels = getContourLevels(grid, band, opts);
     return {
       levels: levels,
-      lines: traceRasterContours(grid, band, levels)
+      lines: traceRasterContours(grid, band, levels, getCornerClearance(opts))
     };
   }
 
@@ -62576,14 +64056,21 @@ ${svg}
     return {min: min, max: max};
   }
 
-  function traceRasterContours(grid, band, levels) {
+  function getCornerClearance(opts) {
+    return opts && opts.no_smoothing ? 0 : CORNER_CLEARANCE;
+  }
+
+  // clearance: see CORNER_CLEARANCE; 0 places crossings exactly.
+  function traceRasterContours(grid, band, levels, clearance) {
     var segments = collectContourSegments(grid, band, levels);
     var toMapXY = getLatticeToMapTransform(grid);
     var hCount = (grid.width - 1) * grid.height;
     var lines = [];
+    clearance = clearance || 0;
     segments.forEach(function(levelSegments, i) {
       stitchContourSegments(levelSegments).forEach(function(path) {
-        var coords = getPathCoords(path, grid, band, levels[i], hCount, toMapXY);
+        var coords = getPathCoords(path, grid, band, levels[i], hCount, toMapXY,
+          clearance);
         if (coords.length > 1) {
           lines.push({value: levels[i], coords: coords});
         }
@@ -62724,12 +64211,12 @@ ${svg}
     return path;
   }
 
-  function getPathCoords(path, grid, band, level, hCount, toMapXY) {
+  function getPathCoords(path, grid, band, level, hCount, toMapXY, clearance) {
     var coords = [];
     var prev = null;
     var point, xy;
     for (var i = 0; i < path.length; i++) {
-      point = getEdgeCrossing(grid, band, level, path[i], hCount);
+      point = getEdgeCrossing(grid, band, level, path[i], hCount, clearance);
       xy = toMapXY(point[0], point[1]);
       // A corner value exactly equal to the level puts two crossings in the
       // same place; keeping both would emit zero-length segments.
@@ -62743,7 +64230,7 @@ ${svg}
   // Returns the crossing point in lattice coordinates. The result depends only
   // on the edge and the level, so both cells sharing an edge compute the same
   // point, down to the last bit.
-  function getEdgeCrossing(grid, band, level, edgeId, hCount) {
+  function getEdgeCrossing(grid, band, level, edgeId, hCount, clearance) {
     var W = grid.width;
     var bands = grid.bands;
     var samples = grid.samples;
@@ -62753,21 +64240,23 @@ ${svg}
       x = edgeId - y * (W - 1);
       v0 = samples[(y * W + x) * bands + band];
       v1 = samples[(y * W + x + 1) * bands + band];
-      return [x + interpolateCrossing(level, v0, v1), y];
+      return [x + interpolateCrossing(level, v0, v1, clearance), y];
     }
     edgeId -= hCount;
     y = Math.floor(edgeId / W);
     x = edgeId - y * W;
     v0 = samples[(y * W + x) * bands + band];
     v1 = samples[((y + 1) * W + x) * bands + band];
-    return [x, y + interpolateCrossing(level, v0, v1)];
+    return [x, y + interpolateCrossing(level, v0, v1, clearance)];
   }
 
-  function interpolateCrossing(level, v0, v1) {
+  // clearance: fraction of the edge kept free at either end. See CORNER_CLEARANCE.
+  function interpolateCrossing(level, v0, v1, clearance) {
+    var hi = 1 - clearance;
     var t;
     if (v1 === v0) return 0.5;
     t = (level - v0) / (v1 - v0);
-    return t < 0 ? 0 : t > 1 ? 1 : t;
+    return t < clearance ? clearance : t > hi ? hi : t;
   }
 
   // Lattice coordinates are indexed from the center of the first pixel, not the
@@ -62792,6 +64281,7 @@ ${svg}
     getContourBand: getContourBand,
     getContourLevels: getContourLevels,
     getContourSmoothingDistance: getContourSmoothingDistance,
+    getCornerClearance: getCornerClearance,
     getRasterContourLines: getRasterContourLines,
     getRasterSampleRange: getRasterSampleRange,
     traceRasterContours: traceRasterContours,
@@ -62829,12 +64319,14 @@ ${svg}
   function smoothContourDataset(dataset, grid) {
     var crs = getDatasetCRS(dataset);
     var distance = getContourSmoothingDistance(grid, crs);
+    var unsmoothed, repair;
     if (!(distance > 0)) {
       message('Skipped contour smoothing: unable to determine the pixel size');
       return;
     }
     message('Smoothing contours with an auto-selected interval of ' +
-      formatSmoothingDistance(distance, crs) + ' (one pixel)');
+      formatSmoothingDistance(distance, crs) + ' (a quarter of a pixel)');
+    unsmoothed = dataset.arcs.getCopy();
     cmd.smooth(dataset, {
       distance: distance,
       // The contour staircase is an artifact, so there are no real corners to
@@ -62842,6 +64334,19 @@ ${svg}
       no_corners: true,
       no_prefilter: true
     }, dataset.layers);
+    // Contour lines never cross, so any crossing is smoothing pulling a line over
+    // its neighbor. The interval is small enough that this is rare, and where it
+    // happens the lines involved are better left as they were traced.
+    repair = repairCrossedArcs(dataset.arcs, unsmoothed);
+    if (repair.reverted > 0) {
+      message('Left ' + repair.reverted + ' contour ' +
+        (repair.reverted == 1 ? 'line' : 'lines') +
+        ' unsmoothed, to keep lines from crossing');
+    }
+    if (repair.remaining > 0) {
+      message('Unable to remove ' + repair.remaining + ' crossing' +
+        (repair.remaining == 1 ? '' : 's') + ' between contour lines');
+    }
   }
 
   function formatSmoothingDistance(distance, crs) {
@@ -66068,7 +67573,7 @@ ${svg}
   }
 
   cmd.filterGeom = function(lyr, arcs, opts) {
-    if (!layerHasGeometry(lyr)) {
+    if (!layerHasGeometry$1(lyr)) {
       stop$1("Layer is missing geometry");
     }
     if (opts.bbox) {
@@ -74186,7 +75691,7 @@ ${svg}
     return name == 'rectangle' || name == 'rectangles' || name == 'filter' && opts.cleanup;
   }
 
-  var version = "0.7.49";
+  var version = "0.7.50";
 
   // Parse command line args into commands and run them
   // Function takes an optional Node-style callback. A Promise is returned if no callback is given.
@@ -76076,6 +77581,8 @@ ${svg}
     JoinTables,
     JsonImport,
     JsonTable,
+    GeoTIFFEncode,
+    GeoTIFFGeoKeys,
     KeepShapes,
     LatLon,
     LayerUtils,
@@ -76127,6 +77634,7 @@ ${svg}
     Scalebar,
     SegmentGeom,
     SegmentIntersection,
+    SegmentIntersectionRepair,
     ShapeIter$1,
     ShapeUtils,
     ShpCommon,

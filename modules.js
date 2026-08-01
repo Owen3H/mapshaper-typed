@@ -21288,7 +21288,11 @@
 	}
 
 	function wkt_make_utm_params(P) {
-	  var lon0 = P.lam0 * 180 / M_PI;
+	  // Recover the zone index that pj_utm_zone() encoded into P.lam0 and derive
+	  // the central meridian from it. Converting P.lam0 straight back to degrees
+	  // leaves rounding debris (zone 15 gives -92.99999999999999).
+	  var zone = Math.round((P.lam0 + M_PI) * 30 / M_PI - 0.5);
+	  var lon0 = (zone + 0.5) * 6 - 180;
 	  return [
 	    ["latitude_of_origin", 0],
 	    ["central_meridian", lon0],
@@ -22155,6 +22159,20 @@
 
 	// --- Geodetic emission tables ----------------------------------------------
 
+	// Realizations of the EPSG:6326 datum ensemble. A datum ensemble is only
+	// meaningful with two or more members, and PROJ rejects a definition that
+	// names fewer ("ensemble should have at least 2 datums").
+	var WKT2_WGS84_ENSEMBLE_MEMBERS = [
+	  'World Geodetic System 1984 (Transit)',
+	  'World Geodetic System 1984 (G730)',
+	  'World Geodetic System 1984 (G873)',
+	  'World Geodetic System 1984 (G1150)',
+	  'World Geodetic System 1984 (G1674)',
+	  'World Geodetic System 1984 (G1762)',
+	  'World Geodetic System 1984 (G2139)',
+	  'World Geodetic System 1984 (G2296)'
+	];
+
 	// Proj4 datum id -> WKT2 emitter metadata. When the datum is not in this
 	// table we fall back to DATUM[<wkt1Name-with-spaces>] with no ID.
 	var wkt2_datum_emitters = {
@@ -22164,6 +22182,7 @@
 	    ensemble: true,
 	    ensembleId: 6326,
 	    ensembleName: 'World Geodetic System 1984 ensemble',
+	    ensembleMembers: WKT2_WGS84_ENSEMBLE_MEMBERS,
 	    datumName: 'World Geodetic System 1984'
 	  },
 	  NAD83: {
@@ -22278,12 +22297,15 @@
 	}
 
 	function wkt2_wrap_boundcrs(source, towgs84) {
+	  var ensemble = ['ENSEMBLE', 'World Geodetic System 1984 ensemble'];
+	  WKT2_WGS84_ENSEMBLE_MEMBERS.forEach(function(member) {
+	    ensemble.push(['MEMBER', member]);
+	  });
+	  ensemble.push(['ELLIPSOID', 'WGS 84', 6378137, 298.257223563, WKT2_LENGTHUNIT_M, ['ID', 'EPSG', 7030]]);
+	  ensemble.push(['ENSEMBLEACCURACY', 2]);
+	  ensemble.push(['ID', 'EPSG', 6326]);
 	  var target = ['GEOGCRS', 'WGS 84',
-	    ['ENSEMBLE', 'World Geodetic System 1984 ensemble',
-	      ['MEMBER', 'World Geodetic System 1984'],
-	      ['ELLIPSOID', 'WGS 84', 6378137, 298.257223563, WKT2_LENGTHUNIT_M, ['ID', 'EPSG', 7030]],
-	      ['ENSEMBLEACCURACY', 2],
-	      ['ID', 'EPSG', 6326]],
+	    ensemble,
 	    ['PRIMEM', 'Greenwich', 0, WKT2_ANGLEUNIT, ['ID', 'EPSG', 8901]],
 	    ['CS', 'ellipsoidal', 2],
 	    ['AXIS', 'geodetic latitude (Lat)', 'north', ['ORDER', 1], WKT2_ANGLEUNIT],
@@ -22347,7 +22369,9 @@
 	  if (emitter && emitter.ensemble) {
 	    // WKT2:2019 ENSEMBLE form (WGS 84 and a handful of others)
 	    var ens = ['ENSEMBLE', emitter.ensembleName];
-	    ens.push(['MEMBER', emitter.datumName]);
+	    (emitter.ensembleMembers || [emitter.datumName]).forEach(function(member) {
+	      ens.push(['MEMBER', member]);
+	    });
 	    ens.push(ellipsoidNode);
 	    ens.push(['ENSEMBLEACCURACY', 2]);
 	    if (emitter.ensembleId) {
@@ -23899,6 +23923,9 @@
 	    base_crs: wkt2_geogcrs_to_projjson(wkt2_find(node, 'BASEGEOGCRS') || wkt2_find(node, 'BASEGEODCRS')),
 	    conversion: wkt2_conversion_to_projjson(wkt2_find(node, 'CONVERSION'))
 	  };
+	  if (!out.base_crs.coordinate_system) {
+	    out.base_crs.coordinate_system = wkt2_default_ellipsoidal_cs();
+	  }
 	  var cs = wkt2_cs_to_projjson(node);
 	  if (cs) out.coordinate_system = cs;
 	  var id = wkt2_id_to_projjson(node);
@@ -24031,16 +24058,101 @@
 	  return out;
 	}
 
+	// WKT2 CS keywords are case-insensitive, but the PROJJSON schema enumerates
+	// exact spellings -- notably "Cartesian" with a capital C.
+	var wkt2_cs_subtypes = {
+	  affine: 'affine',
+	  cartesian: 'Cartesian',
+	  cylindrical: 'cylindrical',
+	  ellipsoidal: 'ellipsoidal',
+	  linear: 'linear',
+	  ordinal: 'ordinal',
+	  parametric: 'parametric',
+	  polar: 'polar',
+	  spherical: 'spherical',
+	  vertical: 'vertical',
+	  temporalcount: 'TemporalCount',
+	  temporaldatetime: 'TemporalDateTime',
+	  temporalmeasure: 'TemporalMeasure'
+	};
+
+	// WKT2 packs an axis abbreviation into the name -- "geodetic latitude (Lat)",
+	// or just "(E)" when there is no long name. PROJJSON requires the two to be
+	// separate members.
+	var wkt2_axis_names_by_abbrev = {
+	  E: 'Easting',
+	  N: 'Northing',
+	  Lat: 'Geodetic latitude',
+	  Lon: 'Geodetic longitude'
+	};
+
+	var wkt2_axis_abbrevs_by_name = {
+	  'easting': 'E',
+	  'northing': 'N',
+	  'geodetic latitude': 'Lat',
+	  'geodetic longitude': 'Lon'
+	};
+
+	var wkt2_axis_abbrevs_by_direction = {
+	  east: 'E',
+	  north: 'N',
+	  west: 'W',
+	  south: 'S',
+	  up: 'H',
+	  down: 'D'
+	};
+
+	function wkt2_cs_subtype_to_projjson(keyword) {
+	  var key = String(keyword == null ? '' : keyword).toLowerCase();
+	  if (!key) return 'ellipsoidal';
+	  return wkt2_cs_subtypes[key] || key;
+	}
+
+	function wkt2_axis_to_projjson_name(rawName, direction) {
+	  var name = String(rawName == null ? '' : rawName).trim();
+	  var abbrev = '';
+	  var parts = name.match(/^(.*?)\s*\(([^()]+)\)$/);
+	  if (parts) {
+	    name = parts[1].trim();
+	    abbrev = parts[2].trim();
+	  }
+	  if (!name && abbrev) {
+	    name = wkt2_axis_names_by_abbrev[abbrev] || abbrev;
+	  }
+	  if (!abbrev) {
+	    abbrev = wkt2_axis_abbrevs_by_name[name.toLowerCase()] ||
+	      wkt2_axis_abbrevs_by_direction[String(direction).toLowerCase()] ||
+	      name.charAt(0).toUpperCase();
+	  }
+	  if (name) name = name.charAt(0).toUpperCase() + name.substr(1);
+	  return {name: name || abbrev, abbreviation: abbrev};
+	}
+
+	// WKT2 omits CS[] from BASEGEOGCRS, but PROJJSON requires a coordinate_system
+	// on every CRS object, including the base of a ProjectedCRS.
+	function wkt2_default_ellipsoidal_cs() {
+	  return {
+	    subtype: 'ellipsoidal',
+	    axis: [
+	      {name: 'Geodetic latitude', abbreviation: 'Lat', direction: 'north', unit: 'degree'},
+	      {name: 'Geodetic longitude', abbreviation: 'Lon', direction: 'east', unit: 'degree'}
+	    ]
+	  };
+	}
+
 	function wkt2_cs_to_projjson(node) {
 	  var cs = wkt2_find(node, 'CS');
 	  var axes = wkt2_find_all(node, 'AXIS');
 	  if (!cs && axes.length === 0) return null;
 	  var out = {
-	    subtype: cs && cs[1] ? String(cs[1]).toLowerCase() : 'ellipsoidal',
+	    subtype: wkt2_cs_subtype_to_projjson(cs && cs[1]),
 	    axis: axes.map(function(a) {
+	      var direction = wkt2_axis_direction(a);
+	      var parsed = wkt2_axis_to_projjson_name(wkt2_name_of(a), direction);
 	      var ax = {
-	        name: wkt2_name_of(a),
-	        direction: wkt2_axis_direction(a)
+	        name: parsed.name,
+	        abbreviation: parsed.abbreviation,
+	        direction: direction
 	      };
 	      var unit = wkt2_unit_to_projjson(wkt2_find(a, 'ANGLEUNIT') || wkt2_find(a, 'LENGTHUNIT') || wkt2_find(a, 'SCALEUNIT'));
 	      if (unit) {

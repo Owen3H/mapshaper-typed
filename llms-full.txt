@@ -67,14 +67,21 @@ This is a curated list of recently added features. For the full list of changes,
 
 <div class="whats-new-entry">
 
-**Contour lines from rasters.** The `-contours` command traces contour lines from a raster layer &mdash; most often elevation contours from a digital elevation model. Mapshaper picks a sensible spacing between lines from the data itself, or you can set your own with `interval=` or a list of `levels=`. Lines stop at the edge of the valid data instead of crossing gaps, and they are smoothed to remove the stair-step edges that tracing a grid of pixels leaves behind. Add `+` to keep the raster as well, for drawing the contours over the image.
+**Saving rasters as GeoTIFF files.** Raster layers can now be exported to a `.tif` file, which until now could only be read. This makes Mapshaper usable as a step in a workflow that continues in other software: crop, project, blur or otherwise edit an image or an elevation model and pass it on. The pixels keep the values and the data type they came in with, so an elevation model is saved as elevations rather than as a picture of them. Files are compressed by default. Since a GeoTIFF holds pixels and nothing else, use `target=` to pick out the raster layer if your session also has vector layers in it.
+
+→ See [File formats](/docs/formats/overview.html.md) and [`-o`](/docs/reference.html.md#-o).
+</div>
+
+<div class="whats-new-entry">
+
+**Contour lines from rasters.** The `-contours` command traces contour lines from a raster layer &mdash; typically elevation contours from a digital elevation model. Mapshaper picks a sensible spacing between lines from the data itself, or you can set your own with `interval=` or a list of `levels=`. Add `+` to keep the raster layer.
 
 → See [`-contours`](/docs/reference.html.md#-contours).
 </div>
 
 <div class="whats-new-entry">
 
-**Blur command.** The `-blur` command softens a raster layer. It has been available but undocumented for a while; it now takes its radius as a plain argument, either in pixels (`-blur 5px`) or as a real-world distance (`-blur 500m`), so the same command gives a comparable amount of blur on images of differing resolution. Blurring an elevation model before `-contours` is a good way to get calmer contour lines. The layer needs to be projected first, if it isn't already.
+**Blur command.** The `-blur` command takes a radius either in pixels (`-blur 5px`) or as a real-world distance (`-blur 500m`). Slightly blurring an elevation model before running `-contours` is an effective way to get smoother, more generalized contour lines.
 
 → See [`-blur`](/docs/reference.html.md#-blur).
 </div>
@@ -439,7 +446,7 @@ Save content of the target layer(s) to a file or files.
 
 `<file>|<directory>|-`  Name of output file or directory. Use `-` to export text-based formats to `/dev/stdout`.
 
-`format=shapefile|geojson|topojson|flatgeobuf|geopackage|geoparquet|json|dbf|csv|tsv|svg` Specify output format. If the `format=` option is missing, Mapshaper tries to infer the format from the output filename. If no filename is given, Mapshaper exports to the same format as the input format. The `json` format is an array of objects containing data properties for each feature.
+`format=shapefile|geojson|topojson|flatgeobuf|geopackage|geoparquet|geotiff|json|dbf|csv|tsv|svg` Specify output format. If the `format=` option is missing, Mapshaper tries to infer the format from the output filename. If no filename is given, Mapshaper exports to the same format as the input format. The `json` format is an array of objects containing data properties for each feature. The `geotiff` format takes raster layers only; every other format takes vector or table layers only, apart from `svg` and `msx`, which accept both.
 
 `target=` Specify layer(s) to export (comma-separated list). The default target is the output layer(s) of the previous command. Use `target=*` to select all layers.
 
@@ -529,9 +536,11 @@ Save content of the target layer(s) to a file or files.
 
 `decimal-comma`  (CSV) Export numbers with decimal commas instead of decimal points (common in Europe and elsewhere).
 
-`compression=`  (GeoParquet) Select Parquet column compression. One of: `snappy` `zstd` `none`. The default is `snappy`.
+`compression=`  (GeoParquet) Select Parquet column compression. One of: `snappy` `zstd` `none`. The default is `snappy`. (GeoTIFF) One of: `deflate` `none`. The default is `deflate`.
 
 `level=`  (GeoParquet) Set the ZSTD compression level when using `compression=zstd`. Valid values are integers from 1 to 22.
+
+`rowgroup=`  (GeoParquet) Set the number of rows in each row group. By default Mapshaper sizes row groups by their estimated size in bytes rather than by a fixed row count, aiming for around 16MB of uncompressed data per group, so that a layer of points and a layer of detailed polygons both produce groups of a similar size. Set this only if you know the access pattern you are writing for.
 
 `show-all`  [Snapshot] All layers of the exported snapshot will be displayed when opened in the web UI.
 
@@ -805,24 +814,18 @@ Convert a raster layer to a polyline layer of contour lines (isolines). This is
 most often used to trace elevation contours from a digital elevation model, but
 it works on any continuous raster.
 
-Contours are traced from the layer's current pixel values, so they reflect any
-earlier edits in the command sequence. Running `-blur` before `-contours`, for
-example, produces smoother lines than contouring the raw data.
+Running `-blur` before `-contours` produces smoother lines than contouring the raw data.
 
 Values are read at pixel centers, so contour lines span from the center of the
 first pixel to the center of the last, half a pixel inside the raster's bounds.
-Pixels marked as nodata, and pixels left uncovered by a previous `-proj`, are
-excluded: contours stop at the edge of the valid data instead of crossing it.
 
-Traced contours carry a one-pixel staircase, which is most visible on quantized
-data such as an elevation model recorded in whole meters. `-contours` therefore
-finishes by smoothing the lines, using an interval of one pixel that it works
-out from the raster's resolution and reports on the console. Smoothing also
-reduces the vertex count substantially. Use `no-smoothing` to skip the step and
-keep the raw traced geometry, which you can then smooth yourself with `-smooth`.
+`-contours` finishes by smoothing the lines, using an interval of a quarter of a
+pixel. Where smoothing causes lines to cross, the intersecting lines are left unsmoothed. Use `no-smoothing` to
+skip the step and keep the raw traced geometry, which you can then smooth
+yourself with `-smooth`.
 
 By default the contour layer replaces the raster layer. Use `+` to keep the
-raster as well, which is useful for drawing the contours over the image.
+raster as well.
 
 `interval=` Spacing between contour levels. Levels are multiples of this value,
 so `interval=100` gives levels at 100, 200, 300 and so on. If neither
@@ -4118,7 +4121,7 @@ mapshaper world.geojson \
 
 ### Butterfly and Cahill-Keyes projections
 
-These projections divide the globe into eight tetrahedral faces. The first two arrange
+These projections divide the globe into eight octahedral faces. The first two arrange
 the triangular faces in a butterfly layout similar to the butterfly maps of Bernard Cahill and Steve Watterman, but use Gene Keyes's facet projection; the third (`cahill_keyes`) uses Gene Keyes's M-shaped arrangement and facet projection.
 
 ![Butterfly projection, Pacific and Atlantic aspects](/docs/images/butterfly-projection.png)
@@ -4702,7 +4705,7 @@ This section explains how each supported file format is handled, what format-spe
 | [CSV / TSV](/docs/formats/csv.html.md) | `.csv` `.tsv` | &check; | &check; | points (X/Y) | yes | &mdash; | &mdash; |
 | [DBF](/docs/formats/dbf.html.md) | `.dbf` | &check; | &check; | none | yes | &mdash; | &mdash; |
 | [JSON records](/docs/formats/json.html.md) | `.json` | &check; | &check; | none | yes | &mdash; | &mdash; |
-| GeoTIFF | `.tif` `.tiff` | &check; | &mdash; | raster | &mdash; | &mdash; | &mdash; |
+| GeoTIFF | `.tif` `.tiff` | &check; | &check; | raster | &mdash; | &mdash; | &mdash; |
 | PNG / JPEG raster | `.png` `.jpg` `.jpeg` | &check; | &mdash; | raster (with world file) | &mdash; | &mdash; | &mdash; |
 | [SVG](/docs/formats/svg.html.md) | `.svg` | &check; | &check; | vector | as `data-*` | &mdash; | &check; |
 | [Mapshaper snapshot](/docs/formats/snapshot.html.md) | `.msx` | &check; | &check; | vector | yes | **&check;** | &check; |
@@ -4714,6 +4717,7 @@ A few things worth knowing across all formats:
 - **Auto-detection by extension.** You usually don't need to tell Mapshaper what format a file is — the input and output format are both inferred from the file extension. Use `format=` on `-i` or `-o` to override.
 - **TopoJSON is the only interchange format that preserves topology** in the file itself. Topology-aware operations like [`-dissolve`](/docs/reference.html.md#-dissolve), [`-clean`](/docs/reference.html.md#-clean) and [`-simplify`](/docs/reference.html.md#-simplify) work correctly regardless of the input format, but only TopoJSON keeps shared boundaries between adjacent polygons from being duplicated on disk. (Mapshaper's own [`.msx`](/docs/formats/snapshot.html.md) snapshots also preserve topology, but they're not readable by other tools.)
 - **Encoding.** The `encoding=` option on `-i` and `-o` applies to Shapefile, DBF and CSV/TSV i/o (UTF-8 is the default) &mdash; the other formats are UTF-8-only.
+- **Raster and vector layers export separately.** GeoTIFF is the only output format that takes a raster layer's pixels, and it takes nothing else, so `-o` needs a `target=` when a session holds both kinds of layer. SVG and `.msx` snapshots are the two formats that accept a mix. A GeoTIFF written by Mapshaper keeps the pixel values as they are, in the type they were read in, so an elevation model comes out as elevations rather than as an image; the pixels are Deflate-compressed unless you ask for `compression=none`. The layer's projection is written into the file, either as an EPSG code or spelled out parameter by parameter. A handful of projections &mdash; Mapshaper's interrupted and composite ones among them &mdash; have no GeoTIFF representation at all; for those, Mapshaper writes the projection to a small `.aux.xml` file next to the `.tif`, so keep the two together, since that's where GIS software will look for it.
 
 ---
 

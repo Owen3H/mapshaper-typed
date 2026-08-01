@@ -176,7 +176,7 @@ mapshaper world.geojson \
 
 ### Butterfly and Cahill-Keyes projections
 
-These projections divide the globe into eight tetrahedral faces. The first two arrange
+These projections divide the globe into eight octahedral faces. The first two arrange
 the triangular faces in a butterfly layout similar to the butterfly maps of Bernard Cahill and Steve Watterman, but use Gene Keyes's facet projection; the third (`cahill_keyes`) uses Gene Keyes's M-shaped arrangement and facet projection.
 
 ![Butterfly projection, Pacific and Atlantic aspects](/docs/images/butterfly-projection.png)

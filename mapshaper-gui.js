@@ -7398,14 +7398,20 @@
       }
     }
 
-    function turnOff() {
-      var target;
-      if (catalog) catalog.reset(); // re-enable clickable catalog
+    // Draw and select what was imported. Called when import mode ends, and by
+    // importQueuedFiles() if something else has already ended it.
+    function finishImport() {
       if (importCount > 0) {
         onImportComplete();
         importTotal += importCount;
         importCount = 0;
       }
+    }
+
+    function turnOff() {
+      var target;
+      if (catalog) catalog.reset(); // re-enable clickable catalog
+      finishImport();
       gui.clearProgressMessage();
       initialImport = false; // unset 'quick view' mode, if on
       clearQueuedFiles();
@@ -7432,8 +7438,13 @@
         gui.alert(e.message, 'Import error');
       }
       if (gui.getMode() == 'import') {
-        // Mode could also be 'alert' if an error is thrown and handled
-        gui.clearMode();
+        gui.clearMode(); // leaving import mode finishes the import
+      } else {
+        // A popup shown while files were loading (an alert about one file's
+        // metadata, say) takes the app out of import mode, so leaving it is no
+        // longer what finishes the import. Without this, the files that did load
+        // would sit in the catalog undrawn.
+        finishImport();
       }
       if (undoTransaction && imported) {
         addUndoTransactionToHistory(gui, undoTransaction, {
@@ -10905,12 +10916,23 @@
       var dataset = active.dataset;
       var inputFmt = dataset.info && dataset.info.input_formats &&
           dataset.info.input_formats[0];
-      if (active.layer && internal.layerHasRaster(active.layer)) return 'svg';
+      // SVG stays the default for rasters: it is the only format that also
+      // accepts the vector layers a session usually has alongside them.
+      if (activeLayerHasRaster()) return 'svg';
       return getExportFormats().includes(inputFmt) ? inputFmt : 'geojson';
     }
 
     function getExportFormats() {
-      return ['shapefile', 'json', 'geojson', 'dsv', 'topojson', 'flatgeobuf', 'geopackage', 'geoparquet', 'kml', 'svg', internal.PACKAGE_EXT];
+      var formats = ['shapefile', 'json', 'geojson', 'dsv', 'topojson', 'flatgeobuf', 'geopackage', 'geoparquet', 'kml', 'svg', internal.PACKAGE_EXT];
+      // GeoTIFF is the one format here that only accepts raster layers, so it is
+      // offered only when there is a raster to export.
+      if (activeLayerHasRaster()) formats.push('geotiff');
+      return formats;
+    }
+
+    function activeLayerHasRaster() {
+      var active = model.getActiveLayer();
+      return !!active.layer && internal.layerHasRaster(active.layer);
     }
 
     function initFormatMenu() {
@@ -20962,6 +20984,31 @@
 
   utils$1.inherit(MapExtent, EventDispatcher);
 
+  // Rules for drawing a raster that is being displayed larger than its data.
+  // Kept free of browser and mapshaper dependencies so they can be tested
+  // directly.
+
+  // Screen pixels per raster pixel at which a magnified raster is drawn as
+  // squares instead of being smoothed. Below this there is little detail to lose
+  // and smoothing looks better; above it, the smoothing is what a user sees
+  // instead of the data.
+  var MIN_CRISP_MAGNIFICATION = 2;
+
+  // True if a preview image holds every raster pixel in view, and so is showing
+  // the data itself rather than a scaled-down rendering of it. Only such an
+  // image is worth drawing as squares: magnifying a coarser preview would show
+  // crisp squares that are not pixels of the raster.
+  function previewHasSourcePixels(width, height, sourceWidth, sourceHeight) {
+    if (!(sourceWidth > 0) || !(sourceHeight > 0)) return false;
+    return width >= sourceWidth && height >= sourceHeight;
+  }
+
+  // sourcePixels: from previewHasSourcePixels()
+  // magnification: screen pixels per pixel of the preview image
+  function rasterPreviewIsSmoothed(sourcePixels, magnification) {
+    return !sourcePixels || !(magnification >= MIN_CRISP_MAGNIFICATION);
+  }
+
   var MAX_VIEWPORT_PREVIEW_PIXELS = 6e6;
   var cache$1 = new WeakMap();
   var requestId$1 = 0;
@@ -20988,6 +21035,7 @@
       stats = getCachedRasterScalingStats(params, timing);
       timing.renderStart = getTimer$1();
       preview = internal.renderRasterViewportPreview(params.grid, params.recipe, params.bbox, params.width, params.height, stats);
+      if (preview) preview.sourcePixels = params.sourcePixels;
       timing.renderMs = getTimer$1() - timing.renderStart;
       logRasterPreviewTiming(params, timing);
       current = cache$1.get(layer);
@@ -21039,6 +21087,7 @@
     return {
       key: key,
       needed: needed,
+      sourcePixels: previewHasSourcePixels(width, height, crop.width, crop.height),
       raster: raster,
       grid: grid,
       recipe: recipe,
@@ -21197,6 +21246,7 @@
       }
       timing.renderStart = getTimer();
       preview = internal.renderRasterPreview(grid, params.recipe, grid.width, grid.height, params.stats);
+      preview.sourcePixels = params.sourcePixels;
       applyCoverageMask(preview, grid.coverage);
       timing.renderMs = getTimer() - timing.renderStart;
       logRasterReprojectionTiming(params, timing);
@@ -21220,12 +21270,13 @@
     var viewBbox = ext && ext.getBounds().toArray();
     var bbox = rasterBbox && viewBbox && internal.intersectBboxes(rasterBbox, viewBbox);
     var size = bbox && getPreviewSize(ext, sourceGrid);
-    var recipe, stats;
+    var recipe, stats, sourcePixels;
     if (!sourceCRS || !displayCRS || !sourceGrid || !sourceGrid.samples || !bbox || !size) return null;
     recipe = internal.getRasterViewRecipe(sourceGrid, raster.view && raster.view.recipe);
     stats = internal.getRasterViewScalingStats(raster, recipe);
+    sourcePixels = outputHasSourcePixels(sourceGrid, bbox, sourceCRS, displayCRS, size);
     return {
-      key: getRasterReprojectedPreviewKey(layer, bbox, size, sourceCRS, displayCRS, recipe),
+      key: getRasterReprojectedPreviewKey(layer, bbox, size, sourceCRS, displayCRS, recipe, sourcePixels),
       grid: sourceGrid,
       sourceCRS: sourceCRS,
       displayCRS: displayCRS,
@@ -21234,8 +21285,46 @@
       height: size.height,
       recipe: recipe,
       stats: stats,
-      sampleMethod: getRasterReprojectionSampleMethod(),
+      sourcePixels: sourcePixels,
+      sampleMethod: getRasterReprojectionSampleMethod(sourcePixels),
       meshInterval: 32
+    };
+  }
+
+  // True if the reprojected grid has room for every source pixel in view, so that
+  // sampling it without interpolation gives back the raster's own pixels. This is
+  // the zoomed-in case: reprojecting a raster to fewer pixels than it has needs
+  // interpolation to avoid dropping data.
+  function outputHasSourcePixels(grid, bbox, sourceCRS, displayCRS, size) {
+    var sourceSize = getSourcePixelsInView(grid, bbox, sourceCRS, displayCRS);
+    return !!sourceSize && previewHasSourcePixels(
+      size.width, size.height, sourceSize.width, sourceSize.height);
+  }
+
+  // Estimates how many of the raster's pixels a view covers, by taking the part
+  // of the source grid that the view maps back onto. Returns null if the view
+  // does not map back (e.g. it includes coordinates outside the projection).
+  function getSourcePixelsInView(grid, bbox, sourceCRS, displayCRS) {
+    var transform = internal.getProjTransform2(displayCRS, sourceCRS);
+    var xx = [bbox[0], (bbox[0] + bbox[2]) / 2, bbox[2]];
+    var yy = [bbox[1], (bbox[1] + bbox[3]) / 2, bbox[3]];
+    var xmin = Infinity, ymin = Infinity, xmax = -Infinity, ymax = -Infinity;
+    var p;
+    if (!transform) return null;
+    for (var i = 0; i < xx.length; i++) {
+      for (var j = 0; j < yy.length; j++) {
+        p = transform(xx[i], yy[j]);
+        if (!p || !isFinite(p[0]) || !isFinite(p[1])) continue;
+        if (p[0] < xmin) xmin = p[0];
+        if (p[0] > xmax) xmax = p[0];
+        if (p[1] < ymin) ymin = p[1];
+        if (p[1] > ymax) ymax = p[1];
+      }
+    }
+    if (!(xmax > xmin) || !(ymax > ymin)) return null;
+    return {
+      width: (xmax - xmin) / (grid.bbox[2] - grid.bbox[0]) * grid.width,
+      height: (ymax - ymin) / (grid.bbox[3] - grid.bbox[1]) * grid.height
     };
   }
 
@@ -21253,10 +21342,11 @@
     return {width: width, height: height};
   }
 
-  function getRasterReprojectedPreviewKey(layer, bbox, size, sourceCRS, displayCRS, recipe) {
+  function getRasterReprojectedPreviewKey(layer, bbox, size, sourceCRS, displayCRS, recipe, sourcePixels) {
     return [
       size.width,
       size.height,
+      sourcePixels,
       bbox.join(','),
       internal.crsToProj4(sourceCRS),
       internal.crsToProj4(displayCRS),
@@ -21264,7 +21354,7 @@
       recipe.scaling,
       recipe.scaleRange && recipe.scaleRange.join(','),
       recipe.percentileRange && recipe.percentileRange.join(','),
-      getRasterReprojectionSampleMethod(),
+      getRasterReprojectionSampleMethod(sourcePixels),
       layer.raster && layer.raster.grid && layer.raster.grid.samples && layer.raster.grid.samples.length
     ].join('|');
   }
@@ -21292,10 +21382,13 @@
     }
   }
 
-  function getRasterReprojectionSampleMethod() {
+  function getRasterReprojectionSampleMethod(sourcePixels) {
     var vars = GUI.getUrlVars();
     var val = vars['raster-bilinear'] ?? vars.raster_bilinear;
-    return val === false || val == '0' ? 'nearest' : 'bilinear';
+    if (val === false || val == '0') return 'nearest';
+    // Interpolating between pixels when there is room for all of them would blur
+    // the data away for nothing.
+    return sourcePixels ? 'nearest' : 'bilinear';
   }
 
   function logRasterReprojectionTiming(params, timing) {
@@ -21584,7 +21677,7 @@
       var raster = layer.raster;
       var options = opts || {};
       var preview = null;
-      var bbox;
+      var bbox, grid, sourcePixels;
       if (layer.gui && layer.gui.dynamic_crs) {
         preview = getCachedRasterReprojectedPreview(layer, _ext);
         if (!preview) {
@@ -21595,7 +21688,7 @@
         }
         bbox = preview.bbox;
         if (!preview.pixels || !bbox) return;
-        drawRasterPreview(preview, bbox);
+        drawRasterPreview(preview, bbox, preview.sourcePixels);
         if (options.action != 'nav' && options.onViewportPreviewReady) {
           scheduleRasterReprojectedPreview(layer, _ext, options.onViewportPreviewReady);
         }
@@ -21603,15 +21696,21 @@
       }
       preview = options.action == 'nav' ? null : getCachedRasterViewportPreview(layer, _ext);
       bbox = preview && preview.bbox;
+      sourcePixels = preview && preview.sourcePixels;
       if (!preview) {
+        // The whole-raster preview made at import time, which is scaled down if
+        // the raster is large.
         preview = raster && internal.getRasterPreview(raster);
         bbox = raster && internal.getRasterBBox(raster);
+        grid = raster && internal.getRasterGrid(raster);
+        sourcePixels = !!(preview && grid) && previewHasSourcePixels(
+          preview.width, preview.height, grid.width, grid.height);
         if (options.action != 'nav' && options.onViewportPreviewReady) {
           scheduleRasterViewportPreview(layer, _ext, options.onViewportPreviewReady);
         }
       }
       if (!preview || !preview.pixels || !bbox) return;
-      drawRasterPreview(preview, bbox);
+      drawRasterPreview(preview, bbox, sourcePixels);
     };
 
     /*
@@ -21813,12 +21912,16 @@
       }
     }
 
-    function drawRasterPreview(preview, bbox) {
+    // sourcePixels: true if one pixel of the preview is one pixel of the raster,
+    // so that drawing it as squares shows the data rather than an artifact of
+    // whatever it was scaled down to.
+    function drawRasterPreview(preview, bbox, sourcePixels) {
       var img = getRasterCanvas(preview);
       var t = _ext.getTransform(GUI.getPixelRatio());
       var p1 = t.transform(bbox[0], bbox[3]);
       var p2 = t.transform(bbox[2], bbox[1]);
-      _ctx.imageSmoothingEnabled = true;
+      var magnification = Math.abs(p2[0] - p1[0]) / img.width / GUI.getPixelRatio();
+      _ctx.imageSmoothingEnabled = rasterPreviewIsSmoothed(sourcePixels, magnification);
       _ctx.drawImage(img, p1[0], p1[1], p2[0] - p1[0], p2[1] - p1[1]);
     }
 
