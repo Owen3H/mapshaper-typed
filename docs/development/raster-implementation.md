@@ -366,18 +366,49 @@ What the encoder writes:
 - Georeferencing as `ModelTiepoint` plus `ModelPixelScale`, which cannot express
   rotation, so a rotated or skewed grid is rejected rather than written wrong.
 
-CRS handling is the one lossy part. The geo keys this writer emits hold numeric
-codes only, so an EPSG code can go in the file and anything else cannot.
-`src/geotiff/mapshaper-geotiff-export.mjs` looks for a code in the dataset's
-`crs_string`, in an `AUTHORITY` clause in `info.wkt1`, in GeoPackage CRS
-metadata, and finally by recognizing WGS-84 or Web Mercator from the projection
-itself (which is what makes mapshaper's own `wgs84` and `webmercator` aliases
-come out coded). Failing all that, it writes the projection as WKT to a
-`<file>.tif.aux.xml` sidecar and says so. That is GDAL's own PAM sidecar, which
-GDAL-based software reads; a shapefile-style `.prj` next to a `.tif` is ignored.
-Writing a code-less CRS into the file itself would mean emitting decomposed geo
-keys — a projection method code plus its parameters, the way GDAL does — which
-is a mapping from proj4 that does not exist here yet.
+### CRS metadata
+
+A GeoTIFF names its CRS in one of two ways, and
+`src/geotiff/mapshaper-geotiff-export.mjs` tries them in this order:
+
+1. **An EPSG code**, which is the most complete answer, because it identifies
+   the datum realization and not just the shape of the earth. The code is looked
+   for in the dataset's `crs_string`, in an `AUTHORITY` clause in `info.wkt1`, in
+   GeoPackage CRS metadata, and finally by recognizing WGS-84 or Web Mercator
+   from the projection itself (which is what makes mapshaper's own `wgs84` and
+   `webmercator` aliases come out coded).
+2. **The projection spelled out**, parameter by parameter, in the geo keys:
+   a coordinate transformation code plus the origin, standard parallels, scale
+   factor and false easting and northing that go with it, on top of an ellipsoid
+   given by its axes. This is what `src/geotiff/mapshaper-geotiff-geokeys.mjs`
+   builds, and it covers the projections in the GeoTIFF spec's transformation
+   list, which is most of the ones a raster is likely to be in.
+
+Where each parameter goes is decided per projection, following what GDAL writes
+for the same projection: a two-parallel Lambert conformal conic uses the
+false-origin keys while an Albers uses the natural-origin ones, a polar
+stereographic puts its central meridian in `ProjStraightVertPoleLong` and its
+parallel of true scale in `ProjNatOriginLat`, and so on. The parameters
+themselves are read from the CRS object where mproj normalizes them (which is
+what expands a UTM zone into a transverse Mercator) and from its proj4 string
+where mproj keeps them inside the projection's own state, as it does for
+`lat_1`, `lat_2` and `lat_ts`.
+
+Failing both, the projection goes into a `<file>.tif.aux.xml` sidecar as WKT,
+and the message says so. That is GDAL's own PAM sidecar, which GDAL-based
+software reads; a shapefile-style `.prj` next to a `.tif` is ignored. This is
+where mapshaper's interrupted, polyhedral and composite projections end up,
+along with anything else GeoTIFF has no transformation code for. A composite
+projection like `albersusa` has to be turned away by name, because its proj4
+string reports only the projection its main frame uses.
+
+The same table is used to read these keys back, in `getGeoKeyProjection()`.
+Reading is otherwise done by the `geotiff-geokeys-to-proj4` library, which knows
+the EPSG database and so handles datums, ellipsoids and units thoroughly, but
+which reads the projection parameters loosely: it drops the central meridian of
+a polar stereographic, the azimuth of an oblique Mercator, and the true-scale
+parallel of a Mercator. So on import the projection part of its answer is
+replaced by mapshaper's own reading of the same keys, and the rest of it kept.
 
 ## Raster Clipping
 

@@ -1,4 +1,5 @@
 import { getCrsInfo, initProjLibrary, setDatasetCrsInfo } from '../crs/mapshaper-projections';
+import { getGeoKeyProjection, replaceProj4Projection } from '../geotiff/mapshaper-geotiff-geokeys';
 import { runningInBrowser } from '../mapshaper-env';
 import { getFileBase } from '../utils/mapshaper-filename-utils';
 import require from '../mapshaper-require';
@@ -413,17 +414,37 @@ function isGeoTIFFAuthorityCode(code) {
   return code > 0 && code != 32767;
 }
 
+// Reads a projection that the file spells out in its geo keys, rather than
+// naming by a code.
+//
+// The bulk of the work is done by the geokeys-to-proj4 library, which knows the
+// EPSG database and so reads datums, ellipsoids and units thoroughly. Its
+// reading of the projection parameters themselves is loose, though: it drops
+// the central meridian of a polar stereographic projection, the azimuth of an
+// oblique Mercator, and the true-scale parallel of a Mercator. So the
+// projection part of its answer is replaced with mapshaper's own reading of the
+// same keys, for the projections mapshaper knows how to write.
 async function getGeoTIFFCustomProjection(keys) {
   var converted = await getGeoTIFFProj4FromGeoKeys(keys);
-  if (converted.crsString) return converted;
-  if (keys.ProjectedCSTypeGeoKey != 32767 && keys.ProjectionGeoKey != 32767) return converted;
-  if (keys.ProjCoordTransGeoKey == 11) {
-    return {
-      crsString: getGeoTIFFAlbersProjection(keys),
-      warning: converted.warning
-    };
+  var projection = getGeoKeyProjection(keys);
+  if (!projection) return converted;
+  if (converted.crsString) {
+    return {crsString: replaceProj4Projection(converted.crsString, projection)};
   }
-  return converted;
+  return {
+    crsString: getGeoTIFFEllipsoidProjection(keys, projection),
+    warning: converted.warning
+  };
+}
+
+// A last resort for a file whose datum the library could not read: the
+// projection as mapshaper reads it, on an ellipsoid taken straight from the
+// geo keys.
+function getGeoTIFFEllipsoidProjection(keys, projection) {
+  var units = getGeoTIFFLinearUnits(keys);
+  var ellipsoid = getGeoTIFFEllipsoid(keys);
+  if (!units || !ellipsoid) return null;
+  return projection + ' ' + ellipsoid + ' ' + units;
 }
 
 async function getGeoTIFFProj4FromGeoKeys(keys) {
@@ -450,27 +471,6 @@ function logGeoTIFFCrsWarningDetails(parseError, converterDetails) {
     parseError: parseError || null,
     converterDetails: converterDetails || null
   });
-}
-
-function getGeoTIFFAlbersProjection(keys) {
-  var units = getGeoTIFFLinearUnits(keys);
-  var ellipsoid = getGeoTIFFEllipsoid(keys);
-  if (!units || !ellipsoid ||
-      !isFinite(keys.ProjStdParallel1GeoKey) || !isFinite(keys.ProjStdParallel2GeoKey) ||
-      !isFinite(keys.ProjNatOriginLatGeoKey) || !isFinite(keys.ProjNatOriginLongGeoKey)) {
-    return null;
-  }
-  return [
-    '+proj=aea',
-    '+lat_1=' + keys.ProjStdParallel1GeoKey,
-    '+lat_2=' + keys.ProjStdParallel2GeoKey,
-    '+lat_0=' + keys.ProjNatOriginLatGeoKey,
-    '+lon_0=' + keys.ProjNatOriginLongGeoKey,
-    '+x_0=' + (keys.ProjFalseEastingGeoKey || 0),
-    '+y_0=' + (keys.ProjFalseNorthingGeoKey || 0),
-    ellipsoid,
-    units
-  ].join(' ');
 }
 
 function getGeoTIFFLinearUnits(keys) {

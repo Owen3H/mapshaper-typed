@@ -10,6 +10,7 @@ import {
 } from '../crs/mapshaper-projections';
 import { layerHasRaster } from '../dataset/mapshaper-layer-utils';
 import { encodeGeoTIFF } from '../geotiff/mapshaper-geotiff-encode';
+import { getCrsGeoKeys } from '../geotiff/mapshaper-geotiff-geokeys';
 import { getRasterGrid, rasterGridIsRotated } from '../rasters/mapshaper-raster-utils';
 import { getFileExtension } from '../utils/mapshaper-filename-utils';
 import { message, stop } from '../utils/mapshaper-logging';
@@ -21,8 +22,6 @@ var MODEL_TYPE_GEOGRAPHIC = 2;
 // The raster covers areas, i.e. a coordinate refers to a pixel's corner rather
 // than its center. This matches how mapshaper's grid bbox is defined.
 var RASTER_TYPE_AREA = 1;
-// Stands for "user-defined" in any geo key that holds a CRS code.
-var USER_DEFINED = 32767;
 // GDAL's "persistent auxiliary metadata" sidecar, which it reads for any raster
 // it opens. Unlike the .prj file that accompanies a shapefile, this is a
 // sidecar that GDAL-based software (QGIS included) actually consults for a
@@ -40,15 +39,16 @@ export function exportGeoTIFF(dataset, opts) {
       filename: filename,
       content: encodeRasterLayer(lyr, crs, opts)
     });
-    // Only an EPSG code fits in the geo keys that this writer supports, so a CRS
-    // without one travels in a sidecar file instead.
-    if (!crs.code && crs.wkt) {
+    // A projection that GeoTIFF has no way to describe travels in a sidecar
+    // file instead.
+    if (crs.code || crs.geoKeys) return;
+    if (crs.wkt) {
       files.push({
         filename: filename + AUX_EXT,
         content: getAuxXml(crs.wkt)
       });
-      message('Wrote the CRS of', filename, 'to a', AUX_EXT, 'file, because mapshaper could not identify it by an EPSG code. Keep the two files together.');
-    } else if (!crs.code) {
+      message('Wrote the CRS of', filename, 'to a', AUX_EXT, 'file, because GeoTIFF has no way to describe this projection. Keep the two files together.');
+    } else {
       message('Wrote', filename, 'without CRS metadata (mapshaper could not derive it for this dataset). Other software will read the coordinates without knowing what they refer to.');
     }
   });
@@ -86,32 +86,32 @@ function getCompressionSetting(opts) {
 }
 
 function getGeoKeys(crs) {
-  var keys = {
-    GTRasterTypeGeoKey: RASTER_TYPE_AREA
-  };
-  if (crs.isLatLng) {
-    keys.GTModelTypeGeoKey = MODEL_TYPE_GEOGRAPHIC;
-    keys.GeographicTypeGeoKey = crs.code || USER_DEFINED;
-  } else if (crs.code || crs.wkt) {
-    keys.GTModelTypeGeoKey = MODEL_TYPE_PROJECTED;
-    keys.ProjectedCSTypeGeoKey = crs.code || USER_DEFINED;
-  } else {
-    // Nothing is known about the CRS, so the grid is written with
-    // georeferencing but no claim about what it is referenced to.
-    return {GTRasterTypeGeoKey: RASTER_TYPE_AREA};
+  var keys = {GTRasterTypeGeoKey: RASTER_TYPE_AREA};
+  if (crs.code) {
+    // An EPSG code says everything, including which datum realization the
+    // coordinates are in, so it is preferred to spelling the projection out.
+    keys.GTModelTypeGeoKey = crs.isLatLng ? MODEL_TYPE_GEOGRAPHIC : MODEL_TYPE_PROJECTED;
+    keys[crs.isLatLng ? 'GeographicTypeGeoKey' : 'ProjectedCSTypeGeoKey'] = crs.code;
+    return keys;
   }
-  return keys;
+  // Otherwise the projection is written out parameter by parameter. Failing
+  // that, the raster is georeferenced but says nothing about what its
+  // coordinates refer to, and the CRS goes in a sidecar file.
+  return Object.assign(keys, crs.geoKeys || {});
 }
 
-// Describe the dataset's CRS as an EPSG code (which is all a geo key can hold)
-// and/or a WKT1 string for the .prj sidecar.
-// Returns {code, isLatLng, wkt}, any member of which may be missing.
+// Describe the dataset's CRS in the forms the writer can use: an EPSG code,
+// a set of geo keys spelling the projection out, and a WKT string for the
+// sidecar file. Returns {code, geoKeys, isLatLng, wkt}, any member of which may
+// be missing.
 function getOutputCrs(dataset) {
   var info = (dataset && dataset.info) || {};
   var crsInfo = tryGetCrsInfo(dataset);
   var crs = crsInfo && crsInfo.crs;
+  var code = getEpsgCode(info, crs);
   return {
-    code: getEpsgCode(info, crs),
+    code: code,
+    geoKeys: code || !crs ? null : getCrsGeoKeys(crs),
     isLatLng: !!crs && isLatLngCRS(crs),
     wkt: getOutputWkt(info, crs)
   };

@@ -45,14 +45,47 @@ var TAGS = {
   ModelPixelScale: 33550,
   ModelTiepoint: 33922,
   GeoKeyDirectory: 34735,
+  GeoDoubleParams: 34736,
   GDAL_NODATA: 42113
 };
 
+// The geo keys this writer knows how to emit, each with its id and its value
+// type. A key's type is fixed by the GeoTIFF spec: the short-valued keys hold
+// codes and the double-valued ones hold measurements, in degrees or in the
+// projection's linear units.
 var GEO_KEYS = {
-  GTModelTypeGeoKey: 1024,
-  GTRasterTypeGeoKey: 1025,
-  GeographicTypeGeoKey: 2048,
-  ProjectedCSTypeGeoKey: 3072
+  GTModelTypeGeoKey: [1024, 'short'],
+  GTRasterTypeGeoKey: [1025, 'short'],
+  GeographicTypeGeoKey: [2048, 'short'],
+  GeogGeodeticDatumGeoKey: [2050, 'short'],
+  GeogAngularUnitsGeoKey: [2054, 'short'],
+  GeogEllipsoidGeoKey: [2056, 'short'],
+  GeogSemiMajorAxisGeoKey: [2057, 'double'],
+  GeogSemiMinorAxisGeoKey: [2058, 'double'],
+  GeogInvFlatteningGeoKey: [2059, 'double'],
+  GeogPrimeMeridianLongGeoKey: [2061, 'double'],
+  ProjectedCSTypeGeoKey: [3072, 'short'],
+  ProjectionGeoKey: [3074, 'short'],
+  ProjCoordTransGeoKey: [3075, 'short'],
+  ProjLinearUnitsGeoKey: [3076, 'short'],
+  ProjLinearUnitSizeGeoKey: [3077, 'double'],
+  ProjStdParallel1GeoKey: [3078, 'double'],
+  ProjStdParallel2GeoKey: [3079, 'double'],
+  ProjNatOriginLongGeoKey: [3080, 'double'],
+  ProjNatOriginLatGeoKey: [3081, 'double'],
+  ProjFalseEastingGeoKey: [3082, 'double'],
+  ProjFalseNorthingGeoKey: [3083, 'double'],
+  ProjFalseOriginLongGeoKey: [3084, 'double'],
+  ProjFalseOriginLatGeoKey: [3085, 'double'],
+  ProjFalseOriginEastingGeoKey: [3086, 'double'],
+  ProjFalseOriginNorthingGeoKey: [3087, 'double'],
+  ProjCenterLongGeoKey: [3088, 'double'],
+  ProjCenterLatGeoKey: [3089, 'double'],
+  ProjScaleAtNatOriginGeoKey: [3092, 'double'],
+  ProjScaleAtCenterGeoKey: [3093, 'double'],
+  ProjAzimuthAngleGeoKey: [3094, 'double'],
+  ProjStraightVertPoleLongGeoKey: [3095, 'double'],
+  ProjRectifiedGridAngleGeoKey: [3096, 'double']
 };
 
 var COMPRESSION_NONE = 1;
@@ -334,20 +367,31 @@ function getGeoreferencingEntries(grid, geoKeys) {
 
 // The geo keys live in a directory tag of their own: a four-short header
 // (version, revision, minor revision, key count) followed by four shorts per
-// key. Every key written here holds a small number, which fits in the directory
-// itself, so no GeoDoubleParams or GeoAsciiParams block is emitted.
+// key. A short-valued key keeps its value in the directory; a double-valued one
+// points into the GeoDoubleParams tag, which holds them all end to end.
 function getGeoKeyEntries(geoKeys) {
-  var keys = Object.keys(geoKeys || {}).filter(function(name) {
-    return GEO_KEYS[name] > 0 && geoKeys[name] > 0;
+  var names = Object.keys(geoKeys || {}).filter(function(name) {
+    return name in GEO_KEYS && isFinite(geoKeys[name]);
   }).sort(function(a, b) {
-    return GEO_KEYS[a] - GEO_KEYS[b];
+    return GEO_KEYS[a][0] - GEO_KEYS[b][0];
   });
-  if (keys.length === 0) return [];
-  var values = [1, 1, 0, keys.length];
-  keys.forEach(function(name) {
-    values.push(GEO_KEYS[name], 0, 1, geoKeys[name]);
+  var values = [1, 1, 0, names.length];
+  var doubles = [];
+  if (names.length === 0) return [];
+  names.forEach(function(name) {
+    var id = GEO_KEYS[name][0];
+    if (GEO_KEYS[name][1] == 'double') {
+      values.push(id, TAGS.GeoDoubleParams, 1, doubles.length);
+      doubles.push(geoKeys[name]);
+    } else {
+      values.push(id, 0, 1, geoKeys[name]);
+    }
   });
-  return [short(TAGS.GeoKeyDirectory, values)];
+  var entries = [short(TAGS.GeoKeyDirectory, values)];
+  if (doubles.length > 0) {
+    entries.push(double(TAGS.GeoDoubleParams, doubles));
+  }
+  return entries;
 }
 
 function repeat(val, count) {
