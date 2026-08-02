@@ -5,11 +5,11 @@ v0.7.50
 * GeoParquet and FlatGeobuf export use much less memory and run faster, by skipping conversion to GeoJSON.
 * GeoParquet row groups are now sized by their estimated size in bytes instead of by a fixed row count. Groups target 16MB of uncompressed data, so that a typical file is split into several groups that a reader can scan in parallel and skip past when filtering. Added `-o rowgroup=` to set the number of rows per row group explicitly.
 * Improved CRS support for GeoParquet.
+* Improved GeoTIFF CRS parsing and writing.
+* Fixed import of GeoTIFFs lacking readable CRS metadata.
 
 v0.7.49
 * Added GeoTIFF output for raster layers (`-o out.tif` or `-o format=geotiff`), keeping the pixels in their source data type, with Deflate compression by default (`compression=none` to store them uncompressed) and the layer's nodata value. A projection without an EPSG code is written out parameter by parameter in the file's geo keys; the few projections that GeoTIFF cannot describe at all are written to an `.aux.xml` sidecar file instead.
-* Fixed importing GeoTIFF files whose CRS is spelled out in geo keys rather than named by a code: the central meridian of a polar stereographic projection, the azimuth of an oblique Mercator and the true-scale parallel of a Mercator were being dropped.
-* Fixed a raster with unreadable CRS metadata loading into the web UI but never appearing on the map. Such a raster is now drawn in its own coordinates, and the note about its CRS goes to the messages inbox instead of interrupting with a popup.
 * Removed the ten-state limit on undo history in the web UI. Undo states are now discarded only when their restore data exceeds the storage limit.
 * The web UI's right-click menu now stays open after copying a value, so several values can be copied from the same point.
 * The web UI's right-click menu now reports the band values of the raster pixel under the cursor, plus a color tile and hex value for color images.
