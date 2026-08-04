@@ -937,16 +937,27 @@ test('history menu toggles persisted app undo and reports restore data', async f
     window.localStorage.removeItem('mapshaper.undo');
   });
 
-  var before = await getUndoState(page);
+  // With nothing stored, undo is on: commands are undoable and the box is ticked.
+  await page.locator('.history-btn').click();
+  await expect(page.locator('.history-toggle-btn')).toContainText('enable undo');
+  await expect(page.locator('.history-undo-checkbox')).toBeChecked();
+
+  // Unticking is persisted as an explicit opt-out and stops undo capture.
+  await page.locator('.history-toggle-btn').click();
+  expect(await page.evaluate(function() {
+    return window.localStorage.getItem('mapshaper.undo');
+  })).toBe('off');
+  await expect(page.locator('.history-undo-checkbox')).not.toBeChecked();
+  await page.keyboard.press('Escape');
 
   await runConsoleCommand(page, '-each \'foo = "bar"\'', {waitForUndo: false});
   expect((await getUndoState(page)).undo.canUndo).toBe(false);
 
   await loadFixture(page, POINT_FIXTURE, {undo: null});
-  before = await getUndoState(page);
+  var before = await getUndoState(page);
 
   await page.locator('.history-btn').click();
-  await expect(page.locator('.history-toggle-btn')).toContainText('enable undo');
+  // the opt-out survived the reload
   await expect(page.locator('.history-undo-checkbox')).not.toBeChecked();
   await page.locator('.history-toggle-btn').click();
   expect(await page.evaluate(function() {

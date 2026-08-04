@@ -100,7 +100,7 @@ The **History** button in the header covers three things: undo, the command hist
 
 ### Undo and redo
 
-Undo is **off by default**. Tick **enable undo** to turn it on; the setting is remembered between sessions, and applies from that point on rather than retroactively.
+Undo is **on by default**. Clearing **enable undo** turns it off, which is worth doing if you're working with data large enough that storing the data needed to reverse each step is a burden. The setting is remembered between sessions, and a change applies from that point on rather than retroactively.
 
 - **Ctrl+Z** (**⌘Z** on a Mac) undoes and **Shift+Ctrl+Z** (**⇧⌘Z**) redoes. The same buttons appear in a small toolbar at the bottom of the map whenever there's anything to undo. Keyboard shortcuts are ignored while you're typing in a text field.
 - The first import of a session isn't undoable, and neither is restoring a snapshot. Both are treated as starting points rather than edits.

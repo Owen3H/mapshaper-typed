@@ -201,6 +201,8 @@ mapshaper world.geojson \
 These projections divide the globe into four triangles and arrange them to
 form a rectangular world map:
 
+![CALM tetrahedral world projection, with a graticule and neatline](/docs/images/tetrahedral-projection.png)
+
 - `narukawa2022` — Hajime Narukawa's published 2022 formulas approximating the original AuthaGraph map
 - `calm` — Farhan Adrian's adaptation of L. P. Lee's conformal tetrahedral projection designed to match the AuthaGraph layout.
 - `markley` — F. Landis Markley's adaptation of Lee's projection

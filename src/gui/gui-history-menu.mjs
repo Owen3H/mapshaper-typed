@@ -1,6 +1,7 @@
 import {
   appUndoForcedByUrl,
-  appUndoSettingIsOn
+  appUndoSettingIsOn,
+  getUndoQueryValue
 } from './gui-app-undo';
 
 var APP_UNDO_KEY = 'mapshaper.undo';
@@ -139,6 +140,7 @@ export function HistoryMenu(gui) {
 }
 
 export function isAppUndoEnabled() {
+  if (getUndoQueryValue() == 'off') return false;
   return appUndoForcedByUrl() || appUndoSettingIsOn();
 }
 

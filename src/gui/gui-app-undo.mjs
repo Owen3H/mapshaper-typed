@@ -9,31 +9,37 @@
 import { internal } from './gui-core';
 import { createStoredUndoHistory } from './gui-stored-undo-history';
 
+// Undo is on unless it has been turned off. Undoing is what a user expects by
+// default; the History menu's checkbox exists so that sessions working with
+// data too large to store restore payloads for can opt out.
+var APP_UNDO_DEFAULT = true;
+
 // Returns true if the manifest, URL query, gui-installed checker, or
 // localStorage indicates that app-level undo should be active.
 export function appUndoIsEnabled(gui) {
   var opt = gui && gui.options && (gui.options.undoCommands || gui.options.appUndo);
   var query = getUndoQueryValue();
+  if (query == 'off') return false;
   if (opt === true || query == 'on' || query == 'commands') return true;
   if (gui && gui.appUndoIsEnabled) return gui.appUndoIsEnabled();
   return appUndoSettingIsOn();
 }
 
-// True when the undo URL flag forces app undo on regardless of UI settings.
-// Mirrors the toggle-disable behavior in HistoryMenu.
+// True when the undo URL flag pins app undo on or off regardless of UI
+// settings. Mirrors the toggle-disable behavior in HistoryMenu.
 export function appUndoForcedByUrl() {
   var query = getUndoQueryValue();
-  return query == 'on' || query == 'commands';
+  return query == 'on' || query == 'commands' || query == 'off';
 }
 
-// Read the persisted localStorage opt-in. Returns false in non-browser
-// environments or when storage is blocked.
+// Read the persisted setting. Only an explicit opt-out turns undo off, so a
+// first-time session (and one where storage is unreadable) gets the default.
 export function appUndoSettingIsOn() {
   try {
-    return !!(typeof window != 'undefined' && window.localStorage &&
-      window.localStorage.getItem('mapshaper.undo') == 'on');
+    if (typeof window == 'undefined' || !window.localStorage) return APP_UNDO_DEFAULT;
+    return window.localStorage.getItem('mapshaper.undo') != 'off';
   } catch(e) {
-    return false;
+    return APP_UNDO_DEFAULT;
   }
 }
 

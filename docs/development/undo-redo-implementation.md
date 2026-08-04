@@ -344,6 +344,7 @@ fixtures. They are not part of the public user documentation.
 | Flag | Effect |
 | --- | --- |
 | `undo=on` | Forces app command undo on for the session. The History menu shows `App undo: On (URL)` and disables the toggle. |
+| `undo=off` | Forces app command undo off for the session and disables the History menu toggle. Undo is on by default, so this is how a test or embedder gets a session without it. |
 | `undo=commands` | Enables command undo and the undo test API without implying broader UI defaults. |
 | `undo=test` | Enables the undo test API. Use with other test setup as needed. |
 | `undo-test=on` | Enables `window.mapshaper.undoTest` for Playwright and manual browser debugging. |
