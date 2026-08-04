@@ -233,6 +233,51 @@ describe('raster layers', function () {
     assert.deepEqual(api.internal.getLayerBounds(lyr).toArray(), [-15, -15, 15, 15]);
   });
 
+  // Nothing is recorded as the file's own CRS, but the coordinates are in the
+  // decimal-degree range, so anything that needs to know reads them as WGS-84
+  // lat-long -- the same assumption mapshaper makes for a vector file that
+  // arrives without projection metadata.
+  it('treats a CRS-less raster in the degree range as WGS 84 lat-long', async function () {
+    var dataset = await api.internal.importFileAsync(NO_CRS_GEOTIFF_FIXTURE, {});
+    var crs = api.internal.getDatasetCRS(dataset);
+    assert.equal(dataset.info.crs_string, undefined);
+    assert.equal(api.internal.isLatLngCRS(crs), true);
+    assert.equal(api.internal.isWGS84(crs), true);
+  });
+
+  // The same assumption would be wrong here: these coordinates are plainly not
+  // degrees, and the file says nothing about what they are.
+  it('leaves a CRS-less raster outside the degree range unprojected', async function () {
+    var bytes = api.internal.encodeGeoTIFF(makeTestGrid([500000, 4000000, 502000, 4002000]), {});
+    var dataset = await api.internal.importFileAsync('local.tif', {
+      input: {'local.tif': Buffer.from(bytes)}
+    });
+    assert.equal(dataset.info.crs_string, undefined);
+    assert.equal(api.internal.getDatasetCRS(dataset), null);
+  });
+
+  // A projection spelled out in the geo keys often names no datum, and the
+  // geokeys-to-proj4 library's +no_defs stops proj from supplying one, which
+  // used to cost the whole projection over a missing ellipsoid.
+  it('assumes a WGS 84 datum for a projection with no datum of its own', async function () {
+    var bytes = api.internal.encodeGeoTIFF(makeTestGrid([500000, 4000000, 502000, 4002000]), {
+      geoKeys: {
+        GTModelTypeGeoKey: 1, GTRasterTypeGeoKey: 1, ProjectedCSTypeGeoKey: 32767,
+        ProjCoordTransGeoKey: 1, // transverse Mercator
+        ProjNatOriginLongGeoKey: -75, ProjNatOriginLatGeoKey: 0,
+        ProjScaleAtNatOriginGeoKey: 0.9996, ProjFalseEastingGeoKey: 500000,
+        ProjFalseNorthingGeoKey: 0, ProjLinearUnitsGeoKey: 9001
+      }
+    });
+    var dataset = await api.internal.importFileAsync('utm.tif', {
+      input: {'utm.tif': Buffer.from(bytes)}
+    });
+    var crs = dataset.info.crs_string;
+    assert(crs.includes('+proj=tmerc'), 'read as ' + crs);
+    assert(crs.includes('+lon_0=-75'), 'read as ' + crs);
+    assert(crs.includes('+datum=WGS84'), 'read as ' + crs);
+  });
+
   it('imports geographic GeoTIFF EPSG:4326 CRS metadata', async function () {
     var dataset = await api.internal.importFileAsync(WGS84_GEOTIFF_FIXTURE, {});
     assert.equal(dataset.info.input_formats[0], 'geotiff');
@@ -1283,6 +1328,23 @@ function getCoverageRasterLayer() {
       derivation: {type: 'gray', sourceId: 'raster', bands: [0]},
       view: {recipe: {type: 'gray', bands: [0]}}
     }
+  };
+}
+
+// A minimal 2x2 grid placed at @bbox, for encoding test GeoTIFFs.
+function makeTestGrid(bbox) {
+  return {
+    width: 2,
+    height: 2,
+    bands: 1,
+    pixelType: 'uint8',
+    samples: new Uint8Array([1, 2, 3, 4]),
+    nodata: null,
+    bbox: bbox,
+    transform: [
+      (bbox[2] - bbox[0]) / 2, 0, bbox[0],
+      0, (bbox[1] - bbox[3]) / 2, bbox[3]
+    ]
   };
 }
 

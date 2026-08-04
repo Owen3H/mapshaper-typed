@@ -128,13 +128,14 @@ misrendering is worse than a visible limitation.
 
 ## `.aux.xml` Sidecars
 
-Do not require `.aux.xml` sidecars for the initial implementation.
+The `<SRS>` element of a sidecar is now read, because it is where mapshaper
+writes a projection that GeoTIFF has no way to describe; see the CRS metadata
+section of `raster-implementation.md`. A file's own geo keys still come first,
+and a raster with no sidecar is unaffected.
 
-The inspected sidecars in the local geotiff.js test data are GDAL PAM files
-containing per-band statistics and histograms. They did not contain essential
-CRS or geotransform metadata in the checked examples. That means Mapshaper
-should import the `.tiff` file directly and ignore the sidecar unless a future
-feature explicitly uses PAM metadata.
+The rest of a GDAL PAM file is still ignored. The sidecars in the local
+geotiff.js test data hold per-band statistics and histograms, which nothing in
+mapshaper consults.
 
 Possible later uses for `.aux.xml` include:
 
@@ -330,7 +331,8 @@ Early tests should assert:
 - `scaling=none`, `scaling=minmax`, `scaling=percentile`, `scale-range=`, and
   `percentile-range=` affect preview pixels as documented.
 - RGB and grayscale previews produce expected band/color metadata.
-- `.aux.xml` sidecars are ignored without causing import failure.
+- A `.aux.xml` sidecar supplies the CRS of a file whose own metadata does not,
+  and everything else it holds is ignored without causing import failure.
 - SVG export produces an `<image>` element with `data:image/jpeg` or
   `data:image/png`.
 - Raster clipping updates grid samples, bounds, and transform. Browser clipping

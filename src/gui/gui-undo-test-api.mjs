@@ -127,6 +127,7 @@ function getDatasetSummary(dataset) {
   return {
     layerCount: dataset.layers ? dataset.layers.length : 0,
     arcCount: dataset.arcs ? dataset.arcs.size() : 0,
+    crs_string: dataset.info && dataset.info.crs_string || null,
     layers: (dataset.layers || []).map(function(lyr) {
       return {
         name: getLayerName(lyr),

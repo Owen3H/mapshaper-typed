@@ -867,6 +867,15 @@ export function ImportControl(gui, opts) {
       });
     }
 
+    // A .aux.xml sidecar is named after the whole raster file
+    // (world.tif.aux.xml), so it joins that file's group rather than one of its
+    // own. Returns null if the raster it names was not loaded with it.
+    function auxSourceGroup(d) {
+      var sourceName = internal.getAuxSourceFilename(d.name).toLowerCase();
+      var source = data.find(f => f.name.toLowerCase() == sourceName);
+      return source ? key(fileBase(source), fileType(source)) : null;
+    }
+
     data.forEach(d => {
       var basename = fileBase(d);
       var type = fileType(d);
@@ -878,6 +887,8 @@ export function ImportControl(gui, opts) {
       } else if (type == 'dbf') {
         d.filename = d.name;
         d.group = key(basename, 'dbf');
+      } else if (type == 'aux' && auxSourceGroup(d)) {
+        d.group = auxSourceGroup(d);
       } else if ((type == 'png' || type == 'jpeg') || isRasterImagePart(d.name) && hasRasterImage(basename)) {
         d.group = key(basename, type == 'png' || type == 'jpeg' ? type : getRasterImageGroupType(data, basename));
         if (type == 'png' || type == 'jpeg') d.filename = d.name;

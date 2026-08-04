@@ -446,6 +446,59 @@ a polar stereographic, the azimuth of an oblique Mercator, and the true-scale
 parallel of a Mercator. So on import the projection part of its answer is
 replaced by mapshaper's own reading of the same keys, and the rest of it kept.
 
+Two assumptions fill in what a file leaves out, both of them the ones mapshaper
+already makes for vector data with no projection metadata:
+
+- **A missing datum is taken for WGS 84.** Geo keys often spell out a
+  transformation and its parameters without naming an ellipsoid, and since the
+  geokeys-to-proj4 library ends every definition with `+no_defs`, proj will not
+  supply its own default either -- so a perfectly good projection used to be
+  discarded over a missing semi-major axis. A definition that will not parse is
+  now tried again with `+datum=WGS84` added, which leaves definitions that
+  already work untouched.
+- **Coordinates in the decimal-degree range are taken for WGS 84 lat-long.**
+  This one needs no raster-specific code: `getDatasetCrsInfo()` applies it to
+  any dataset whose bounds fit inside the world, raster or vector. What the
+  raster importer contributes is not getting in the way. Asked about a file with
+  no CRS keys, the geokeys-to-proj4 library answers `+proj=longlat +no_defs`
+  rather than nothing, having read the silence as a geographic CRS; that is a
+  guess about the coordinates dressed up as metadata, and combined with the
+  datum assumption above it would declare every CRS-less raster to be in
+  degrees, whatever its coordinates. So the library is not consulted at all
+  unless the file has at least one CRS-bearing geo key (`hasCrsGeoKeys()`),
+  which leaves the degree-range test to make the call.
+
+Nothing is recorded on the dataset in the second case, deliberately: like a
+vector file, the raster keeps no CRS of its own and the assumption is re-made
+whenever something asks. The import says which of the two situations it is in,
+since "no CRS metadata, treating the coordinates as lat-long" and "no CRS
+metadata, and no idea what these coordinates are" lead to very different
+sessions.
+
+A sidecar is read back too, by the same rule GDAL follows: the file's own geo
+keys are tried first, and the sidecar is consulted only when they yield nothing
+usable, which includes the case where the library returns a definition that will
+not parse. `src/geotiff/mapshaper-geotiff-aux.mjs` holds both halves of the
+format, so that what is written and what is read stay in step, and the SRS it
+finds is converted from either WKT dialect (or used as-is, if a hand-written
+sidecar states a code or a proj4 string). The wording of the sidecar's WKT is
+kept in `info.wkt1`, so a raster read this way and written out again travels
+with the same text it arrived with.
+
+Getting the sidecar as far as the importer takes a little plumbing, because it
+is named after the whole raster file (`world.tif.aux.xml`) rather than by
+replacing its extension:
+
+- `guessInputFileType()` matches the full name ahead of the extension and
+  returns `aux`, an auxiliary type, so the file survives unzipping and is not
+  taken for a dataset of its own. Before this, unzipping dropped it as an
+  unknown type, which is why a raster exported from the web UI came back
+  without its projection.
+- The CLI reads it alongside the `.tif` in `readGeoTIFFAuxFiles()`; the web UI
+  groups it with the `.tif` in `groupFilesForImport()`.
+- A sidecar that arrives on its own is imported as a CRS with no layers, in the
+  way a lone `.prj` file is, rather than raising an error.
+
 ## Raster Clipping
 
 Raster clipping is available through the rectangle tool and the existing

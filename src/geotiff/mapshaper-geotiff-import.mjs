@@ -1,4 +1,7 @@
-import { initProjLibrary, setDatasetCrsInfo, tryParseCrsString } from '../crs/mapshaper-projections';
+import { initProjLibrary, setDatasetCrsInfo, tryParseCrsString, tryParseWktToProj } from '../crs/mapshaper-projections';
+import { AUX_EXT, auxCrsIsWkt, parseAuxCrsString } from '../geotiff/mapshaper-geotiff-aux';
+import { getDatasetBounds } from '../dataset/mapshaper-dataset-utils';
+import { probablyDecimalDegreeBounds } from '../geom/mapshaper-latlon';
 import { getGeoKeyProjection, replaceProj4Projection } from '../geotiff/mapshaper-geotiff-geokeys';
 import { runningInBrowser } from '../mapshaper-env';
 import { getFileBase } from '../utils/mapshaper-filename-utils';
@@ -11,7 +14,8 @@ var geoKeysToProj4Promise = null;
 var dynamicImportModule = Function('id', 'return import(id)');
 var DEFAULT_MAX_IMPORT_PIXELS = 16e6;
 
-export async function importGeoTIFF(input, optsArg) {
+// aux: contents of the file's .aux.xml sidecar, if it has one
+export async function importGeoTIFF(input, optsArg, aux) {
   var opts = optsArg || {};
   var geotiff = await loadGeoTIFFLib();
   var source = getGeoTIFFSource(input);
@@ -29,7 +33,7 @@ export async function importGeoTIFF(input, optsArg) {
       raster: imported.raster
     }]
   };
-  await importGeoTIFFCrs(dataset, sourceImage);
+  await importGeoTIFFCrs(dataset, sourceImage, aux);
   return dataset;
 }
 
@@ -378,32 +382,117 @@ function getSourceInfo(input, sourceId, image) {
 // in its own georeferencing, and only the things that need to know what those
 // coordinates mean (reprojecting, basemaps, measuring) are unavailable. So a
 // CRS that cannot be read is reported and set aside, never raised as an error.
-async function importGeoTIFFCrs(dataset, image) {
+//
+// A projection GeoTIFF cannot describe travels beside the file in a .aux.xml
+// sidecar, which is read when the file's own geo keys come up empty. The keys
+// come first, matching how GDAL treats the two: the sidecar supplements a file
+// that says nothing, rather than overruling one that does.
+async function importGeoTIFFCrs(dataset, image, aux) {
   var crsInfo = await getGeoTIFFCrsInfo(image);
-  var crsString = crsInfo.crsString;
-  var crs = null;
-  if (crsString) {
-    try {
-      await initProjLibrary({crs: crsString});
-    } catch(e) {
-      // A projection resource that would not load leaves the string to be
-      // parsed with whatever is already known.
-    }
-    crs = tryParseCrsString(crsString);
-  }
-  if (!crs) {
+  var fromFile = await readCrsString(crsInfo.crsString);
+  // The sidecar usually states its CRS in WKT, which has to become a proj4
+  // definition before it can be used like the file's own metadata.
+  var sidecarSrs = fromFile || !aux ? null : parseAuxCrsString(aux.content);
+  var sidecarWkt = auxCrsIsWkt(sidecarSrs) ? sidecarSrs : null;
+  var sidecarString = sidecarWkt ? tryParseWktToProj(sidecarWkt) : sidecarSrs;
+  var fromSidecar = await readCrsString(sidecarString);
+  var found = fromFile || fromSidecar;
+  if (!found) {
     dataset.info = dataset.info || {};
-    warnOnce(getGeoTIFFCrsWarning(crsInfo, crsString ?
-      'Unable to use projection ' + crsString : null));
+    reportMissingCrs(dataset, crsInfo, sidecarString);
     return;
   }
-  setDatasetCrsInfo(dataset, {crs_string: crsString, crs: crs});
+  setDatasetCrsInfo(dataset, {crs_string: found.crsString, crs: found.crs});
+  if (found.assumedDatum) {
+    message('This GeoTIFF describes its projection without naming a datum;',
+      'assuming WGS 84.');
+  }
+  if (fromSidecar) {
+    message('Read the CRS from ' + (aux.filename || 'a ' + AUX_EXT + ' file') +
+      ', because GeoTIFF has no way to describe this projection.');
+    if (sidecarWkt) {
+      // Keep the sidecar's own wording, so that exporting the raster again
+      // writes back what was read rather than a re-derived approximation.
+      dataset.info.wkt1 = sidecarWkt;
+    }
+  }
+}
+
+// Returns {crsString, crs}, or null if there is no string or it cannot be used.
+async function readCrsString(str) {
+  var crs, assumed;
+  if (!str) return null;
+  try {
+    await initProjLibrary({crs: str});
+  } catch(e) {
+    // A projection resource that would not load leaves the string to be
+    // parsed with whatever is already known.
+  }
+  crs = tryParseCrsString(str);
+  if (crs) return {crsString: str, crs: crs};
+  // A projection with no earth to sit on is tried again on a WGS-84 one, the
+  // datum mapshaper assumes for any data that does not name one.
+  assumed = addAssumedDatum(str);
+  crs = assumed ? tryParseCrsString(assumed) : null;
+  return crs ? {crsString: assumed, crs: crs, assumedDatum: true} : null;
+}
+
+// GeoTIFF metadata can describe a projection without saying what shape of earth
+// it applies to: the geo keys carry a transformation and its parameters, and
+// the datum keys are absent or name something the EPSG database does not have.
+// Since the geokeys-to-proj4 library ends every definition with +no_defs, proj
+// will not supply its usual default either, and the whole projection is lost
+// over a missing ellipsoid. Returns the definition with a WGS-84 datum added,
+// or null if it already has one (or is not a proj4 definition at all).
+function addAssumedDatum(str) {
+  if (!/\+proj=/.test(str) || /\+(datum|ellps|a|b|R|nadgrids|init)=/.test(str)) {
+    return null;
+  }
+  return str + ' +datum=WGS84';
+}
+
+// What to say about a raster that arrives without a CRS. A file that simply has
+// no CRS metadata is the ordinary case for an image, and is treated the way a
+// vector file with no projection metadata is: coordinates in the decimal-degree
+// range are taken for WGS-84 lat-long when something needs to know, which is
+// worth saying but not worth warning about. Metadata that mapshaper could not
+// make sense of is a different matter, and keeps the warning.
+function reportMissingCrs(dataset, crsInfo, sidecarString) {
+  if (crsInfo.absent && !sidecarString) {
+    if (probablyDecimalDegreeBounds(getDatasetBounds(dataset))) {
+      message('This GeoTIFF has no CRS metadata. Its coordinates are in the',
+        'decimal-degree range, so they are taken for WGS 84 lat-long.');
+    } else {
+      message('This GeoTIFF has no CRS metadata, so what its coordinates refer',
+        'to is unknown, and projecting it or showing it over a basemap are',
+        'unavailable. If you know the CRS, name it with -proj init=<crs>',
+        'crs=<crs>');
+    }
+    return;
+  }
+  warnOnce(getGeoTIFFCrsWarning(crsInfo,
+    getUnusableCrsDetail(crsInfo.crsString, sidecarString)));
+}
+
+function getUnusableCrsDetail(fileString, sidecarString) {
+  var tried = [fileString, sidecarString].filter(Boolean);
+  if (!tried.length) return null;
+  return 'Unable to use projection ' + tried.join(' or ');
 }
 
 async function getGeoTIFFCrsInfo(image) {
   var keys = image.getGeoKeys && image.getGeoKeys() || {};
   var code = keys.ProjectedCSTypeGeoKey;
   var customProjection;
+  if (!hasCrsGeoKeys(keys)) {
+    // Asked about a file that says nothing, the geokeys-to-proj4 library
+    // answers "+proj=longlat" rather than nothing, having taken the silence for
+    // a geographic CRS. That is a guess about the coordinates, not something
+    // read out of the file, and mapshaper makes it later and better, from the
+    // coordinate range, in the same way it does for a vector file with no
+    // projection metadata.
+    return {crsString: null, absent: true};
+  }
   if (isGeoTIFFAuthorityCode(code)) {
     return {crsString: 'EPSG:' + code};
   }
@@ -419,6 +508,23 @@ function getGeoTIFFCrsWarning(crsInfo, detail) {
     logGeoTIFFCrsWarningDetails(detail, crsInfo && crsInfo.warning);
   }
   return 'The GeoTIFF does not contain usable CRS data';
+}
+
+// Keys that say something about the CRS itself, as opposed to how the pixels
+// are laid out (GTRasterTypeGeoKey) or what the file calls things (the
+// citation keys).
+var CRS_GEO_KEYS = [
+  'GTModelTypeGeoKey',
+  'GeographicTypeGeoKey', 'GeogGeodeticDatumGeoKey', 'GeogEllipsoidGeoKey',
+  'GeogPrimeMeridianGeoKey', 'GeogSemiMajorAxisGeoKey',
+  'GeogSemiMinorAxisGeoKey', 'GeogInvFlatteningGeoKey',
+  'ProjectedCSTypeGeoKey', 'ProjectionGeoKey', 'ProjCoordTransGeoKey'
+];
+
+function hasCrsGeoKeys(keys) {
+  return CRS_GEO_KEYS.some(function(name) {
+    return keys[name] !== undefined && keys[name] !== null;
+  });
 }
 
 function isGeoTIFFAuthorityCode(code) {

@@ -1,6 +1,7 @@
 
 import utils from '../utils/mapshaper-utils';
 import { getFileExtension } from '../utils/mapshaper-filename-utils';
+import { isAuxFilename } from '../geotiff/mapshaper-geotiff-aux';
 import { PACKAGE_EXT } from '../pack/mapshaper-pack-constants';
 
 // Guess the type of a data file from file extension, or return null if not sure
@@ -9,7 +10,10 @@ import { PACKAGE_EXT } from '../pack/mapshaper-pack-constants';
 export function guessInputFileType(file) {
   var ext = getFileExtension(file || '').toLowerCase(),
       type = null;
-  if (ext == 'dbf' || ext == 'shp' || ext == 'kml' || ext == 'svg' || ext == 'fgb' || ext == 'gpkg' || ext == 'png') {
+  if (isAuxFilename(file)) {
+    // Matched ahead of the extension, which is the raster's own (.tif.aux.xml).
+    type = 'aux';
+  } else if (ext == 'dbf' || ext == 'shp' || ext == 'kml' || ext == 'svg' || ext == 'fgb' || ext == 'gpkg' || ext == 'png') {
     type = ext;
   } else if (ext == 'jpg' || ext == 'jpeg') {
     type = 'jpeg';
@@ -33,7 +37,8 @@ export function guessInputFileType(file) {
 
 // File types that can be imported but are not convertible to datasets
 export function isAuxiliaryInputFileType(type) {
-  return type == 'prj' || type == 'shx' || type == 'cpg' || type == 'world';
+  return type == 'prj' || type == 'shx' || type == 'cpg' || type == 'world' ||
+    type == 'aux';
 }
 
 export function isRasterImageInputType(type) {

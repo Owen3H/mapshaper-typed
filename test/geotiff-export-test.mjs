@@ -373,8 +373,64 @@ describe('GeoTIFF export', function () {
       assert.equal(maxProjectionError(def, dataset.info.crs_string) < 1e-6, true,
         'read back as ' + dataset.info.crs_string);
     });
+
+    // The sidecar is the last resort for a projection, so a raster written with
+    // one has to come back with its CRS when the pair is read together.
+    it('reads back a projection it wrote to a sidecar', async function () {
+      var out = await api.applyCommands('-i ' + WGS84_GEOTIFF_FIXTURE +
+        ' -proj dymaxion -o out.tif');
+      var dataset = await importFilePair(out, 'out.tif');
+      assert(dataset.info.crs, 'no CRS was read back');
+      assert.equal(maxProjectionError('+proj=dymaxion +ellps=WGS84',
+        dataset.info.crs_string) < 1e-6, true,
+        'read back as ' + dataset.info.crs_string);
+      // Writing the raster out again reuses the sidecar's own wording.
+      assert(String(dataset.info.wkt1).includes('dymaxion'));
+    });
+
+    it('writes the sidecar again when a raster read with one is re-exported', async function () {
+      var first = await api.applyCommands('-i ' + WGS84_GEOTIFF_FIXTURE +
+        ' -proj dymaxion -o out.tif');
+      var second = await api.applyCommands('-i out.tif -o again.tif', {
+        'out.tif': first['out.tif'],
+        'out.tif.aux.xml': String(first['out.tif.aux.xml'])
+      });
+      assert.deepEqual(Object.keys(second).sort(), ['again.tif', 'again.tif.aux.xml']);
+      assert(String(second['again.tif.aux.xml']).includes('dymaxion'));
+    });
+
+    // A raster whose own geo keys name a CRS is not second-guessed by a sidecar
+    // sitting beside it, matching how GDAL treats the two.
+    it('prefers the CRS in the file to the one in the sidecar', async function () {
+      var out = await api.applyCommands('-i ' + WGS84_GEOTIFF_FIXTURE + ' -o out.tif');
+      var dataset = await api.internal.importFileAsync('out.tif', {input: {
+        'out.tif': out['out.tif'],
+        'out.tif.aux.xml': api.internal.formatAuxXml(
+          'PROJCS["x",GEOGCS["y",DATUM["z",SPHEROID["WGS 84",6378137,298.257223563]],' +
+          'PRIMEM["Greenwich",0],UNIT["degree",0.017453292519943295]],' +
+          'PROJECTION["custom_proj4"],UNIT["Meter",1],' +
+          'EXTENSION["PROJ4","+proj=moll +ellps=WGS84 +wktext"]]')
+      }});
+      assert(dataset.info.crs_string.includes('+proj=longlat'),
+        'read as ' + dataset.info.crs_string);
+    });
   });
 });
+
+// Writes a GeoTIFF and its sidecar to a temp directory and imports them the way
+// a user would, by naming the .tif.
+async function importFilePair(output, name) {
+  var file = path.join(os.tmpdir(), 'mapshaper-aux-test-' + name);
+  var auxFile = file + '.aux.xml';
+  fs.writeFileSync(file, output[name]);
+  fs.writeFileSync(auxFile, output[name + '.aux.xml']);
+  try {
+    return await api.internal.importFileAsync(file, {});
+  } finally {
+    fs.unlinkSync(file);
+    fs.unlinkSync(auxFile);
+  }
+}
 
 function getGeoKeys(def) {
   return api.internal.getCrsGeoKeys(api.internal.getCrsInfo(def).crs);

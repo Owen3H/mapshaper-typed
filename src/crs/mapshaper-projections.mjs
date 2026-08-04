@@ -229,6 +229,22 @@ export function tryParseCrsString(str) {
   return crs;
 }
 
+// The WKT counterpart of tryParseCrsString(), for a projection read out of a
+// .prj or .aux.xml file, in either WKT dialect. Returns the proj4 equivalent of
+// the WKT, or null.
+export function tryParseWktToProj(str) {
+  var revertLogging = getLoggingSetter();
+  var proj = null;
+  setLoggingForCLI();
+  try {
+    proj = wktToProj(str);
+  } catch(e) {
+    // WKT that cannot be converted is one of the expected outcomes here
+  }
+  revertLogging();
+  return proj || null;
+}
+
 export function parseCrsString(str) {
   var defn = getProjDefn(str);  // defn is a string or a Proj object
   var P;

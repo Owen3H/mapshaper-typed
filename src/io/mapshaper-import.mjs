@@ -12,6 +12,7 @@ import { getFileBase, parseLocalPath } from '../utils/mapshaper-filename-utils';
 import { importFlatgeobuf } from '../flatgeobuf/mapshaper-flatgeobuf';
 import { importGeoPackage } from '../geopackage/mapshaper-geopackage-import';
 import { importGeoParquet } from '../geoparquet/mapshaper-geoparquet-import';
+import { auxCrsIsWkt, parseAuxCrsString } from '../geotiff/mapshaper-geotiff-aux';
 import { importGeoTIFF } from '../geotiff/mapshaper-geotiff-import';
 import { importImageRaster } from '../rasters/mapshaper-image-import';
 import { importSVG } from '../svg/mapshaper-svg-import';
@@ -52,6 +53,14 @@ export function importContent(obj, opts) {
     dataFmt = 'prj';
     data = obj.prj;
     dataset = {layers: [], info: {wkt1: data.content}};
+
+  } else if (obj.aux) {
+    // A sidecar on its own carries nothing but a CRS, which is still worth
+    // reading: it can be the source of a -proj command, and importing the
+    // raster it belongs to picks it up anyway.
+    dataFmt = 'aux';
+    data = obj.aux;
+    dataset = {layers: [], info: getAuxCrsInfo(data.content)};
 
   } else if (obj.kml) {
     dataFmt = 'kml';
@@ -98,7 +107,7 @@ export async function importDatasetsFromContent(obj, opts) {
   } else if (obj.geotiff) {
     dataFmt = 'geotiff';
     data = obj.geotiff;
-    dataset = await importGeoTIFF(data, opts);
+    dataset = await importGeoTIFF(data, opts, obj.aux);
   } else if (obj.png || obj.jpeg) {
     dataFmt = obj.png ? 'png' : 'jpeg';
     data = obj[dataFmt];
@@ -158,6 +167,14 @@ function importShapefile(obj, opts) {
     }
   }
   return dataset;
+}
+
+// What a raster sidecar amounts to on its own: a projection, stated where the
+// contents of a .prj file would go if it is WKT, as a CRS string otherwise.
+function getAuxCrsInfo(content) {
+  var srs = parseAuxCrsString(content);
+  if (!srs) return {};
+  return auxCrsIsWkt(srs) ? {wkt1: srs} : {crs_string: srs};
 }
 
 function importDbf(input, opts) {

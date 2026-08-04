@@ -68,6 +68,25 @@ test('GUI displays a raster with no readable CRS', async function({page}) {
   }).toBeGreaterThan(1000);
 });
 
+// A projection GeoTIFF cannot describe is written to a .aux.xml sidecar, which
+// the app has to read back -- including out of the zip archive it exports the
+// pair in, where the sidecar used to be discarded as an unknown file type.
+test('GUI reads a raster CRS from its .aux.xml sidecar', async function({page}) {
+  var files = [
+    'test/data/geotiff/moll-aux-sidecar.tif',
+    'test/data/geotiff/moll-aux-sidecar.tif.aux.xml'
+  ].join(',');
+  var result;
+
+  await page.goto('/?undo=on&undo-test=on&files=' + encodeURIComponent(files));
+  result = await getImportResult(page);
+
+  // One dataset, not one per file: the sidecar belongs to the raster.
+  expect(result.datasetCount).toBe(1);
+  expect(result.errorMessages).toEqual([]);
+  expect(result.datasets[0].crs_string).toContain('+proj=moll');
+});
+
 // The number of pixels the map canvases have drawn anything into.
 function getPaintedMapPixels(page) {
   return page.evaluate(function() {
@@ -96,6 +115,7 @@ async function getImportResult(page) {
     return {
       datasetCount: state.model.datasetCount,
       layerCount: state.model.layerCount,
+      datasets: state.model.datasets,
       errorMessages: messages.filter(function(item) {
         return item && item.severity == 'error';
       })

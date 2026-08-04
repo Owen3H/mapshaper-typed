@@ -12,6 +12,7 @@ import {
   stringLooksLikeCsv,
   unescapeInlineCsv,
   isPackageFile } from '../io/mapshaper-file-types';
+import { getAuxFilename, getAuxSourceFilename } from '../geotiff/mapshaper-geotiff-aux';
 import cmd from '../mapshaper-cmd';
 import cli from '../cli/mapshaper-cli-utils';
 import utils from '../utils/mapshaper-utils';
@@ -275,6 +276,8 @@ function prepareImportFile(path, opts) {
     readShapefileAuxFiles(path, input, cache);
   } else if (isRasterImageInputType(fileType)) {
     readRasterImageAuxFiles(path, input, cache);
+  } else if (fileType == 'geotiff') {
+    readGeoTIFFAuxFiles(path, input, cache);
   }
   if (fileType == 'shp' && !input.dbf) {
     message(utils.format("[%s] .dbf file is missing - shapes imported without attribute data.", path));
@@ -399,6 +402,13 @@ function readShapefileAuxFiles(path, obj, cache) {
   }
 }
 
+function readGeoTIFFAuxFiles(path, obj, cache) {
+  var auxPath = getAuxFilename(path);
+  if (cli.isFile(auxPath, cache)) {
+    obj.aux = {filename: auxPath, content: cli.readFile(auxPath, 'utf-8', cache)};
+  }
+}
+
 function readRasterImageAuxFiles(path, obj, cache) {
   var prjPath = replaceFileExtension(path, 'prj');
   var worldPath = findWorldFile(path, cache);
@@ -436,10 +446,14 @@ function getWorldFileCandidates(path) {
 
 function removeRasterImageSidecars(files) {
   var imageBases = {};
+  var rasterPaths = {};
   files.forEach(function(file) {
     var type = guessInputFileType(file);
     if (isRasterImageInputType(type)) {
       imageBases[getFileBase(file).toLowerCase()] = true;
+    }
+    if (isRasterImageInputType(type) || type == 'geotiff') {
+      rasterPaths[file.toLowerCase()] = true;
     }
   });
   return files.filter(function(file) {
@@ -447,6 +461,11 @@ function removeRasterImageSidecars(files) {
     var type = guessInputFileType(file);
     var base = getFileBase(file).toLowerCase();
     if ((type == 'prj' || isWorldFileExtension(ext)) && imageBases[base]) {
+      return false;
+    }
+    // A sidecar is read along with the raster it names, so importing it
+    // separately would only add an empty layer.
+    if (type == 'aux' && rasterPaths[getAuxSourceFilename(file).toLowerCase()]) {
       return false;
     }
     return true;

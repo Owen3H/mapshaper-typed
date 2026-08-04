@@ -125,6 +125,7 @@ import * as JoinTables from './join/mapshaper-join-tables';
 import * as JsonImport from './io/mapshaper-json-import';
 import * as JsonTable from './datatable/mapshaper-json-table';
 import * as KeepShapes from './simplify/mapshaper-keep-shapes';
+import * as GeoTIFFAux from './geotiff/mapshaper-geotiff-aux';
 import * as GeoTIFFEncode from './geotiff/mapshaper-geotiff-encode';
 import * as GeoTIFFGeoKeys from './geotiff/mapshaper-geotiff-geokeys';
 import * as LatLon from './geom/mapshaper-latlon';
@@ -263,6 +264,7 @@ Object.assign(internal,
   JoinTables,
   JsonImport,
   JsonTable,
+  GeoTIFFAux,
   GeoTIFFEncode,
   GeoTIFFGeoKeys,
   KeepShapes,

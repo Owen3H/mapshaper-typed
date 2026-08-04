@@ -9,6 +9,7 @@ import {
   parseAuthorityCodeString
 } from '../crs/mapshaper-projections';
 import { layerHasRaster } from '../dataset/mapshaper-layer-utils';
+import { AUX_EXT, formatAuxXml, getAuxFilename } from '../geotiff/mapshaper-geotiff-aux';
 import { encodeGeoTIFF } from '../geotiff/mapshaper-geotiff-encode';
 import { getCrsGeoKeys } from '../geotiff/mapshaper-geotiff-geokeys';
 import { getRasterGrid, rasterGridIsRotated } from '../rasters/mapshaper-raster-utils';
@@ -22,11 +23,6 @@ var MODEL_TYPE_GEOGRAPHIC = 2;
 // The raster covers areas, i.e. a coordinate refers to a pixel's corner rather
 // than its center. This matches how mapshaper's grid bbox is defined.
 var RASTER_TYPE_AREA = 1;
-// GDAL's "persistent auxiliary metadata" sidecar, which it reads for any raster
-// it opens. Unlike the .prj file that accompanies a shapefile, this is a
-// sidecar that GDAL-based software (QGIS included) actually consults for a
-// GeoTIFF's CRS.
-var AUX_EXT = '.aux.xml';
 
 export function exportGeoTIFF(dataset, opts) {
   var extension = opts.extension ||
@@ -44,8 +40,8 @@ export function exportGeoTIFF(dataset, opts) {
     if (crs.code || crs.geoKeys) return;
     if (crs.wkt) {
       files.push({
-        filename: filename + AUX_EXT,
-        content: getAuxXml(crs.wkt)
+        filename: getAuxFilename(filename),
+        content: formatAuxXml(crs.wkt)
       });
       message('Wrote the CRS of', filename, 'to a', AUX_EXT, 'file, because GeoTIFF has no way to describe this projection. Keep the two files together.');
     } else {
@@ -153,12 +149,4 @@ function getOutputWkt(info, crs) {
   } catch(e) {
     return null;
   }
-}
-
-function getAuxXml(wkt) {
-  return '<PAMDataset>\n  <SRS>' + escapeXml(wkt) + '</SRS>\n</PAMDataset>\n';
-}
-
-function escapeXml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
