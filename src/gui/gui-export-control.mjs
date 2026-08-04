@@ -17,6 +17,8 @@ export var ExportControl = function(gui) {
   var unsupportedMsg = "Exporting is not supported in this browser";
   var menu = gui.container.findChild('.export-options').on('click', GUI.handleDirectEvent(gui.clearMode));
   var layersArr = [];
+  var menuFormats = null; // formats the format menu was built with
+  var formatPickedByUser = false;
   var toggleBtn = null; // checkbox <input> for toggling layer selection
   var exportBtn = gui.container.findChild('.export-btn').addClass('disabled');
   var ofileName = gui.container.findChild('#ofile-name');
@@ -85,6 +87,7 @@ export var ExportControl = function(gui) {
 
   function turnOn() {
     layersArr = initLayerMenu();
+    formatPickedByUser = false;
     // initZipOption();
     initFormatMenu();
     updateExportCheckboxes();
@@ -266,6 +269,7 @@ export var ExportControl = function(gui) {
   }
 
   function updateToggleBtn() {
+    refreshFormatMenu(); // the layer selection decides which formats apply
     updateExportCheckboxes(); // checkbox visibility is affected by number of export layers
     if (!toggleBtn) return;
     var state = getSelectionState();
@@ -288,13 +292,17 @@ export var ExportControl = function(gui) {
   }
 
   function getDefaultExportFormat() {
+    var layers = getExportFormatLayers();
     var active = model.getActiveLayer();
     var dataset = active.dataset;
     var inputFmt = dataset.info && dataset.info.input_formats &&
         dataset.info.input_formats[0];
-    // SVG stays the default for rasters: it is the only format that also
-    // accepts the vector layers a session usually has alongside them.
-    if (activeLayerHasRaster()) return 'svg';
+    // Rasters and nothing else can only go to GeoTIFF, the one format that
+    // takes their pixels.
+    if (layers.length > 0 && layers.every(hasRaster)) return 'geotiff';
+    // SVG is the default for a selection that mixes rasters with vector layers,
+    // being the only format that accepts both.
+    if (layers.some(hasRaster)) return 'svg';
     return getExportFormats().includes(inputFmt) ? inputFmt : 'geojson';
   }
 
@@ -302,16 +310,26 @@ export var ExportControl = function(gui) {
     var formats = ['shapefile', 'json', 'geojson', 'dsv', 'topojson', 'flatgeobuf', 'geopackage', 'geoparquet', 'kml', 'svg', internal.PACKAGE_EXT];
     // GeoTIFF is the one format here that only accepts raster layers, so it is
     // offered only when there is a raster to export.
-    if (activeLayerHasRaster()) formats.push('geotiff');
+    if (getExportFormatLayers().some(hasRaster)) formats.push('geotiff');
     return formats;
   }
 
-  function activeLayerHasRaster() {
+  // The layers the format menu describes: the ones checked for export, falling
+  // back to the active layer when the menu is not up yet or nothing is checked.
+  function getExportFormatLayers() {
+    var selected = layersArr.length ? getSelectedLayerEntries() : [];
     var active = model.getActiveLayer();
-    return !!active.layer && internal.layerHasRaster(active.layer);
+    if (selected.length > 0) {
+      return selected.map(function(o) { return o.layer; });
+    }
+    return active && active.layer ? [active.layer] : [];
   }
 
-  function initFormatMenu() {
+  function hasRaster(lyr) {
+    return internal.layerHasRaster(lyr);
+  }
+
+  function initFormatMenu(preferredFmt) {
     var formats = getExportFormats();
     var items = formats.map(function(fmt) {
       return utils.format('<td><label><input type="radio" name="format" value="%s"' +
@@ -323,11 +341,37 @@ export var ExportControl = function(gui) {
     }
     table += '</table>';
     menu.findChild('.export-formats').html(table);
-    menu.findChild('.export-formats input[value="' + getDefaultExportFormat() + '"]').node().checked = true;
+    menuFormats = formats;
+    setSelectedFormat(formats.includes(preferredFmt) ? preferredFmt :
+      getDefaultExportFormat());
     // update save-as settings when value changes
     menu.findChildren('input[type="radio"]').forEach(el => {
-      el.on('change', updateExportCheckboxes);
+      el.on('change', onFormatChange);
     });
+  }
+
+  function onFormatChange() {
+    // A format the user picked is theirs to keep, however the layer selection
+    // changes afterwards.
+    formatPickedByUser = true;
+    updateExportCheckboxes();
+  }
+
+  function setSelectedFormat(fmt) {
+    var el = menu.findChild('.export-formats input[value="' + fmt + '"]');
+    if (el) el.node().checked = true;
+  }
+
+  // Which formats apply depends on what is checked for export, so unchecking
+  // the vector layers of a mixed session both offers GeoTIFF and makes it the
+  // default -- unless the user has already chosen a format.
+  function refreshFormatMenu() {
+    var formats = getExportFormats();
+    if (formats.join(',') != (menuFormats || []).join(',')) {
+      initFormatMenu(formatPickedByUser ? getSelectedFormat() : null);
+    } else if (!formatPickedByUser) {
+      setSelectedFormat(getDefaultExportFormat());
+    }
   }
 
 

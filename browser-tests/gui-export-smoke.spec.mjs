@@ -55,6 +55,46 @@ test('GUI does not offer GeoTIFF for a vector layer', async function({page}) {
   await expect(page.locator('.export-formats input[value="geotiff"]')).toHaveCount(0);
 });
 
+// A raster on its own can only go to GeoTIFF, so that is what the menu opens on.
+test('GUI defaults to GeoTIFF for a raster layer', async function({page}) {
+  await loadFixture(page, RASTER_FIXTURE);
+  await openExportMenu(page);
+  expect(await getSelectedExportFormat(page)).toBe('geotiff');
+});
+
+// With vector layers in the selection too, GeoTIFF cannot take them, and SVG is
+// the only format that accepts both kinds at once.
+test('GUI defaults to SVG for a raster mixed with vector layers', async function({page}) {
+  await loadFixture(page, [RASTER_FIXTURE, SOURCE_FIXTURE].join(','));
+  await openExportMenu(page);
+  expect(await getSelectedExportFormat(page)).toBe('svg');
+});
+
+test('GUI switches the default to GeoTIFF when only rasters stay selected', async function({page}) {
+  await loadFixture(page, [RASTER_FIXTURE, SOURCE_FIXTURE].join(','));
+  await openExportMenu(page);
+  await getLayerCheckbox(page, 'three_points').uncheck();
+  expect(await getSelectedExportFormat(page)).toBe('geotiff');
+});
+
+// Following the selection is a convenience for a format the user has not
+// thought about; once they have picked one, it stays picked.
+test('GUI keeps a format the user chose when the selection changes', async function({page}) {
+  await loadFixture(page, [RASTER_FIXTURE, SOURCE_FIXTURE].join(','));
+  await openExportMenu(page);
+  await selectExportFormat(page, 'shapefile');
+  await getLayerCheckbox(page, 'three_points').uncheck();
+  expect(await getSelectedExportFormat(page)).toBe('shapefile');
+});
+
+function getLayerCheckbox(page, layerName) {
+  return page.locator('.layer-item', {hasText: layerName}).locator('input');
+}
+
+async function getSelectedExportFormat(page) {
+  return page.locator('.export-formats input:checked').inputValue();
+}
+
 async function loadFixture(page, fixture) {
   await page.goto('/?undo=on&undo-test=on&files=' + encodeURIComponent(fixture));
   await page.waitForFunction(function() {

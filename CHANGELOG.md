@@ -1,6 +1,7 @@
 v0.7.51
 * Mapshaper now correctly re-imports the `.aux.xml` sidecar it writes when saving a GeoTIFF in a projection that standard GeoTIFF metadata cannot describe.
 * A GeoTIFF with no CRS metadata is treated as WGS84 lat-long if the coordinates are in the decimal-degree range (this is consistent with how vector data is handled).
+* GeoTIFF is now the default format for exporting rasters in the web UI.
 
 v0.7.50
 * Fixed `-contours` creating intersecting lines on certain inputs.
