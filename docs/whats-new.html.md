@@ -11,7 +11,7 @@ This is a curated list of recently added features. For the full list of changes,
 
 <div class="whats-new-entry">
 
-**Saving rasters as GeoTIFF files.** Raster layers can now be exported to a `.tif` file, which until now could only be read. This makes Mapshaper usable as a step in a workflow that continues in other software: crop, project, blur or otherwise edit an image or an elevation model and pass it on. The pixels keep the values and the data type they came in with, so an elevation model is saved as elevations rather than as a picture of them. Files are compressed by default. Since a GeoTIFF holds pixels and nothing else, use `target=` to pick out the raster layer if your session also has vector layers in it.
+**Saving rasters as GeoTIFF files.** Raster layers can now be exported to a `.tif` GeoTIFF file. Files are compressed by default.
 
 → See [File formats](/docs/formats/overview.html.md) and [`-o`](/docs/reference.html.md#-o).
 </div>
@@ -87,7 +87,7 @@ This is a curated list of recently added features. For the full list of changes,
 
 <div class="whats-new-entry">
 
-**Undo/redo for web UI commands.** The web UI can now save temporary restore data while you work, so console commands and other data edits can be undone and redone from a pop-up toolbar. **This feature is very new and may have bugs, please report any problems that you encounter**. Turn on undo from the new History menu.
+**Undo/redo for web UI commands.** The web UI can now save temporary restore data while you work, so console commands and other data edits can be undone and redone from a pop-up toolbar. **This feature is very new and may have bugs, please report any problems that you encounter**. Undo is on by default and can be turned off from the new History menu.
 
 </div>
 

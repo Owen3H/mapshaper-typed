@@ -10465,6 +10465,22 @@
     return crs;
   }
 
+  // The WKT counterpart of tryParseCrsString(), for a projection read out of a
+  // .prj or .aux.xml file, in either WKT dialect. Returns the proj4 equivalent of
+  // the WKT, or null.
+  function tryParseWktToProj(str) {
+    var revertLogging = getLoggingSetter();
+    var proj = null;
+    setLoggingForCLI();
+    try {
+      proj = wktToProj(str);
+    } catch(e) {
+      // WKT that cannot be converted is one of the expected outcomes here
+    }
+    revertLogging();
+    return proj || null;
+  }
+
   function parseCrsString$1(str) {
     var defn = getProjDefn(str);  // defn is a string or a Proj object
     var P;
@@ -10720,6 +10736,7 @@
     setProjectionLoader: setProjectionLoader,
     toLngLat: toLngLat,
     tryParseCrsString: tryParseCrsString,
+    tryParseWktToProj: tryParseWktToProj,
     wkt1ToProj: wkt1ToProj,
     wkt2ToProj: wkt2ToProj,
     wktToProj: wktToProj
@@ -13129,6 +13146,67 @@
     toLowerCaseExtension: toLowerCaseExtension
   });
 
+  // GDAL's "persistent auxiliary metadata" sidecar, named after the whole raster
+  // filename rather than replacing its extension (world.tif -> world.tif.aux.xml).
+  // Unlike the .prj file that accompanies a shapefile, this is a sidecar that
+  // GDAL-based software (QGIS included) actually consults for a GeoTIFF's CRS, so
+  // it is where mapshaper puts a projection that GeoTIFF itself cannot describe.
+  var AUX_EXT = '.aux.xml';
+
+  function getAuxFilename(filename) {
+    return filename + AUX_EXT;
+  }
+
+  function isAuxFilename(filename) {
+    return /\.aux\.xml$/i.test(filename || '');
+  }
+
+  // Returns the raster a sidecar belongs to: world.tif.aux.xml -> world.tif
+  function getAuxSourceFilename(filename) {
+    return String(filename).replace(/\.aux\.xml$/i, '');
+  }
+
+  function formatAuxXml(wkt) {
+    return '<PAMDataset>\n  <SRS>' + escapeXml(wkt) + '</SRS>\n</PAMDataset>\n';
+  }
+
+  // The CRS a sidecar carries, or null. Everything else GDAL writes to these
+  // files -- statistics, band metadata, overviews -- describes data that
+  // mapshaper reads from the raster itself.
+  function parseAuxCrsString(content) {
+    var xml = typeof content == 'string' ? content :
+      content ? decodeString(content, 'utf8') : '';
+    var match = /<SRS\b[^>]*>([\s\S]*?)<\/SRS>/i.exec(xml);
+    var srs = match ? unescapeXml(match[1]).trim() : '';
+    return srs || null;
+  }
+
+  // GDAL states the SRS in WKT, but a hand-written sidecar may hold an EPSG code
+  // or a proj4 definition instead, which mapshaper can use as they are.
+  function auxCrsIsWkt(str) {
+    return /^\s*[A-Z_]+\[/i.test(str || '');
+  }
+
+  function escapeXml(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function unescapeXml(str) {
+    return str.replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+  }
+
+  var GeoTIFFAux = /*#__PURE__*/Object.freeze({
+    __proto__: null,
+    AUX_EXT: AUX_EXT,
+    auxCrsIsWkt: auxCrsIsWkt,
+    formatAuxXml: formatAuxXml,
+    getAuxFilename: getAuxFilename,
+    getAuxSourceFilename: getAuxSourceFilename,
+    isAuxFilename: isAuxFilename,
+    parseAuxCrsString: parseAuxCrsString
+  });
+
   // Constants shared between the .msx (mapshaper snapshot) writer in
   // mapshaper-pack.mjs and the file-type registry in
   // io/mapshaper-file-types.mjs. Living here lets file-types reference the
@@ -13142,7 +13220,10 @@
   function guessInputFileType(file) {
     var ext = getFileExtension(file || '').toLowerCase(),
         type = null;
-    if (ext == 'dbf' || ext == 'shp' || ext == 'kml' || ext == 'svg' || ext == 'fgb' || ext == 'gpkg' || ext == 'png') {
+    if (isAuxFilename(file)) {
+      // Matched ahead of the extension, which is the raster's own (.tif.aux.xml).
+      type = 'aux';
+    } else if (ext == 'dbf' || ext == 'shp' || ext == 'kml' || ext == 'svg' || ext == 'fgb' || ext == 'gpkg' || ext == 'png') {
       type = ext;
     } else if (ext == 'jpg' || ext == 'jpeg') {
       type = 'jpeg';
@@ -13166,7 +13247,8 @@
 
   // File types that can be imported but are not convertible to datasets
   function isAuxiliaryInputFileType(type) {
-    return type == 'prj' || type == 'shx' || type == 'cpg' || type == 'world';
+    return type == 'prj' || type == 'shx' || type == 'cpg' || type == 'world' ||
+      type == 'aux';
   }
 
   function isRasterImageInputType(type) {
@@ -34036,11 +34118,6 @@ ${svg}
   // The raster covers areas, i.e. a coordinate refers to a pixel's corner rather
   // than its center. This matches how mapshaper's grid bbox is defined.
   var RASTER_TYPE_AREA = 1;
-  // GDAL's "persistent auxiliary metadata" sidecar, which it reads for any raster
-  // it opens. Unlike the .prj file that accompanies a shapefile, this is a
-  // sidecar that GDAL-based software (QGIS included) actually consults for a
-  // GeoTIFF's CRS.
-  var AUX_EXT = '.aux.xml';
 
   function exportGeoTIFF(dataset, opts) {
     var extension = opts.extension ||
@@ -34058,8 +34135,8 @@ ${svg}
       if (crs.code || crs.geoKeys) return;
       if (crs.wkt) {
         files.push({
-          filename: filename + AUX_EXT,
-          content: getAuxXml(crs.wkt)
+          filename: getAuxFilename(filename),
+          content: formatAuxXml(crs.wkt)
         });
         message('Wrote the CRS of', filename, 'to a', AUX_EXT, 'file, because GeoTIFF has no way to describe this projection. Keep the two files together.');
       } else {
@@ -34167,14 +34244,6 @@ ${svg}
     } catch(e) {
       return null;
     }
-  }
-
-  function getAuxXml(wkt) {
-    return '<PAMDataset>\n  <SRS>' + escapeXml(wkt) + '</SRS>\n</PAMDataset>\n';
-  }
-
-  function escapeXml(str) {
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
   function getOutputFormat(dataset, opts) {
@@ -42820,7 +42889,8 @@ ${svg}
   var dynamicImportModule = Function('id', 'return import(id)');
   var DEFAULT_MAX_IMPORT_PIXELS = 16e6;
 
-  async function importGeoTIFF(input, optsArg) {
+  // aux: contents of the file's .aux.xml sidecar, if it has one
+  async function importGeoTIFF(input, optsArg, aux) {
     var opts = optsArg || {};
     var geotiff = await loadGeoTIFFLib();
     var source = getGeoTIFFSource(input);
@@ -42838,7 +42908,7 @@ ${svg}
         raster: imported.raster
       }]
     };
-    await importGeoTIFFCrs(dataset, sourceImage);
+    await importGeoTIFFCrs(dataset, sourceImage, aux);
     return dataset;
   }
 
@@ -43187,32 +43257,117 @@ ${svg}
   // in its own georeferencing, and only the things that need to know what those
   // coordinates mean (reprojecting, basemaps, measuring) are unavailable. So a
   // CRS that cannot be read is reported and set aside, never raised as an error.
-  async function importGeoTIFFCrs(dataset, image) {
+  //
+  // A projection GeoTIFF cannot describe travels beside the file in a .aux.xml
+  // sidecar, which is read when the file's own geo keys come up empty. The keys
+  // come first, matching how GDAL treats the two: the sidecar supplements a file
+  // that says nothing, rather than overruling one that does.
+  async function importGeoTIFFCrs(dataset, image, aux) {
     var crsInfo = await getGeoTIFFCrsInfo(image);
-    var crsString = crsInfo.crsString;
-    var crs = null;
-    if (crsString) {
-      try {
-        await initProjLibrary({crs: crsString});
-      } catch(e) {
-        // A projection resource that would not load leaves the string to be
-        // parsed with whatever is already known.
-      }
-      crs = tryParseCrsString(crsString);
-    }
-    if (!crs) {
+    var fromFile = await readCrsString(crsInfo.crsString);
+    // The sidecar usually states its CRS in WKT, which has to become a proj4
+    // definition before it can be used like the file's own metadata.
+    var sidecarSrs = fromFile || !aux ? null : parseAuxCrsString(aux.content);
+    var sidecarWkt = auxCrsIsWkt(sidecarSrs) ? sidecarSrs : null;
+    var sidecarString = sidecarWkt ? tryParseWktToProj(sidecarWkt) : sidecarSrs;
+    var fromSidecar = await readCrsString(sidecarString);
+    var found = fromFile || fromSidecar;
+    if (!found) {
       dataset.info = dataset.info || {};
-      warnOnce(getGeoTIFFCrsWarning(crsInfo, crsString ?
-        'Unable to use projection ' + crsString : null));
+      reportMissingCrs(dataset, crsInfo, sidecarString);
       return;
     }
-    setDatasetCrsInfo(dataset, {crs_string: crsString, crs: crs});
+    setDatasetCrsInfo(dataset, {crs_string: found.crsString, crs: found.crs});
+    if (found.assumedDatum) {
+      message('This GeoTIFF describes its projection without naming a datum;',
+        'assuming WGS 84.');
+    }
+    if (fromSidecar) {
+      message('Read the CRS from ' + (aux.filename || 'a ' + AUX_EXT + ' file') +
+        ', because GeoTIFF has no way to describe this projection.');
+      if (sidecarWkt) {
+        // Keep the sidecar's own wording, so that exporting the raster again
+        // writes back what was read rather than a re-derived approximation.
+        dataset.info.wkt1 = sidecarWkt;
+      }
+    }
+  }
+
+  // Returns {crsString, crs}, or null if there is no string or it cannot be used.
+  async function readCrsString(str) {
+    var crs, assumed;
+    if (!str) return null;
+    try {
+      await initProjLibrary({crs: str});
+    } catch(e) {
+      // A projection resource that would not load leaves the string to be
+      // parsed with whatever is already known.
+    }
+    crs = tryParseCrsString(str);
+    if (crs) return {crsString: str, crs: crs};
+    // A projection with no earth to sit on is tried again on a WGS-84 one, the
+    // datum mapshaper assumes for any data that does not name one.
+    assumed = addAssumedDatum(str);
+    crs = assumed ? tryParseCrsString(assumed) : null;
+    return crs ? {crsString: assumed, crs: crs, assumedDatum: true} : null;
+  }
+
+  // GeoTIFF metadata can describe a projection without saying what shape of earth
+  // it applies to: the geo keys carry a transformation and its parameters, and
+  // the datum keys are absent or name something the EPSG database does not have.
+  // Since the geokeys-to-proj4 library ends every definition with +no_defs, proj
+  // will not supply its usual default either, and the whole projection is lost
+  // over a missing ellipsoid. Returns the definition with a WGS-84 datum added,
+  // or null if it already has one (or is not a proj4 definition at all).
+  function addAssumedDatum(str) {
+    if (!/\+proj=/.test(str) || /\+(datum|ellps|a|b|R|nadgrids|init)=/.test(str)) {
+      return null;
+    }
+    return str + ' +datum=WGS84';
+  }
+
+  // What to say about a raster that arrives without a CRS. A file that simply has
+  // no CRS metadata is the ordinary case for an image, and is treated the way a
+  // vector file with no projection metadata is: coordinates in the decimal-degree
+  // range are taken for WGS-84 lat-long when something needs to know, which is
+  // worth saying but not worth warning about. Metadata that mapshaper could not
+  // make sense of is a different matter, and keeps the warning.
+  function reportMissingCrs(dataset, crsInfo, sidecarString) {
+    if (crsInfo.absent && !sidecarString) {
+      if (probablyDecimalDegreeBounds(getDatasetBounds(dataset))) {
+        message('This GeoTIFF has no CRS metadata. Its coordinates are in the',
+          'decimal-degree range, so they are taken for WGS 84 lat-long.');
+      } else {
+        message('This GeoTIFF has no CRS metadata, so what its coordinates refer',
+          'to is unknown, and projecting it or showing it over a basemap are',
+          'unavailable. If you know the CRS, name it with -proj init=<crs>',
+          'crs=<crs>');
+      }
+      return;
+    }
+    warnOnce(getGeoTIFFCrsWarning(crsInfo,
+      getUnusableCrsDetail(crsInfo.crsString, sidecarString)));
+  }
+
+  function getUnusableCrsDetail(fileString, sidecarString) {
+    var tried = [fileString, sidecarString].filter(Boolean);
+    if (!tried.length) return null;
+    return 'Unable to use projection ' + tried.join(' or ');
   }
 
   async function getGeoTIFFCrsInfo(image) {
     var keys = image.getGeoKeys && image.getGeoKeys() || {};
     var code = keys.ProjectedCSTypeGeoKey;
     var customProjection;
+    if (!hasCrsGeoKeys(keys)) {
+      // Asked about a file that says nothing, the geokeys-to-proj4 library
+      // answers "+proj=longlat" rather than nothing, having taken the silence for
+      // a geographic CRS. That is a guess about the coordinates, not something
+      // read out of the file, and mapshaper makes it later and better, from the
+      // coordinate range, in the same way it does for a vector file with no
+      // projection metadata.
+      return {crsString: null, absent: true};
+    }
     if (isGeoTIFFAuthorityCode(code)) {
       return {crsString: 'EPSG:' + code};
     }
@@ -43228,6 +43383,23 @@ ${svg}
       logGeoTIFFCrsWarningDetails(detail, crsInfo && crsInfo.warning);
     }
     return 'The GeoTIFF does not contain usable CRS data';
+  }
+
+  // Keys that say something about the CRS itself, as opposed to how the pixels
+  // are laid out (GTRasterTypeGeoKey) or what the file calls things (the
+  // citation keys).
+  var CRS_GEO_KEYS = [
+    'GTModelTypeGeoKey',
+    'GeographicTypeGeoKey', 'GeogGeodeticDatumGeoKey', 'GeogEllipsoidGeoKey',
+    'GeogPrimeMeridianGeoKey', 'GeogSemiMajorAxisGeoKey',
+    'GeogSemiMinorAxisGeoKey', 'GeogInvFlatteningGeoKey',
+    'ProjectedCSTypeGeoKey', 'ProjectionGeoKey', 'ProjCoordTransGeoKey'
+  ];
+
+  function hasCrsGeoKeys(keys) {
+    return CRS_GEO_KEYS.some(function(name) {
+      return keys[name] !== undefined && keys[name] !== null;
+    });
   }
 
   function isGeoTIFFAuthorityCode(code) {
@@ -44438,6 +44610,14 @@ ${svg}
       data = obj.prj;
       dataset = {layers: [], info: {wkt1: data.content}};
 
+    } else if (obj.aux) {
+      // A sidecar on its own carries nothing but a CRS, which is still worth
+      // reading: it can be the source of a -proj command, and importing the
+      // raster it belongs to picks it up anyway.
+      dataFmt = 'aux';
+      data = obj.aux;
+      dataset = {layers: [], info: getAuxCrsInfo(data.content)};
+
     } else if (obj.kml) {
       dataFmt = 'kml';
       data = obj.kml;
@@ -44483,7 +44663,7 @@ ${svg}
     } else if (obj.geotiff) {
       dataFmt = 'geotiff';
       data = obj.geotiff;
-      dataset = await importGeoTIFF(data, opts);
+      dataset = await importGeoTIFF(data, opts, obj.aux);
     } else if (obj.png || obj.jpeg) {
       dataFmt = obj.png ? 'png' : 'jpeg';
       data = obj[dataFmt];
@@ -44543,6 +44723,14 @@ ${svg}
       }
     }
     return dataset;
+  }
+
+  // What a raster sidecar amounts to on its own: a projection, stated where the
+  // contents of a .prj file would go if it is WKT, as a CRS string otherwise.
+  function getAuxCrsInfo(content) {
+    var srs = parseAuxCrsString(content);
+    if (!srs) return {};
+    return auxCrsIsWkt(srs) ? {wkt1: srs} : {crs_string: srs};
   }
 
   function importDbf(input, opts) {
@@ -45015,6 +45203,8 @@ ${svg}
       readShapefileAuxFiles(path, input, cache);
     } else if (isRasterImageInputType(fileType)) {
       readRasterImageAuxFiles(path, input, cache);
+    } else if (fileType == 'geotiff') {
+      readGeoTIFFAuxFiles(path, input, cache);
     }
     if (fileType == 'shp' && !input.dbf) {
       message(utils.format("[%s] .dbf file is missing - shapes imported without attribute data.", path));
@@ -45139,6 +45329,13 @@ ${svg}
     }
   }
 
+  function readGeoTIFFAuxFiles(path, obj, cache) {
+    var auxPath = getAuxFilename(path);
+    if (cli.isFile(auxPath, cache)) {
+      obj.aux = {filename: auxPath, content: cli.readFile(auxPath, 'utf-8', cache)};
+    }
+  }
+
   function readRasterImageAuxFiles(path, obj, cache) {
     var prjPath = replaceFileExtension(path, 'prj');
     var worldPath = findWorldFile(path, cache);
@@ -45176,10 +45373,14 @@ ${svg}
 
   function removeRasterImageSidecars(files) {
     var imageBases = {};
+    var rasterPaths = {};
     files.forEach(function(file) {
       var type = guessInputFileType(file);
       if (isRasterImageInputType(type)) {
         imageBases[getFileBase(file).toLowerCase()] = true;
+      }
+      if (isRasterImageInputType(type) || type == 'geotiff') {
+        rasterPaths[file.toLowerCase()] = true;
       }
     });
     return files.filter(function(file) {
@@ -45187,6 +45388,11 @@ ${svg}
       var type = guessInputFileType(file);
       var base = getFileBase(file).toLowerCase();
       if ((type == 'prj' || isWorldFileExtension(ext)) && imageBases[base]) {
+        return false;
+      }
+      // A sidecar is read along with the raster it names, so importing it
+      // separately would only add an empty layer.
+      if (type == 'aux' && rasterPaths[getAuxSourceFilename(file).toLowerCase()]) {
         return false;
       }
       return true;
@@ -75691,7 +75897,7 @@ ${svg}
     return name == 'rectangle' || name == 'rectangles' || name == 'filter' && opts.cleanup;
   }
 
-  var version = "0.7.50";
+  var version = "0.7.51";
 
   // Parse command line args into commands and run them
   // Function takes an optional Node-style callback. A Promise is returned if no callback is given.
@@ -77581,6 +77787,7 @@ ${svg}
     JoinTables,
     JsonImport,
     JsonTable,
+    GeoTIFFAux,
     GeoTIFFEncode,
     GeoTIFFGeoKeys,
     KeepShapes,

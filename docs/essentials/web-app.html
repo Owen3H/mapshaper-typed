@@ -120,7 +120,7 @@
 <h2 id="history-undo-and-snapshots">History, undo and snapshots</h2>
 <img class="ui-screenshot" width="237" src="/docs/images/web-app-history-menu.png" alt="The History menu, with an enable undo checkbox, a line reading restore data stored on-disk: 0 KB, and links to clear undo history, view command history and create snapshot"><p>The <strong>History</strong> button in the header covers three things: undo, the command history, and snapshots.</p>
 <h3 id="undo-and-redo">Undo and redo</h3>
-<p>Undo is <strong>off by default</strong>. Tick <strong>enable undo</strong> to turn it on; the setting is remembered between sessions, and applies from that point on rather than retroactively.</p>
+<p>Undo is <strong>on by default</strong>. Clearing <strong>enable undo</strong> turns it off, which is worth doing if you&#39;re working with data large enough that storing the data needed to reverse each step is a burden. The setting is remembered between sessions, and a change applies from that point on rather than retroactively.</p>
 <ul>
 <li><strong>Ctrl+Z</strong> (<strong>⌘Z</strong> on a Mac) undoes and <strong>Shift+Ctrl+Z</strong> (<strong>⇧⌘Z</strong>) redoes. The same buttons appear in a small toolbar at the bottom of the map whenever there&#39;s anything to undo. Keyboard shortcuts are ignored while you&#39;re typing in a text field.</li>
 <li>The first import of a session isn&#39;t undoable, and neither is restoring a snapshot. Both are treated as starting points rather than edits.</li>

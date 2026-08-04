@@ -6876,31 +6876,37 @@
   // instead.
 
 
+  // Undo is on unless it has been turned off. Undoing is what a user expects by
+  // default; the History menu's checkbox exists so that sessions working with
+  // data too large to store restore payloads for can opt out.
+  var APP_UNDO_DEFAULT = true;
+
   // Returns true if the manifest, URL query, gui-installed checker, or
   // localStorage indicates that app-level undo should be active.
   function appUndoIsEnabled(gui) {
     var opt = gui && gui.options && (gui.options.undoCommands || gui.options.appUndo);
     var query = getUndoQueryValue();
+    if (query == 'off') return false;
     if (opt === true || query == 'on' || query == 'commands') return true;
     if (gui && gui.appUndoIsEnabled) return gui.appUndoIsEnabled();
     return appUndoSettingIsOn();
   }
 
-  // True when the undo URL flag forces app undo on regardless of UI settings.
-  // Mirrors the toggle-disable behavior in HistoryMenu.
+  // True when the undo URL flag pins app undo on or off regardless of UI
+  // settings. Mirrors the toggle-disable behavior in HistoryMenu.
   function appUndoForcedByUrl() {
     var query = getUndoQueryValue();
-    return query == 'on' || query == 'commands';
+    return query == 'on' || query == 'commands' || query == 'off';
   }
 
-  // Read the persisted localStorage opt-in. Returns false in non-browser
-  // environments or when storage is blocked.
+  // Read the persisted setting. Only an explicit opt-out turns undo off, so a
+  // first-time session (and one where storage is unreadable) gets the default.
   function appUndoSettingIsOn() {
     try {
-      return !!(typeof window != 'undefined' && window.localStorage &&
-        window.localStorage.getItem('mapshaper.undo') == 'on');
+      if (typeof window == 'undefined' || !window.localStorage) return APP_UNDO_DEFAULT;
+      return window.localStorage.getItem('mapshaper.undo') != 'off';
     } catch(e) {
-      return false;
+      return APP_UNDO_DEFAULT;
     }
   }
 
@@ -8067,6 +8073,15 @@
         });
       }
 
+      // A .aux.xml sidecar is named after the whole raster file
+      // (world.tif.aux.xml), so it joins that file's group rather than one of its
+      // own. Returns null if the raster it names was not loaded with it.
+      function auxSourceGroup(d) {
+        var sourceName = internal.getAuxSourceFilename(d.name).toLowerCase();
+        var source = data.find(f => f.name.toLowerCase() == sourceName);
+        return source ? key(fileBase(source), fileType(source)) : null;
+      }
+
       data.forEach(d => {
         var basename = fileBase(d);
         var type = fileType(d);
@@ -8078,6 +8093,8 @@
         } else if (type == 'dbf') {
           d.filename = d.name;
           d.group = key(basename, 'dbf');
+        } else if (type == 'aux' && auxSourceGroup(d)) {
+          d.group = auxSourceGroup(d);
         } else if ((type == 'png' || type == 'jpeg') || isRasterImagePart(d.name) && hasRasterImage(basename)) {
           d.group = key(basename, type == 'png' || type == 'jpeg' ? type : getRasterImageGroupType(data, basename));
           if (type == 'png' || type == 'jpeg') d.filename = d.name;
@@ -10641,6 +10658,8 @@
     var unsupportedMsg = "Exporting is not supported in this browser";
     var menu = gui.container.findChild('.export-options').on('click', GUI.handleDirectEvent(gui.clearMode));
     var layersArr = [];
+    var menuFormats = null; // formats the format menu was built with
+    var formatPickedByUser = false;
     var toggleBtn = null; // checkbox <input> for toggling layer selection
     var exportBtn = gui.container.findChild('.export-btn').addClass('disabled');
     var ofileName = gui.container.findChild('#ofile-name');
@@ -10709,6 +10728,7 @@
 
     function turnOn() {
       layersArr = initLayerMenu();
+      formatPickedByUser = false;
       // initZipOption();
       initFormatMenu();
       updateExportCheckboxes();
@@ -10890,6 +10910,7 @@
     }
 
     function updateToggleBtn() {
+      refreshFormatMenu(); // the layer selection decides which formats apply
       updateExportCheckboxes(); // checkbox visibility is affected by number of export layers
       if (!toggleBtn) return;
       var state = getSelectionState();
@@ -10912,13 +10933,17 @@
     }
 
     function getDefaultExportFormat() {
+      var layers = getExportFormatLayers();
       var active = model.getActiveLayer();
       var dataset = active.dataset;
       var inputFmt = dataset.info && dataset.info.input_formats &&
           dataset.info.input_formats[0];
-      // SVG stays the default for rasters: it is the only format that also
-      // accepts the vector layers a session usually has alongside them.
-      if (activeLayerHasRaster()) return 'svg';
+      // Rasters and nothing else can only go to GeoTIFF, the one format that
+      // takes their pixels.
+      if (layers.length > 0 && layers.every(hasRaster)) return 'geotiff';
+      // SVG is the default for a selection that mixes rasters with vector layers,
+      // being the only format that accepts both.
+      if (layers.some(hasRaster)) return 'svg';
       return getExportFormats().includes(inputFmt) ? inputFmt : 'geojson';
     }
 
@@ -10926,16 +10951,26 @@
       var formats = ['shapefile', 'json', 'geojson', 'dsv', 'topojson', 'flatgeobuf', 'geopackage', 'geoparquet', 'kml', 'svg', internal.PACKAGE_EXT];
       // GeoTIFF is the one format here that only accepts raster layers, so it is
       // offered only when there is a raster to export.
-      if (activeLayerHasRaster()) formats.push('geotiff');
+      if (getExportFormatLayers().some(hasRaster)) formats.push('geotiff');
       return formats;
     }
 
-    function activeLayerHasRaster() {
+    // The layers the format menu describes: the ones checked for export, falling
+    // back to the active layer when the menu is not up yet or nothing is checked.
+    function getExportFormatLayers() {
+      var selected = layersArr.length ? getSelectedLayerEntries() : [];
       var active = model.getActiveLayer();
-      return !!active.layer && internal.layerHasRaster(active.layer);
+      if (selected.length > 0) {
+        return selected.map(function(o) { return o.layer; });
+      }
+      return active && active.layer ? [active.layer] : [];
     }
 
-    function initFormatMenu() {
+    function hasRaster(lyr) {
+      return internal.layerHasRaster(lyr);
+    }
+
+    function initFormatMenu(preferredFmt) {
       var formats = getExportFormats();
       var items = formats.map(function(fmt) {
         return utils$1.format('<td><label><input type="radio" name="format" value="%s"' +
@@ -10947,11 +10982,37 @@
       }
       table += '</table>';
       menu.findChild('.export-formats').html(table);
-      menu.findChild('.export-formats input[value="' + getDefaultExportFormat() + '"]').node().checked = true;
+      menuFormats = formats;
+      setSelectedFormat(formats.includes(preferredFmt) ? preferredFmt :
+        getDefaultExportFormat());
       // update save-as settings when value changes
       menu.findChildren('input[type="radio"]').forEach(el => {
-        el.on('change', updateExportCheckboxes);
+        el.on('change', onFormatChange);
       });
+    }
+
+    function onFormatChange() {
+      // A format the user picked is theirs to keep, however the layer selection
+      // changes afterwards.
+      formatPickedByUser = true;
+      updateExportCheckboxes();
+    }
+
+    function setSelectedFormat(fmt) {
+      var el = menu.findChild('.export-formats input[value="' + fmt + '"]');
+      if (el) el.node().checked = true;
+    }
+
+    // Which formats apply depends on what is checked for export, so unchecking
+    // the vector layers of a mixed session both offers GeoTIFF and makes it the
+    // default -- unless the user has already chosen a format.
+    function refreshFormatMenu() {
+      var formats = getExportFormats();
+      if (formats.join(',') != (menuFormats || []).join(',')) {
+        initFormatMenu(formatPickedByUser ? getSelectedFormat() : null);
+      } else if (!formatPickedByUser) {
+        setSelectedFormat(getDefaultExportFormat());
+      }
     }
 
 
@@ -12095,6 +12156,7 @@
   }
 
   function isAppUndoEnabled() {
+    if (getUndoQueryValue() == 'off') return false;
     return appUndoForcedByUrl() || appUndoSettingIsOn();
   }
 
@@ -25430,6 +25492,7 @@ GUI and setting the size and crop of SVG output.</p><div><input type="text" clas
     return {
       layerCount: dataset.layers ? dataset.layers.length : 0,
       arcCount: dataset.arcs ? dataset.arcs.size() : 0,
+      crs_string: dataset.info && dataset.info.crs_string || null,
       layers: (dataset.layers || []).map(function(lyr) {
         return {
           name: getLayerName(lyr),
