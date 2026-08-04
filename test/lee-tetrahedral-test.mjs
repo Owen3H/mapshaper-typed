@@ -197,7 +197,7 @@ describe('Lee conformal tetrahedral projections', function() {
   it('avoids remote closure chords in world polygons', async function() {
     this.timeout(15000);
     var input = JSON.parse(fs.readFileSync(
-      'test/data/features/buffer/__world_country_polygon.json',
+      'test/data/features/proj/b_world_countries.json',
       'utf8'
     ));
     for (var densify of ['', ' densify']) {

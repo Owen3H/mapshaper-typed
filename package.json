@@ -101,7 +101,7 @@
     ],
     "check-leaks": true,
     "parallel": true,
-    "jobs": 4
+    "jobs": 6
   },
   "bin": {
     "mapshaper": "bin/mapshaper",

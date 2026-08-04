@@ -1197,11 +1197,10 @@ describe('mapshaper-buffer.js', function () {
     // the entire river. Extending the medial endpoints past the boundary fixes it;
     // here Oregon must expand north into the gap along the western river.
     it('topological buffer grows both banks of a river gap that closes into a shared border (Oregon/Washington)', async function () {
-      var file = 'test/data/features/buffer/__usa_adm1_polygon.json';
+      var file = 'test/data/features/buffer/w_or_wa_states.json';
       var srcFC = JSON.parse(fs.readFileSync(file));
       var orSrc = srcFC.features.find(function(f) { return f.properties.NAME == 'Oregon'; }).geometry;
       var out = await api.applyCommands('-i ' + file +
-        ' -filter "NAME==\'Oregon\' || NAME==\'Washington\'"' +
         ' -buffer 10km topological -o format=geojson buffer.json');
       var bufFC = JSON.parse(out['buffer.json']);
       var orBuf = bufFC.features.find(function(f) { return f.properties.NAME == 'Oregon'; }).geometry;
@@ -1470,55 +1469,10 @@ describe('mapshaper-buffer.js', function () {
         assert.equal(tinyHoles, 0, 'no micro-gap holes between patches and source');
       })
 
-      // Regression for a whole-country coastline as ONE dense multipolygon. Two
-      // things used to break at this scale:
-      //  1. The mouth-gating closing erodes the dilated union by the mouth radius.
-      //     Pre-simplifying (default 1% of the radius) before that inward offset
-      //     self-intersected the ~30k-vertex continental ring, the dissolve kept
-      //     the wrong side, and the ring collapsed -- so (closing - land) yielded
-      //     almost no gap fills. The closing erode now disables pre-simplification.
-      //  2. The coast/bridge classification scanned every source segment per fill
-      //     edge (O(fill edges * source segments)); on 100k+ of each this took
-      //     ~50s. It now uses a segment grid.
-      // Assert real fill happens (a collapsed closing fills only a fraction of
-      // this), the extent is preserved, and no seam slivers form where the coast
-      // pinches to a point.
-      it('fills a large dense single-multipolygon coastline without collapsing or leaving seams', async function () {
-        this.timeout(30000);
-        var file = 'test/data/features/buffer/__usa_polygon.json';
-        var out = await api.applyCommands(
-          '-i ' + file + ' -buffer 4km fill-gaps -dissolve2 -o format=geojson fill.json ' +
-          '-i ' + file + ' -o format=geojson src.json');
-        var fill = getOutputGeometries(out, 'fill.json');
-        var src = getOutputGeometries(out, 'src.json');
-        function netArea(geoms) {
-          var s = 0;
-          geoms.forEach(function(g) {
-            getSignedRingAreas(g).forEach(function(a) { s += a; });
-          });
-          return Math.abs(s);
-        }
-        var srcArea = netArea(src), fillArea = netArea(fill);
-        // Fill must be substantial: the fix adds ~5.3 sq-deg, a collapsed closing
-        // added under ~3. Island suppression only drops true island bridges (a
-        // small landmass forming much of a fill's shore), not deep inlets that
-        // merely graze a mid-channel island, so nearly all of the ~5.6 sq-deg of
-        // genuine gap fill is retained.
-        assert(fillArea - srcArea > 3.3,
-          'expected substantial gap fill (added=' + (fillArea - srcArea).toFixed(2) + ' sq-deg)');
-        assert(fillArea / srcArea < 1.02,
-          'fill should not grossly inflate the area (ratio=' + (fillArea / srcArea).toFixed(3) + ')');
-        // No seam slivers between the source land and the gap fills, even where the
-        // coastline pinches to a coincident vertex. A genuine open lake is orders of
-        // magnitude larger than this (~1e-6 sq-deg ~= 8500 m^2).
-        var tinyHoles = 0;
-        fill.forEach(function(g) {
-          getSignedRingAreas(g).forEach(function(a) {
-            if (a < 0 && Math.abs(a) < 1e-6) tinyHoles++;
-          });
-        });
-        assert.equal(tinyHoles, 0, 'no micro-gap seam holes at coastline pinch points');
-      })
+      // The companion case for a whole-country coastline (the ~20k-vertex
+      // continental ring that used to collapse the mouth-gating closing) lives
+      // in buffer-fill-gaps-coastline-test.mjs, where its several seconds of
+      // runtime don't serialize behind the rest of this file.
 
       // Regression: a large concave stretch of open coast contains many small,
       // shallow sub-concavities. The mouth-gating closing bridges each one whose
