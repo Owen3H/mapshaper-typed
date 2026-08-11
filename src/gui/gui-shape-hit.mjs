@@ -14,7 +14,8 @@ export function getShapeHitTest(layer, ext, interactionMode, featureFilter) {
     test = polygonVertexTest;
   } else if (
       interactionMode == 'vertices' ||
-      interactionMode == 'edit_lines') {
+      interactionMode == 'edit_lines' ||
+      interactionMode == 'snip_lines') {
     test = vertexTest;
   } else if (geoType == 'polyline') {
     test = polylineTest;

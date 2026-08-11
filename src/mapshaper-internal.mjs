@@ -71,6 +71,7 @@ Object.assign(internal, {
 import * as AnchorPoints from './points/mapshaper-anchor-points';
 import * as ArcClassifier from './topology/mapshaper-arc-classifier';
 import * as ArcDissolve from './paths/mapshaper-arc-dissolve';
+import * as ArcSplit from './paths/mapshaper-arc-split';
 import * as ArcUtils from './paths/mapshaper-arc-utils';
 import * as Bbox2Clipping from './clipping/mapshaper-bbox2-clipping';
 import * as BinArray from './utils/mapshaper-binarray';
@@ -212,6 +213,7 @@ Object.assign(internal,
   AnchorPoints,
   ArcClassifier,
   ArcDissolve,
+  ArcSplit,
   ArcUtils,
   Bbox2Clipping,
   BinArray,

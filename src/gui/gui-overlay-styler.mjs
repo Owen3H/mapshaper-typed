@@ -5,6 +5,7 @@ var selectionFill = "rgba(237, 214, 0, 0.12)",
     // hoverFill = "rgba(255, 120, 255, 0.12)",
     hoverFill = "rgba(0, 0, 0, 0.08)",
     grey = "#888",
+    orange = "#f28100",
     violet = "#cc6acc",
     black = 'black',
     violetFill = "rgba(249, 120, 249, 0.25)",
@@ -236,18 +237,28 @@ function getVertexStyle(o) {
 
 // style for vertex edit mode
 function getLineEditingStyle(o) {
+  var isVertex = o.hit_type == 'vertex' || o.hit_type == 'disabled';
   return {
     ids: o.ids,
     overlay: true,
     strokeColor: black,
     strokeWidth: 1.2,
     vertices: true,
-    vertex_overlay_color: o.hit_type == 'vertex' ? violet : black,
-    vertex_overlay_scale: o.hit_type == 'vertex' ? 2.5 : 2,
+    vertex_overlay_color: getVertexOverlayColor(o.hit_type),
+    vertex_overlay_scale: isVertex ? 2.5 : 2,
     vertex_overlay: o.hit_coordinates || null,
+    pending_snip: o.snip_coordinates || null,
+    pending_snip_color: orange,
     selected_points: o.selected_points || null,
     fillColor: null
   };
+}
+
+function getVertexOverlayColor(hitType) {
+  if (hitType == 'vertex') return violet;
+  // a muted dot marks a vertex that the current tool can not act on
+  if (hitType == 'disabled') return grey;
+  return black;
 }
 
 function getSelectedFeatureStyle(lyr, o, opts) {

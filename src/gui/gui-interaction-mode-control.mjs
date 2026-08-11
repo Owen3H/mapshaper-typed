@@ -8,7 +8,7 @@ export function InteractionMode(gui) {
     empty: ['edit_polygons', 'edit_lines', 'edit_points', 'box', 'ruler'],
     polygons: ['info', 'selection', 'box', 'polygon_style', 'edit_polygons', 'ruler'],
     rectangles: ['info', 'selection', 'box', 'polygon_style', 'rectangles', 'edit_polygons', 'ruler'],
-    lines: ['info', 'selection', 'box', 'line_style', 'edit_lines', 'ruler'], // 'snip_lines'
+    lines: ['info', 'selection', 'box', 'line_style', 'edit_lines', 'snip_lines', 'ruler'],
     table: ['info', 'selection'],
     raster: ['ruler', 'box'],
     labels: ['info', 'selection', 'box', 'point_style', 'labels', 'edit_points', 'ruler'],
@@ -112,7 +112,7 @@ export function InteractionMode(gui) {
   };
 
   this.modeSupportsUndo = function(mode) {
-    return ['data', 'label_style', 'point_style', 'line_style', 'polygon_style', 'labels', 'edit_points', 'edit_lines', 'edit_polygons', 'vertices', 'rectangles'].includes(mode);
+    return ['data', 'label_style', 'point_style', 'line_style', 'polygon_style', 'labels', 'edit_points', 'edit_lines', 'edit_polygons', 'snip_lines', 'vertices', 'rectangles'].includes(mode);
   };
 
   this.getMode = getInteractionMode;

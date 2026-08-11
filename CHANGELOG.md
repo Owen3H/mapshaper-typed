@@ -1,3 +1,6 @@
+v0.7.52
+* Added a "snip" tool to the web UI for interactively dividing polyline features.
+
 v0.7.51
 * Undo is now on by default in the web UI. Untick **enable undo** in the History menu to turn it off, which you may want to do when working with very large datasets.
 * Mapshaper now correctly re-imports the `.aux.xml` sidecar it writes when saving a GeoTIFF in a projection that standard GeoTIFF metadata cannot describe.

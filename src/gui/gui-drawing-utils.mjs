@@ -92,6 +92,44 @@ export function appendNewPath(lyr, points) {
 }
 
 
+// Divide an arc at one or two cut locations, appending the pieces to the end of
+// the arc collection (the original arc is left in place).
+// cuts: cut descriptors ordered from the start of the arc, each containing an
+//   arc-relative vertex offset plus source and display coordinates of the cut
+//   location (both null when cutting at an existing vertex).
+// Returns the ids of the new arcs.
+export function splitArc(lyr, arcId, cuts) {
+  var ids = internal.splitArcAtCuts(lyr.gui.source.dataset.arcs, arcId,
+    cuts.map(function(cut) {
+      return {offset: cut.offset, point: cut.point || null};
+    }));
+  if (isProjectedLayer(lyr)) {
+    internal.splitArcAtCuts(lyr.gui.displayArcs, arcId,
+      cuts.map(function(cut) {
+        return {offset: cut.offset, point: cut.displayPoint || null};
+      }));
+  }
+  return ids;
+}
+
+export function deleteLastArcs(lyr, count) {
+  for (var i=0; i<count; i++) {
+    internal.deleteLastArc(lyr.gui.source.dataset.arcs);
+    if (isProjectedLayer(lyr)) {
+      internal.deleteLastArc(lyr.gui.displayArcs);
+    }
+  }
+}
+
+// Add a path feature to the end of a layer.
+// shp: an array of parts; rec: an attribute record, or null for an empty one
+export function appendFeature(lyr, shp, rec) {
+  lyr.shapes.push(shp);
+  if (lyr.data) {
+    lyr.data.getRecords().push(rec || getEmptyDataRecord(lyr.data));
+  }
+}
+
 export function deleteLastPath(lyr) {
   var arcId = lyr.gui.displayArcs.size() - 1;
   if (lyr.data) {

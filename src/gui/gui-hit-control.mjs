@@ -190,6 +190,22 @@ export function HitControl(gui, ext, mouse) {
     triggerChangeEvent();
   };
 
+  // Mark the location of a snip that has been chosen but not yet applied
+  // (the first of the two cuts needed to divide a ring).
+  self.setPendingSnip = function(p) {
+    var p2 = storedData.snip_coordinates;
+    if (!active || !p) return;
+    if (p2 && p2[0] == p[0] && p2[1] == p[1]) return;
+    storedData.snip_coordinates = p;
+    triggerChangeEvent();
+  };
+
+  self.clearPendingSnip = function() {
+    if (!storedData.snip_coordinates) return;
+    delete storedData.snip_coordinates;
+    triggerChangeEvent();
+  };
+
   self.clearSelection = function() {
     updateSelectionState(null);
   };
@@ -442,6 +458,11 @@ export function HitControl(gui, ext, mouse) {
         (type == 'hover' || type == 'dblclick')) {
       return true; // special case -- using hover for line drawing animation
     }
+    if (mode == 'snip_lines' && (type == 'hover' || type == 'click')) {
+      // the snip tool tracks vertices under the pointer, so it needs hover
+      // events as soon as a feature is hit, not one event later
+      return true;
+    }
 
     // ignore pointer events when no features are being hit
     // (don't block pan and other navigation when events aren't being used for editing)
@@ -459,7 +480,8 @@ export function HitControl(gui, ext, mouse) {
   }
 
   function possiblyStopPropagation(e) {
-    if (interactionMode() == 'edit_lines' || interactionMode() == 'edit_polygons') {
+    var mode = interactionMode();
+    if (mode == 'edit_lines' || mode == 'edit_polygons' || mode == 'snip_lines') {
       // handled conditionally in the control
       return;
     }

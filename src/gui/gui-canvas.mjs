@@ -246,6 +246,15 @@ export function DisplayCanvas() {
       _ctx.fill();
       _ctx.closePath();
     }
+
+    if (style.pending_snip) {
+      _ctx.beginPath();
+      _ctx.fillStyle = style.pending_snip_color || 'black';
+      p = style.pending_snip;
+      drawCircle(p[0] * t.mx + t.bx, p[1] * t.my + t.by, radius * 2.5, _ctx);
+      _ctx.fill();
+      _ctx.closePath();
+    }
   };
 
   // Optimized to draw paths in same-style batches (faster Canvas drawing)

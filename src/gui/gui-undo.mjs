@@ -12,6 +12,7 @@ import {
   deleteFeature,
   insertFeature
 } from './gui-drawing-utils';
+import { snipPath, undoSnip } from './gui-snipping-utils';
 
 var copyRecord = internal.copyRecord;
 
@@ -179,6 +180,22 @@ export function Undo(gui) {
     };
     var undo = function() {
       insertVertex(e.data.target, e.vertex_id, p);
+    };
+    addHistoryState(undo, redo);
+  });
+
+  gui.on('snip', function(e) {
+    var target = e.target;
+    var result = e.result;
+    var undo = function() {
+      undoSnip(target, result);
+      gui.model.updated({arc_count: true});
+    };
+    var redo = function() {
+      // re-snipping restores the same arc ids, because the arcs added by the
+      // previous snip were removed from the end of the collection
+      result = snipPath(target, result.fid, result.partId, result.cuts);
+      gui.model.updated({arc_count: true});
     };
     addHistoryState(undo, redo);
   });
