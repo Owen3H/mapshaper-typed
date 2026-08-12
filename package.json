@@ -32,6 +32,7 @@
     "postpublish": "./release_web_ui; ./release_github_version",
     "dev": "rollup --config --watch",
     "test:browser": "playwright test --fully-parallel --workers=6",
+    "install:browsers": "./install-playwright-browsers",
     "benchmark:raster": "MAPSHAPER_RUN_BENCHMARKS=1 playwright test browser-tests/raster-resampling-benchmark.spec.mjs --project=chromium --workers=1"
   },
   "main": "./mapshaper.js",
