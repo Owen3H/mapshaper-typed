@@ -1,3 +1,5 @@
+import { snipPath } from './gui-snipping-utils';
+
 export function createUndoTestApi(gui) {
   return {
     getState: function() {
@@ -49,6 +51,23 @@ export function createUndoTestApi(gui) {
       appendNewPointForTest(target.layer, p);
       gui.dispatchEvent('point_add', {target: target.layer, p: p});
       gui.dispatchEvent('map-needs-refresh');
+    },
+    // Perform the same edit as the snip tool, without simulating the pointer
+    // events that choose the cut locations.
+    snipActiveLayerPath: function(fid, partId, cuts) {
+      var target = gui.model.getActiveLayer();
+      var lyr = target && target.layer;
+      var result;
+      if (!lyr || lyr.geometry_type != 'polyline') {
+        throw new Error('Active layer is not a polyline layer');
+      }
+      result = snipPath(lyr, fid, partId, cuts);
+      if (!result) {
+        throw new Error('Snip was rejected');
+      }
+      gui.dispatchEvent('snip', {target: lyr, result: result});
+      gui.model.updated({arc_count: true});
+      return result;
     }
   };
 }

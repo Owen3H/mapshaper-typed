@@ -185,8 +185,10 @@ export function Undo(gui) {
   });
 
   gui.on('snip', function(e) {
-    var target = e.target;
-    var result = e.result;
+    // read from e.data: the event dispatcher sets e.target to itself, so a
+    // 'target' property in the payload never reaches the handler
+    var target = e.data.target;
+    var result = e.data.result;
     var undo = function() {
       undoSnip(target, result);
       gui.model.updated({arc_count: true});

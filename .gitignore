@@ -47,3 +47,4 @@ buffer-inspect/
 www/newsletter.html
 repro-clean-outline-winding/
 tmp/
+install-playwright-browsers
