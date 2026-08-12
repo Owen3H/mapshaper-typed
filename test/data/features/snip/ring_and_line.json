@@ -1,0 +1,8 @@
+{"type":"FeatureCollection","features":[
+  {"type":"Feature","properties":{"name":"ring"},"geometry":{"type":"LineString","coordinates":
+    [[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]
+  }},
+  {"type":"Feature","properties":{"name":"open"},"geometry":{"type":"LineString","coordinates":
+    [[10, 0], [11, 0], [14, 0]]
+  }}
+]}
