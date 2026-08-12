@@ -7,6 +7,14 @@ description: A curated log of recently added user-visible features in Mapshaper,
 
 This is a curated list of recently added features. For the full list of changes, including bug fixes and internal work, see the [changelog](https://github.com/mbloch/mapshaper/blob/master/CHANGELOG.md) on GitHub.
 
+## August 2026
+
+<div class="whats-new-entry">
+
+**Snip tool.** The web UI has a snip mode for cutting polyline features apart. Hover over a line to see its vertices, then click a vertex or a point along a segment to divide it in two. The shorter piece becomes a new feature, so on a multipart feature the rest stays connected. Rings take two clicks, since one cut leaves them in one piece.
+
+</div>
+
 ## July 2026
 
 <div class="whats-new-entry">

@@ -1972,8 +1972,13 @@ div.basemap-style-btn.active {
 
 .map-layers.add-points,
 .map-layers.draw-tool,
+.map-layers.snip-tool,
 .map-layers.ruler-tool {
 	cursor: crosshair;
+}
+
+.map-layers.snip-tool.no-snip {
+	cursor: default;
 }
 
 .map-layers.ruler-dragging {

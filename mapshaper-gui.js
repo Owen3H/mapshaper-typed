@@ -8933,6 +8933,44 @@
   }
 
 
+  // Divide an arc at one or two cut locations, appending the pieces to the end of
+  // the arc collection (the original arc is left in place).
+  // cuts: cut descriptors ordered from the start of the arc, each containing an
+  //   arc-relative vertex offset plus source and display coordinates of the cut
+  //   location (both null when cutting at an existing vertex).
+  // Returns the ids of the new arcs.
+  function splitArc(lyr, arcId, cuts) {
+    var ids = internal.splitArcAtCuts(lyr.gui.source.dataset.arcs, arcId,
+      cuts.map(function(cut) {
+        return {offset: cut.offset, point: cut.point || null};
+      }));
+    if (isProjectedLayer(lyr)) {
+      internal.splitArcAtCuts(lyr.gui.displayArcs, arcId,
+        cuts.map(function(cut) {
+          return {offset: cut.offset, point: cut.displayPoint || null};
+        }));
+    }
+    return ids;
+  }
+
+  function deleteLastArcs(lyr, count) {
+    for (var i=0; i<count; i++) {
+      internal.deleteLastArc(lyr.gui.source.dataset.arcs);
+      if (isProjectedLayer(lyr)) {
+        internal.deleteLastArc(lyr.gui.displayArcs);
+      }
+    }
+  }
+
+  // Add a path feature to the end of a layer.
+  // shp: an array of parts; rec: an attribute record, or null for an empty one
+  function appendFeature(lyr, shp, rec) {
+    lyr.shapes.push(shp);
+    if (lyr.data) {
+      lyr.data.getRecords().push(rec || getEmptyDataRecord(lyr.data));
+    }
+  }
+
   function deleteLastPath(lyr) {
     var arcId = lyr.gui.displayArcs.size() - 1;
     if (lyr.data) {
@@ -12523,6 +12561,60 @@
     }
   }
 
+  // Divide one path of one feature at one location (open path) or two locations
+  // (ring). See internal.planPathDivision() for the cut format.
+  //
+  // The shorter of the two resulting paths is split off into a new feature at the
+  // end of the layer, with a copy of the original feature's attributes; the
+  // longer one stays in place. For a multipart feature this leaves the longer
+  // path connected to the rest of the feature.
+  //
+  // Returns a descriptor for undoing the edit, or null if the cuts are degenerate.
+  //
+  function snipPath(lyr, fid, partId, cuts) {
+    var arcs = lyr.gui.source.dataset.arcs;
+    var shp = lyr.shapes[fid];
+    var path = shp[partId];
+    var closed = geom.pathIsClosed(path, arcs);
+    var prevShape = shp.map(function(part) { return part.concat(); });
+    var arcCount = arcs.size();
+    var plan = internal.planPathDivision(path, cuts, function(arcId) {
+      return arcs.getVertexData().nn[arcId];
+    }, arcCount, closed);
+    var newShape, keep, remove, rec;
+    if (!plan) return null;
+    plan.splits.forEach(function(split) {
+      splitArc(lyr, split.arcId, split.cuts);
+    });
+    if (internal.getPlanarPathLength(plan.a, arcs) >=
+        internal.getPlanarPathLength(plan.b, arcs)) {
+      keep = plan.a;
+      remove = plan.b;
+    } else {
+      keep = plan.b;
+      remove = plan.a;
+    }
+    newShape = shp.concat();
+    newShape[partId] = keep;
+    lyr.shapes[fid] = newShape;
+    rec = lyr.data ? internal.copyRecord(lyr.data.getRecordAt(fid)) : null;
+    appendFeature(lyr, [remove], rec);
+    return {
+      fid: fid,
+      partId: partId,
+      cuts: cuts,
+      prevShape: prevShape,
+      newFeatureId: lyr.shapes.length - 1,
+      appendedArcCount: arcs.size() - arcCount
+    };
+  }
+
+  function undoSnip(lyr, result) {
+    deleteFeature(lyr, result.newFeatureId);
+    lyr.shapes[result.fid] = result.prevShape;
+    deleteLastArcs(lyr, result.appendedArcCount);
+  }
+
   var copyRecord = internal.copyRecord;
 
   function isUndoEvt(e) {
@@ -12689,6 +12781,22 @@
       };
       var undo = function() {
         insertVertex$1(e.data.target, e.vertex_id, p);
+      };
+      addHistoryState(undo, redo);
+    });
+
+    gui.on('snip', function(e) {
+      var target = e.target;
+      var result = e.result;
+      var undo = function() {
+        undoSnip(target, result);
+        gui.model.updated({arc_count: true});
+      };
+      var redo = function() {
+        // re-snipping restores the same arc ids, because the arcs added by the
+        // previous snip were removed from the end of the collection
+        result = snipPath(target, result.fid, result.partId, result.cuts);
+        gui.model.updated({arc_count: true});
       };
       addHistoryState(undo, redo);
     });
@@ -13174,7 +13282,7 @@
       empty: ['edit_polygons', 'edit_lines', 'edit_points', 'box', 'ruler'],
       polygons: ['info', 'selection', 'box', 'polygon_style', 'edit_polygons', 'ruler'],
       rectangles: ['info', 'selection', 'box', 'polygon_style', 'rectangles', 'edit_polygons', 'ruler'],
-      lines: ['info', 'selection', 'box', 'line_style', 'edit_lines', 'ruler'], // 'snip_lines'
+      lines: ['info', 'selection', 'box', 'line_style', 'edit_lines', 'snip_lines', 'ruler'],
       table: ['info', 'selection'],
       raster: ['ruler', 'box'],
       labels: ['info', 'selection', 'box', 'point_style', 'labels', 'edit_points', 'ruler'],
@@ -13278,7 +13386,7 @@
     };
 
     this.modeSupportsUndo = function(mode) {
-      return ['data', 'label_style', 'point_style', 'line_style', 'polygon_style', 'labels', 'edit_points', 'edit_lines', 'edit_polygons', 'vertices', 'rectangles'].includes(mode);
+      return ['data', 'label_style', 'point_style', 'line_style', 'polygon_style', 'labels', 'edit_points', 'edit_lines', 'edit_polygons', 'snip_lines', 'vertices', 'rectangles'].includes(mode);
     };
 
     this.getMode = getInteractionMode;
@@ -16807,7 +16915,8 @@
       test = polygonVertexTest;
     } else if (
         interactionMode == 'vertices' ||
-        interactionMode == 'edit_lines') {
+        interactionMode == 'edit_lines' ||
+        interactionMode == 'snip_lines') {
       test = vertexTest;
     } else if (geoType == 'polyline') {
       test = polylineTest;
@@ -17332,6 +17441,22 @@
       triggerChangeEvent();
     };
 
+    // Mark the location of a snip that has been chosen but not yet applied
+    // (the first of the two cuts needed to divide a ring).
+    self.setPendingSnip = function(p) {
+      var p2 = storedData.snip_coordinates;
+      if (!active || !p) return;
+      if (p2 && p2[0] == p[0] && p2[1] == p[1]) return;
+      storedData.snip_coordinates = p;
+      triggerChangeEvent();
+    };
+
+    self.clearPendingSnip = function() {
+      if (!storedData.snip_coordinates) return;
+      delete storedData.snip_coordinates;
+      triggerChangeEvent();
+    };
+
     self.clearSelection = function() {
       updateSelectionState(null);
     };
@@ -17584,6 +17709,11 @@
           (type == 'hover' || type == 'dblclick')) {
         return true; // special case -- using hover for line drawing animation
       }
+      if (mode == 'snip_lines' && (type == 'hover' || type == 'click')) {
+        // the snip tool tracks vertices under the pointer, so it needs hover
+        // events as soon as a feature is hit, not one event later
+        return true;
+      }
 
       // ignore pointer events when no features are being hit
       // (don't block pan and other navigation when events aren't being used for editing)
@@ -17601,7 +17731,8 @@
     }
 
     function possiblyStopPropagation(e) {
-      if (interactionMode() == 'edit_lines' || interactionMode() == 'edit_polygons') {
+      var mode = interactionMode();
+      if (mode == 'edit_lines' || mode == 'edit_polygons' || mode == 'snip_lines') {
         // handled conditionally in the control
         return;
       }
@@ -19189,6 +19320,7 @@
       // hoverFill = "rgba(255, 120, 255, 0.12)",
       hoverFill = "rgba(0, 0, 0, 0.08)",
       grey = "#888",
+      orange = "#f28100",
       violet = "#cc6acc",
       black = 'black',
       violetFill = "rgba(249, 120, 249, 0.25)",
@@ -19420,18 +19552,28 @@
 
   // style for vertex edit mode
   function getLineEditingStyle(o) {
+    var isVertex = o.hit_type == 'vertex' || o.hit_type == 'disabled';
     return {
       ids: o.ids,
       overlay: true,
       strokeColor: black,
       strokeWidth: 1.2,
       vertices: true,
-      vertex_overlay_color: o.hit_type == 'vertex' ? violet : black,
-      vertex_overlay_scale: o.hit_type == 'vertex' ? 2.5 : 2,
+      vertex_overlay_color: getVertexOverlayColor(o.hit_type),
+      vertex_overlay_scale: isVertex ? 2.5 : 2,
       vertex_overlay: o.hit_coordinates || null,
+      pending_snip: o.snip_coordinates || null,
+      pending_snip_color: orange,
       selected_points: o.selected_points || null,
       fillColor: null
     };
+  }
+
+  function getVertexOverlayColor(hitType) {
+    if (hitType == 'vertex') return violet;
+    // a muted dot marks a vertex that the current tool can not act on
+    if (hitType == 'disabled') return grey;
+    return black;
   }
 
   function getSelectedFeatureStyle(lyr, o, opts) {
@@ -20480,147 +20622,275 @@
     }
   }
 
-  function snipLineAtVertex(lyr, fid, vid) {
-    // find the feature part and arc containing the vertex
-    // divide the one feature into two features
-    // divide the arc into two new arcs
-    var arc1, arc2;
-    // divide the feature into two parts
-  }
-
-  function mergeLinesAtVertex(lyr) {
-
-  }
-
-  // TODO: support snipping rings (by snipping in two places)
-
-
-  // pixel distance threshold for hovering near a vertex or segment midpoint
+  // pixel distance threshold for hovering near a vertex or a segment
   var HOVER_THRESHOLD = 10;
 
   function initSnipTool(gui, ext, hit) {
-    var _active = true;
-    var hoverVertexInfo;
-    var prevHoverEvent;
+    var hoverInfo = null;
+    var pendingCut = null; // first of the two cuts needed to divide a ring
+    var sessionCount = 0;
+    var alert;
+
+    function active() {
+      return gui.interaction.getMode() == 'snip_lines' && !!hit.getHitTarget();
+    }
 
     gui.on('interaction_mode_change', function(e) {
-      if (active()) {
+      if (e.mode == 'snip_lines') {
+        turnOn();
+      } else {
         turnOff();
       }
-      // updateCursor();
+      updateCursor();
     }, null, 10); // higher priority than hit control, so turnOff() has correct hit target
 
-
-    // hover event highlights the nearest point in close proximity to the pointer
-    // ... or the closest point along the segment (for adding a new vertex)
-    hit.on('hover', function(e) {
-      if (!active()) return;
-
-      // highlight nearby snappable vertex (the closest vertex on a nearby line,
-      //   or the first vertex of the current drawing path if not near a line)
-      hoverVertexInfo = e.id >= 0 && findDraggableVertices(e) ||
-          e.id >= 0 && findInterpolatedPoint(e);
-      if (hoverVertexInfo) {
-        // hovering near a vertex: highlight the vertex
-        hit.setHoverVertex(hoverVertexInfo.displayPoint, hoverVertexInfo.type);
-      } else {
-        clearHoverVertex();
-      }
-      // updateCursor();
-      prevHoverEvent = e;
-    }, null, 100);
-
-    hit.on('click', function(e) {
-      if (!active() || !hoverVertexInfo) return;
-      var target = hit.getHitTarget();
-      if (vertexIsEndpoint(hoverVertexInfo, target)) {
-        // TODO: don't allow hovering on endpoints
-        return;
-      }
-
-      if (hoverVertexInfo.type == 'interpolated') {
-        insertVertex$1(target, hoverVertexInfo.i, hoverVertexInfo.point);
-        hoverVertexInfo.ids = [hoverVertexInfo.i];
-      }
-
-      snipLineAtVertex(target, e.id, hoverVertexInfo.ids[0]);
-
-      hit.setHoverVertex(hoverVertexInfo.displayPoint, hoverVertexInfo.type);
-
+    gui.on('undo_redo_pre', function() {
+      clearPendingCut();
+      hoverInfo = null;
     });
 
-    // return data on the nearest vertex (or identical vertices) to the pointer
-    // (if within a distance threshold)
-    //
-    function findDraggableVertices(e) {
-      var target = hit.getHitTarget();
-      var shp = target.shapes[e.id];
-      var p = ext.pixCoordsToMapCoords(e.x, e.y);
-      var ids = internal.findNearestVertices(p, shp, target.gui.displayArcs);
-      var p2 = target.gui.displayArcs.getVertex2(ids[0]);
-      var dist = geom.distance2D(p[0], p[1], p2[0], p2[1]);
-      var pixelDist = dist / ext.getPixelSize();
-      if (pixelDist > HOVER_THRESHOLD) {
-        return null;
+    // A pending cut describes a location in the target layer's current geometry,
+    // and choosing one does not change the model -- so any model update means
+    // something else has happened and the cut is stale.
+    gui.model.on('update', function() {
+      clearPendingCut();
+      hoverInfo = null;
+    });
+
+    function turnOn() {
+      hoverInfo = null;
+      if (sessionCount === 0) {
+        showInstructions();
       }
-      var point = getVertexCoords(target, ids[0]); // data coordinates
-      var displayPoint = target.gui.displayArcs.getVertex2(ids[0]);
-      return {target, ids, point, displayPoint, type: 'vertex'};
+      sessionCount++;
     }
 
-    function findInterpolatedPoint(e) {
-      var target = hit.getHitTarget();
-      //// vertex insertion not supported with simplification
-      // if (!target.arcs.isFlat()) return null;
-      var p = ext.pixCoordsToMapCoords(e.x, e.y);
-      var minDist = Infinity;
-      var shp = target.shapes[e.id];
-      var closest;
-      internal.forEachSegmentInShape(shp, target.gui.displayArcs, function(i, j, xx, yy) {
-        var x1 = xx[i],
-            y1 = yy[i],
-            x2 = xx[j],
-            y2 = yy[j],
-            p2 = internal.findClosestPointOnSeg(p[0], p[1], x1, y1, x2, y2, 0),
-            dist = geom.distance2D(p2[0], p2[1], p[0], p[1]);
-        if (dist < minDist) {
-          minDist = dist;
-          closest = {
-            i: (i < j ? i : j) + 1, // insertion vertex id
-            displayPoint: p2,
-            distance: dist
-          };
-        }
-      });
-
-      if (closest.distance / ext.getPixelSize() > HOVER_THRESHOLD) {
-        return null;
-      }
-      closest.point = translateDisplayPoint(target, closest.displayPoint);
-      closest.type = 'interpolated';
-      closest.target = target;
-      return closest;
+    function turnOff() {
+      clearPendingCut();
+      clearHoverVertex();
+      hideInstructions();
     }
 
-    function vertexIsEndpoint(info, target) {
-      var vId = info.ids[0];
-      return internal.vertexIsArcStart(vId, target.gui.displayArcs) ||
-        internal.vertexIsArcEnd(vId, target.gui.displayArcs);
+    function showInstructions() {
+      var msg = 'Instructions: click a line to snip it apart. Snipping a ring ' +
+        'takes two clicks -- the ring divides at the second one.';
+      alert = showPopupAlert(msg, null, {non_blocking: true, max_width: '350px'});
+    }
+
+    function hideInstructions() {
+      if (!alert) return;
+      alert.close('fade');
+      alert = null;
     }
 
     function clearHoverVertex() {
       hit.clearHoverVertex();
-      hoverVertexInfo = null;
+      hoverInfo = null;
     }
 
-    function active() {
-      return _active && gui.interaction.getMode() == 'snip_lines';
+    function clearPendingCut() {
+      if (!pendingCut) return;
+      pendingCut = null;
+      hit.clearPendingSnip();
     }
 
-    function turnOff() {
-
+    function setPendingCut(info) {
+      pendingCut = info;
+      hit.setPendingSnip(info.markerPoint);
     }
 
+    // The pending cut is described in terms of the target layer's current arcs
+    // and feature ids, so it has to be discarded if either could have changed.
+    function pendingCutIsValid() {
+      return !!pendingCut && pendingCut.target === hit.getHitTarget();
+    }
+
+    hit.on('hover', function(e) {
+      if (!active()) return;
+      if (pendingCut && !pendingCutIsValid()) {
+        clearPendingCut();
+      }
+      hoverInfo = e.id >= 0 ? findSnipTarget(e) : null;
+      if (hoverInfo) {
+        hit.setHoverVertex(hoverInfo.markerPoint,
+          hoverInfo.disabled ? 'disabled' : hoverInfo.type);
+      } else {
+        hit.clearHoverVertex();
+      }
+      if (pendingCut) {
+        hit.setPendingSnip(pendingCut.markerPoint);
+      }
+      updateCursor();
+    }, null, 100);
+
+    hit.on('click', function(e) {
+      var info = hoverInfo;
+      var cuts;
+      if (!active() || !info || info.disabled) return;
+      // a snip invalidates the hover data (feature ids and arcs both change), so
+      // clear it -- this also makes the second click of a double-click a no-op
+      hoverInfo = null;
+      if (!info.ring) {
+        clearPendingCut();
+        snip(info, [info.cut]);
+        return;
+      }
+      if (!pendingCutIsValid() || pendingCut.fid !== info.fid ||
+          pendingCut.partId !== info.partId) {
+        // first cut on this ring: remember it, don't change any geometry
+        setPendingCut(info);
+        return;
+      }
+      if (cutsAreAdjacent(pendingCut, info)) {
+        clearPendingCut(); // clicking the pending cut again cancels it
+        return;
+      }
+      cuts = [pendingCut.cut, info.cut];
+      clearPendingCut();
+      snip(info, cuts);
+    });
+
+    gui.keyboard.on('keydown', function(e) {
+      if (!active() || !pendingCut || e.keyName != 'esc') return;
+      e.stopPropagation();
+      e.originalEvent.preventDefault();
+      clearPendingCut();
+    }, null, 10);
+
+    function snip(info, cuts) {
+      var target = hit.getHitTarget();
+      var result = snipPath(target, info.fid, info.partId, cuts);
+      if (!result) return;
+      gui.dispatchEvent('snip', {target: target, result: result});
+      hit.clearHoverVertex();
+      hideInstructions();
+      gui.model.updated({arc_count: true}); // update display arcs and redraw
+    }
+
+    // Test if two cuts are close enough on screen to be treated as the same place
+    function cutsAreAdjacent(a, b) {
+      var dist = geom.distance2D(a.markerPoint[0], a.markerPoint[1],
+        b.markerPoint[0], b.markerPoint[1]);
+      return dist / ext.getPixelSize() < HOVER_THRESHOLD;
+    }
+
+    function updateCursor() {
+      var el = gui.container.findChild('.map-layers');
+      el.classed('snip-tool', active());
+      el.classed('no-snip', !!(hoverInfo && hoverInfo.disabled));
+    }
+
+    // Find the snip location under the pointer: the nearest vertex within the
+    // hover threshold, or failing that the nearest point on a segment.
+    // Returns null if the pointer is not close enough to the hit feature.
+    function findSnipTarget(e) {
+      var target = hit.getHitTarget();
+      var shp = target && target.shapes[e.id];
+      var arcs = target && target.gui.displayArcs;
+      var bestVertex = null;
+      var bestSegment = null;
+      var p, threshold, data;
+      if (!shp || !arcs) return null;
+      p = ext.pixCoordsToMapCoords(e.x, e.y);
+      threshold = HOVER_THRESHOLD * ext.getPixelSize();
+      data = arcs.getVertexData();
+
+      shp.forEach(function(path, partId) {
+        path.forEach(function(arcId, seq) {
+          var absId = internal.absArcId(arcId);
+          var fwd = arcId >= 0;
+          var start = data.ii[absId];
+          var n = data.nn[absId];
+          var i, v1, v2, dist, p2;
+          if (arcIsOutOfRange(data.bb, absId, p, threshold)) return;
+          for (i=0; i<n; i++) {
+            v1 = fwd ? start + i : start + n - 1 - i;
+            dist = geom.distance2D(p[0], p[1], data.xx[v1], data.yy[v1]);
+            if (dist < threshold && (!bestVertex || dist < bestVertex.dist)) {
+              bestVertex = {partId: partId, seq: seq, offset: i, dist: dist, vid: v1};
+            }
+            if (i === n - 1) break;
+            v2 = fwd ? v1 + 1 : v1 - 1;
+            p2 = internal.findClosestPointOnSeg(p[0], p[1], data.xx[v1],
+              data.yy[v1], data.xx[v2], data.yy[v2], 0);
+            dist = geom.distance2D(p[0], p[1], p2[0], p2[1]);
+            if (dist < threshold && (!bestSegment || dist < bestSegment.dist)) {
+              bestSegment = {
+                partId: partId, seq: seq, offset: i, dist: dist, displayPoint: p2,
+                t: getSegmentPosition(data.xx[v1], data.yy[v1], data.xx[v2],
+                  data.yy[v2], p2)
+              };
+            }
+          }
+        });
+      });
+
+      if (bestVertex) return getVertexTarget(target, e.id, bestVertex);
+      if (bestSegment) return getSegmentTarget(target, e.id, bestSegment);
+      return null;
+    }
+
+    function getVertexTarget(target, fid, info) {
+      var displayPoint = target.gui.displayArcs.getVertex2(info.vid);
+      return {
+        target: target,
+        fid: fid,
+        partId: info.partId,
+        type: 'vertex',
+        ring: pathIsRing(target, fid, info.partId),
+        disabled: !pathIsRing(target, fid, info.partId) &&
+          vertexIsPathEndpoint(target, fid, info),
+        markerPoint: displayPoint,
+        cut: {seq: info.seq, offset: info.offset, point: null, displayPoint: null, t: 0}
+      };
+    }
+
+    function getSegmentTarget(target, fid, info) {
+      return {
+        target: target,
+        fid: fid,
+        partId: info.partId,
+        type: 'interpolated',
+        ring: pathIsRing(target, fid, info.partId),
+        disabled: false,
+        markerPoint: info.displayPoint,
+        cut: {
+          seq: info.seq,
+          offset: info.offset,
+          point: translateDisplayPoint(target, info.displayPoint),
+          displayPoint: info.displayPoint,
+          t: info.t
+        }
+      };
+    }
+
+    function pathIsRing(target, fid, partId) {
+      return geom.pathIsClosed(target.shapes[fid][partId], target.gui.displayArcs);
+    }
+
+    // Test if a vertex is one of the two endpoints of an open path (as opposed to
+    // an interior node between two of the path's arcs, which is snippable).
+    function vertexIsPathEndpoint(target, fid, info) {
+      var path = target.shapes[fid][info.partId];
+      var data = target.gui.displayArcs.getVertexData();
+      var lastId = internal.absArcId(path[path.length - 1]);
+      if (info.seq === 0 && info.offset === 0) return true;
+      return info.seq === path.length - 1 && info.offset === data.nn[lastId] - 1;
+    }
+  }
+
+  // Test if an arc's bounding box is too far from a point to contain a hit
+  function arcIsOutOfRange(bb, arcId, p, dist) {
+    var i = arcId * 4;
+    return p[0] + dist < bb[i] || p[0] - dist > bb[i + 2] ||
+      p[1] + dist < bb[i + 1] || p[1] - dist > bb[i + 3];
+  }
+
+  // Position of point p along the segment from (x1, y1) to (x2, y2), as a
+  // fraction of the segment's length
+  function getSegmentPosition(x1, y1, x2, y2, p) {
+    var len = geom.distance2D(x1, y1, x2, y2);
+    return len > 0 ? geom.distance2D(x1, y1, p[0], p[1]) / len : 0;
   }
 
   function initInteractiveEditing(gui, ext, hit) {
@@ -21819,6 +22089,15 @@
         p = style.vertex_overlay;
         drawCircle(p[0] * t.mx + t.bx, p[1] * t.my + t.by, radius *
             (style.vertex_overlay_scale || 2), _ctx);
+        _ctx.fill();
+        _ctx.closePath();
+      }
+
+      if (style.pending_snip) {
+        _ctx.beginPath();
+        _ctx.fillStyle = style.pending_snip_color || 'black';
+        p = style.pending_snip;
+        drawCircle(p[0] * t.mx + t.bx, p[1] * t.my + t.by, radius * 2.5, _ctx);
         _ctx.fill();
         _ctx.closePath();
       }

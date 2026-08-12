@@ -138,6 +138,7 @@ mapshaper region.geojson -proj utm -o region_utm.geojson
 <p>When Mapshaper auto-fits parameters, it prints the expanded PROJ string so you can see exactly what was applied. An example message: <code>Converted &quot;lcc&quot; to &quot;+proj=lcc +lon_0=-95.5 +lat_1=30.17 +lat_2=44.83&quot;</code>. You can copy this PROJ string and use it explicitly if you need reproducible output.</p>
 <h2 id="albersusa">albersusa</h2>
 <p><code>albersusa</code> is a Mapshaper-specific composite projection for maps of the United States. It applies Albers Equal Area Conic to the contiguous 48 states, then places Alaska (scaled down) and Hawaii as insets in the lower-left corner of the map.</p>
+<p><img src="/docs/images/albersusa-projection.jpg" alt="United States in the albersusa composite projection, with Alaska and Hawaii as insets below the southwestern states"></p>
 <pre><code class="hljs language-bash">mapshaper us-states.shp -proj albersusa -o
 </code></pre>
 <p>Two optional flags add insets for outlying territories:</p>
@@ -156,7 +157,7 @@ mapshaper region.geojson -proj utm -o region_utm.geojson
 <li><code>igh_o</code> — Interrupted Goode Homolosine, ocean emphasis</li>
 <li><code>imoll_o</code> — Interrupted Mollweide, ocean emphasis</li>
 </ul>
-<p><img src="/docs/images/interrupted-mollweide.png" alt="Interrupted Mollweide world projection"></p>
+<p><img src="/docs/images/interrupted-mollweide.jpg" alt="Interrupted Mollweide world projection"></p>
 <p>The ocean-emphasis projections default to <code>+lon_0=-160</code>; an explicit
 <code>+lon_0=</code> overrides this default.</p>
 <pre><code class="hljs language-bash"><span class="hljs-comment"># Project world polygons using Goode Homolosine; add a graticule</span>
@@ -177,7 +178,7 @@ mapshaper world.geojson \
 <p>Mapshaper includes two versions of Buckminster Fuller&#39;s Airocean (Dymaxion)
 world map. Both divide the globe into twenty triangles and arrange them on a
 flat map according to Fuller&#39;s design:</p>
-<p><img src="/docs/images/dymaxion-projection.png" alt="Dymaxion (Airocean) world projection"></p>
+<p><img src="/docs/images/dymaxion-projection.jpg" alt="Dymaxion (Airocean) world projection"></p>
 <ul>
 <li><code>dymaxion</code> — a version using the Gray-Fuller transform for projecting each polyhedral face, which balances shape and area
 distortion</li>
@@ -192,7 +193,7 @@ distortion</li>
 <h3 id="butterfly-and-cahill-keyes-projections">Butterfly and Cahill-Keyes projections</h3>
 <p>These projections divide the globe into eight octahedral faces. The first two arrange
 the triangular faces in a butterfly layout similar to the butterfly maps of Bernard Cahill and Steve Watterman, but use Gene Keyes&#39;s facet projection; the third (<code>cahill_keyes</code>) uses Gene Keyes&#39;s M-shaped arrangement and facet projection.</p>
-<p><img src="/docs/images/butterfly-projection.png" alt="Butterfly projection, Pacific and Atlantic aspects"></p>
+<p><img src="/docs/images/butterfly-projection.jpg" alt="Butterfly projection, Pacific and Atlantic aspects"></p>
 <ul>
 <li><code>butterfly</code> — centered on the Pacific, with a default central meridian of
 157.5°E</li>
@@ -210,7 +211,7 @@ default central meridian of 20°W</li>
 <h3 id="tetrahedral-projections">Tetrahedral projections</h3>
 <p>These projections divide the globe into four triangles and arrange them to
 form a rectangular world map:</p>
-<p><img src="/docs/images/tetrahedral-projection.png" alt="CALM tetrahedral world projection, with a graticule and neatline"></p>
+<p><img src="/docs/images/tetrahedral-projection.jpg" alt="CALM tetrahedral world projection, with a graticule and neatline"></p>
 <ul>
 <li><code>narukawa2022</code> — Hajime Narukawa&#39;s published 2022 formulas approximating the original AuthaGraph map</li>
 <li><code>calm</code> — Farhan Adrian&#39;s adaptation of L. P. Lee&#39;s conformal tetrahedral projection designed to match the AuthaGraph layout.</li>

@@ -109,6 +109,8 @@ When Mapshaper auto-fits parameters, it prints the expanded PROJ string so you c
 
 `albersusa` is a Mapshaper-specific composite projection for maps of the United States. It applies Albers Equal Area Conic to the contiguous 48 states, then places Alaska (scaled down) and Hawaii as insets in the lower-left corner of the map.
 
+![United States in the albersusa composite projection, with Alaska and Hawaii as insets below the southwestern states](/docs/images/albersusa-projection.jpg)
+
 ```bash
 mapshaper us-states.shp -proj albersusa -o
 ```
@@ -133,7 +135,7 @@ The position, scale, rotation, and other properties of each inset can be overrid
 - `igh_o` — Interrupted Goode Homolosine, ocean emphasis
 - `imoll_o` — Interrupted Mollweide, ocean emphasis
 
-![Interrupted Mollweide world projection](/docs/images/interrupted-mollweide.png)
+![Interrupted Mollweide world projection](/docs/images/interrupted-mollweide.jpg)
 
 The ocean-emphasis projections default to `+lon_0=-160`; an explicit
 `+lon_0=` overrides this default.
@@ -160,7 +162,7 @@ Mapshaper includes two versions of Buckminster Fuller's Airocean (Dymaxion)
 world map. Both divide the globe into twenty triangles and arrange them on a
 flat map according to Fuller's design:
 
-![Dymaxion (Airocean) world projection](/docs/images/dymaxion-projection.png)
+![Dymaxion (Airocean) world projection](/docs/images/dymaxion-projection.jpg)
 
 - `dymaxion` — a version using the Gray-Fuller transform for projecting each polyhedral face, which balances shape and area
   distortion
@@ -179,7 +181,7 @@ mapshaper world.geojson \
 These projections divide the globe into eight octahedral faces. The first two arrange
 the triangular faces in a butterfly layout similar to the butterfly maps of Bernard Cahill and Steve Watterman, but use Gene Keyes's facet projection; the third (`cahill_keyes`) uses Gene Keyes's M-shaped arrangement and facet projection.
 
-![Butterfly projection, Pacific and Atlantic aspects](/docs/images/butterfly-projection.png)
+![Butterfly projection, Pacific and Atlantic aspects](/docs/images/butterfly-projection.jpg)
 
 - `butterfly` — centered on the Pacific, with a default central meridian of
   157.5°E
@@ -201,7 +203,7 @@ mapshaper world.geojson \
 These projections divide the globe into four triangles and arrange them to
 form a rectangular world map:
 
-![CALM tetrahedral world projection, with a graticule and neatline](/docs/images/tetrahedral-projection.png)
+![CALM tetrahedral world projection, with a graticule and neatline](/docs/images/tetrahedral-projection.jpg)
 
 - `narukawa2022` — Hajime Narukawa's published 2022 formulas approximating the original AuthaGraph map
 - `calm` — Farhan Adrian's adaptation of L. P. Lee's conformal tetrahedral projection designed to match the AuthaGraph layout.
