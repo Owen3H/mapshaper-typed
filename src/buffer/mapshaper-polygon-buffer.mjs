@@ -328,17 +328,30 @@ function makeGapFillPolygonBuffer(lyr, dataset, opts) {
   // Mouth-gating mask: closing of the land by the mouth radius r (dilate by r,
   // union, erode by r). Built separately from the fill dilation because the
   // mouth threshold stays at the mouth size while the fill reaches further.
+  // Two settings keep the dilation from falling short at the tips of a hairline
+  // gap, which is where the mouth of the fill ends up: whatever the dilation fails
+  // to bridge there is left as a residual indentation at the mouth, in proportion
+  // to r, and no later stage can recover it.
+  //   - circumscribe_joins: the round joins are otherwise inscribed in the true
+  //     circular offset and fall a join sagitta short of it (~0.5% of r at the
+  //     default 8 segments/quadrant). See makeInscribedRoundJoin: the correction
+  //     costs no vertices, in contrast to raising quad-segs, whose cost is linear
+  //     in vertices through every stage below (dilate, union, erode, mask).
+  //   - tolerance 0: the default pre-simplification budget is 1% of the radius,
+  //     several times a hairline gap's width, so it smooths away the very tips
+  //     being bridged (and undoes the join correction with them). Skipping it
+  //     costs only a few percent here, since the joins dominate the vertex count.
   var dilatedAtR = makePolygonBuffer(lyr, dataset,
-    Object.assign({}, baseOpts, {radius: mouthRadius, topological: false}));
+    Object.assign({}, baseOpts, {radius: mouthRadius, topological: false,
+      circumscribe_joins: true, tolerance: 0}));
   var union = unionBufferDataset(dilatedAtR, baseOpts);
   if (!union || !union.arcs) return dilated;
   // tolerance: 0 disables the buffer's Douglas-Peucker pre-simplification for the
   // erosion. Pre-simplifying before an INWARD offset can push a simplified concave
   // vertex past its neighbours and self-intersect the eroded ring; on a large,
   // dense outline (e.g. a whole-country coastline) the dissolve then keeps the
-  // wrong side and the ring collapses, wiping the gap-fill extent. The dilation
-  // stays pre-simplified (outward offsets don't fold this way) so only the fragile
-  // erode pays the full-resolution cost.
+  // wrong side and the ring collapses, wiping the gap-fill extent. (The dilation
+  // skips pre-simplification for its own reason -- see above.)
   var closing = makePolygonBuffer(union.layers[0], union,
     Object.assign({}, baseOpts, {radius: '-' + mouthRadius, topological: false,
       tolerance: 0}));
@@ -426,8 +439,12 @@ var INLET_MIN_DEPTH_RATIO = 0.5; // max inlet depth / mouth-chord (sagitta/chord
 // clears the arc/mouth tortuosity clause despite little depth. Requiring the patch
 // depth to reach this fraction of the mouth radius drops both while keeping real
 // inlets (which run far deeper than their mouth radius; on the Columbia the kept
-// gaps reach depth/r >= 1.3, the shallow scallops only ~0.2).
-var INLET_MIN_ABS_DEPTH = 0.3;   // min patch depth as a fraction of the mouth radius
+// gaps reach depth/r >= 1.3, the shallow scallops only ~0.2). The margin matters,
+// because a coast-hugging strip only a few dozen metres thick can still measure a
+// large depth: depth is taken from the mouth CHORD, and that chord cuts straight
+// across whatever bay the strip follows. Those strips land around depth/r ~0.3, so
+// the floor sits above them rather than on them.
+var INLET_MIN_ABS_DEPTH = 0.4;   // min patch depth as a fraction of the mouth radius
 
 // Island-bridge classification of a fill that joins >= 2 source parts, one small
 // (see bridgesSmallIsland). Two independent signatures mark an island bridge:
@@ -585,9 +602,14 @@ function trimIslandBridges(bridgeGeoms, sourceLyr, sourceDataset, opts, spherica
   var islandDataset = importGeoJSON(
     {type: 'GeometryCollection', geometries: islandGeoms}, {type: 'polygon'});
   setDatasetCrsInfo(islandDataset, crsInfo);
+  // circumscribe_joins matches the closing's dilation (see makeGapFillPolygonBuffer):
+  // this buffer has to cancel the island's mouth-radius reach, so if it grew a join
+  // sagitta less than that dilation did, a hairline of bridge would survive the
+  // erase and reconnect the island.
   var islandBuf = makePolygonBuffer(islandDataset.layers[0], islandDataset,
     Object.assign({}, opts, {fill_gaps: false, max_widening: null,
-      radius: mouthRadiusStr, topological: false, no_replace: true}));
+      radius: mouthRadiusStr, topological: false, no_replace: true,
+      circumscribe_joins: true}));
   if (!islandBuf || !islandBuf.arcs) return;
   var bridgeDataset = importGeoJSON(
     {type: 'GeometryCollection', geometries: bridgeGeoms}, {type: 'polygon'});

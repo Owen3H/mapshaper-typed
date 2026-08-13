@@ -3,6 +3,7 @@ import api from '../mapshaper.js';
 import assert from 'assert';
 import fs from 'fs';
 import { cullSubTolerancePolygonArtifacts, ringHasCollapsingSweepEdge } from '../src/buffer/mapshaper-polygon-buffer.mjs';
+import { circumscribedJoinDist } from '../src/buffer/mapshaper-path-buffer-v4.mjs';
 import { importGeoJSON } from '../src/geojson/geojson-import.mjs';
 
 
@@ -1813,6 +1814,60 @@ describe('mapshaper-buffer.js', function () {
         assert.equal(tinyParts, 0, 'no positive part below the buffer tolerance squared');
         assert(totalParts > 0 && totalParts < 30,
           'sliver parts removed; expected a handful of real parts, got ' + totalParts);
+      })
+
+      // A hairline slit's fill used to stop short of its mouth by about one join
+      // sagitta of the closing's dilation (~0.5% of the mouth radius at the default
+      // 8 segs/quadrant): ~3mm at 1m, ~0.28m at 100m, ~2.6m at 1000m. The dilation
+      // now circumscribes its round joins and skips pre-simplification, which takes
+      // the indent down to millimetres and, more importantly, stops it scaling with
+      // the radius (see makeGapFillPolygonBuffer).
+      it('fills thin open mouths without a radius-scaled indentation', async function () {
+        var file = 'test/data/features/buffer/01_thin_gap_detail.json';
+        // Source tips of the VA/NC slit (eastern mouth)
+        var mouthLon = -75.8669742;
+        var toM = function(dlon) {
+          return Math.abs(dlon) * 111320 * Math.cos(36.55 * Math.PI / 180);
+        };
+        async function mouthIndent(radius) {
+          var geoms = getOutputGeometries(await api.applyCommands(
+            '-i ' + file + ' -buffer ' + radius + ' fill-gaps max-widening=1 -o format=geojson buffer.json'));
+          var ring = geoms[0].type == 'Polygon' ? geoms[0].coordinates[0]
+            : geoms[0].coordinates[0][0];
+          var maxWest = 0;
+          ring.forEach(function(p) {
+            if (p[1] > 36.5503 && p[1] < 36.5506 && p[0] < mouthLon) {
+              maxWest = Math.max(maxWest, toM(mouthLon - p[0]));
+            }
+          });
+          return maxWest;
+        }
+        var indent1 = await mouthIndent('1m');
+        var indent100 = await mouthIndent('100m');
+        assert(indent100 < 0.01,
+          '100m mouth indent should be millimetre-scale, got ' + indent100);
+        // the remaining indent no longer tracks the radius: a 100x larger mouth
+        // leaves a comparable residue rather than a 100x deeper one
+        assert(indent100 < indent1 * 10,
+          'indent should not scale with the mouth radius (1m=' + indent1 +
+          ', 100m=' + indent100 + ')');
+      })
+    })
+
+    describe('circumscribedJoinDist()', function () {
+      it('puts the join chord midpoints on the offset circle', function () {
+        [11.25, 22.5, 90].forEach(function(step) {
+          var d = circumscribedJoinDist(100, step);
+          // the midpoint of a chord spanning step degrees at radius d is back at
+          // the true offset distance
+          assert(Math.abs(d * Math.cos(step / 2 * Math.PI / 180) - 100) < 1e-9,
+            'chord midpoint on the circle for a ' + step + ' degree step');
+          assert(d > 100, 'vertices sit outside the circle');
+        });
+        // the correction scales with the step angle, so a fine join is barely
+        // moved: at the default 8 segments/quadrant it is ~0.5% of the distance
+        assert(circumscribedJoinDist(100, 1) - 100 < 0.005);
+        assert(circumscribedJoinDist(100, 11.25) - 100 < 0.5);
       })
     })
 

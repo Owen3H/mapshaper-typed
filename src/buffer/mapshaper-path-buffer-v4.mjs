@@ -23,6 +23,16 @@ import { distance2D, R2D, R } from '../geom/mapshaper-basic-geom';
 
 var POLAR_BUFFER_MARGIN_DEGREES = 1e-4;
 
+// Distance at which to place the vertices of a round join whose chords span
+// stepAngle degrees, so that the chord MIDPOINTS -- not the vertices -- lie on
+// the offset circle of radius dist. The join then brackets the true arc instead
+// of being inscribed in it (see makeInscribedRoundJoin). The correction grows
+// with the step angle, so a gentle bend is barely moved and a sharp corner gets
+// the full ~0.5% of dist (at the default 8 segments/quadrant).
+export function circumscribedJoinDist(dist, stepAngle) {
+  return dist / Math.cos(stepAngle / 2 / R2D);
+}
+
 
 // Returns a function for generating GeoJSON MultiPolygon geometries
 export function getPolylineBufferMaker(dataset, opts) {
@@ -32,6 +42,7 @@ export function getPolylineBufferMaker(dataset, opts) {
   var getOffsetPoint = getOffsetFunction(crs, opts);
   var roundJoinSegsPerQuadrant = opts.quad_segs >= 2 ? opts.quad_segs : 8;
   var roundJoinSegAngle = 90 / roundJoinSegsPerQuadrant;
+  var circumscribeJoins = !!opts.circumscribe_joins; // see makeInscribedRoundJoin
   // Max arc step (degrees) for the coarse concave bridge (makeCoarseConcaveJoin),
   // the optional low-resolution alternative to makeConcaveJoin in
   // traceCleanOffsetSide. Larger = fewer points = faster dissolve. NOTE: a
@@ -1222,14 +1233,36 @@ export function getPolylineBufferMaker(dataset, opts) {
       [getOffsetPoint(x, y, startDir + 180, dist)];
   }
 
-  // Inscribed round join: vertices on the offset arc at equal angle steps,
-  // each at the true offset distance (geodesic or planar).
+  // Round join: an equal-angle-step polygonal approximation of the arc between
+  // the incoming and outgoing offset edges, replacing the incoming edge's end
+  // (p2Prev) and the outgoing edge's start (p1).
+  //
+  // Inscribed (default): vertices at the true offset distance, stepping from the
+  // incoming perpendicular round to the outgoing one. Because its chords cut the
+  // corner, the join lies INSIDE the true circular offset, falling short of it by
+  // up to one sagitta (~0.5% of dist at the default 8 segments/quadrant).
+  //
+  // Circumscribed (circumscribe_joins): the same vertices, moved out to
+  // circumscribedJoinDist so the chords span the offset circle instead of cutting
+  // inside it. The LAST vertex stays at the true distance because the outgoing
+  // straight edge attaches there: moving it radially outward would carry that edge
+  // outward too, and since it also seeds the elbow joins of the segments that
+  // follow, the bias propagates into a collar of offset-vs-source overshoot along
+  // the whole outline -- which the fill-gaps mask cannot tell from a real gap fill
+  // (its coast test tolerance is itself calibrated to the join sagitta). Leaving
+  // that one vertex on the circle costs some accuracy: the final chord still dips
+  // inside by about half a sagitta, so a gap tip whose closure happens to fall on
+  // that chord is still short by ~0.25% of dist. Raise quad-segs to shrink it.
   function makeInscribedRoundJoin(cx, cy, startBearing, arcAngle, dist) {
     var pointCount = Math.max(1, Math.round(arcAngle / roundJoinSegAngle));
     var stepAngle = arcAngle / pointCount;
     var points = [];
-    for (var i = 1; i <= pointCount; i++) {
-      points.push(getOffsetPoint(cx, cy, startBearing + stepAngle * i, dist));
+    var i;
+    var outerDist = circumscribeJoins ?
+      circumscribedJoinDist(dist, stepAngle) : dist;
+    for (i = 1; i <= pointCount; i++) {
+      points.push(getOffsetPoint(cx, cy, startBearing + stepAngle * i,
+        i == pointCount ? dist : outerDist));
     }
     return points;
   }

@@ -38,6 +38,19 @@ var MAX_SITES = 60000;
 // floor/maxSpacing ratio at which small mosaics already sample cleanly.
 var FLOOR_DISTANCE_FRACTION = 0.1;
 
+// Soft cap on the number of entries in the boundary-segment grid, used to floor
+// the cell size (see buildSegmentGrid). The cell otherwise tracks the buffer
+// distance alone, so a small distance on a large input gives cells far shorter
+// than a single boundary segment and the index grows in inverse proportion to
+// the distance: a nationwide mosaic buffered at 1m spans ~1e7 cells, which costs
+// hundreds of megabytes and seconds of build time before any distance is
+// measured. A wider cell is always correct -- the 3x3 query window only requires
+// cell >= reach -- it just puts more segments in each bucket, so the budget
+// trades index size against bucket scan length. This value keeps the average
+// bucket near one segment on a nationwide mosaic, so the queries stay as cheap as
+// they are at large buffer distances.
+var GRID_INSERTION_BUDGET = 5e5;
+
 // Soft target total site count. coarsen scales the gap-proportional spacing up
 // until the predicted total falls under this, keeping the Delaunay bounded on
 // dense shared-border mosaics while leaving sparse inputs at coarsen=1 (fully
@@ -407,8 +420,15 @@ function collectSites(shapes, coordDistances, arcs) {
   // in a single pass, then we densify once.
   var grid = buildSegmentGrid(verts, coordDistances);
   var gaps = computeVertexGaps(grid, verts, coordDistances);
-  var coarsen = fitCoarsen(verts, gaps, coordDistances, spacingFloor);
-  var sites = densifyVertices(verts, gaps, coordDistances, spacingFloor, coarsen);
+  // No contested channel anywhere: every vertex is either out of reach of every
+  // other feature (open coast) or within the touching threshold of one (where the
+  // source boundary already partitions). densify + Delaunay would only allocate
+  // sites that keptSites then discards, so stop here. Single-feature inputs and
+  // mosaics whose features are all farther than a buffer-diameter apart take this
+  // path; a mosaic with even one real gap continues.
+  if (!hasContestedGap(gaps, maxDistance)) return null;
+  var coarsen = fitCoarsen(verts, gaps, coordDistances, spacingFloor, grid);
+  var sites = densifyVertices(verts, gaps, coordDistances, spacingFloor, coarsen, grid);
   // Triangulate only the sites bordering a real gap. Its medial segments come
   // exclusively from cross-feature edges, and the well-shaped triangles that
   // bridge a gap have their apex within reach too (a far apex makes a thin
@@ -425,27 +445,39 @@ function collectSites(shapes, coordDistances, arcs) {
 
 // Bucket every boundary segment into a uniform grid so the nearest cross-feature
 // segment to an arbitrary point can be found by probing its 3x3 cell
-// neighborhood. The cell equals the maximum reach (sum of the two largest buffer
-// distances), so any in-reach segment is guaranteed to fall in that 3x3 window.
-// Returns null when there is no positive reach. Reused for both the per-vertex
-// gap (drives adaptive sampling) and the per-site keep test (gapAtPoint).
-function buildSegmentGrid(verts, coordDistances) {
+// neighborhood. The cell is at least the maximum reach (sum of the two largest
+// buffer distances), so any in-reach segment is guaranteed to fall in that 3x3
+// window. Returns null when there is no positive reach. Reused for both the
+// per-vertex gap (drives adaptive sampling) and the per-site keep test
+// (gapAtPoint).
+export function buildSegmentGrid(verts, coordDistances) {
   var paths = verts.paths;
   var maxDist = 0;
   for (var d = 0; d < coordDistances.length; d++) {
     if (coordDistances[d] > maxDist) maxDist = coordDistances[d];
   }
-  var cell = 2 * maxDist; // upper bound on any pair's reach
-  if (!(cell > 0)) return null;
+  var reach = 2 * maxDist; // upper bound on any pair's reach
+  if (!(reach > 0)) return null;
   var xmin = Infinity, ymin = Infinity, ymax = -Infinity;
+  var totalLen = 0;
   paths.forEach(function(path) {
     var pts = path.points;
     for (var i = 0; i < pts.length; i++) {
       if (pts[i][0] < xmin) xmin = pts[i][0];
       if (pts[i][1] < ymin) ymin = pts[i][1];
       if (pts[i][1] > ymax) ymax = pts[i][1];
+      if (i > 0) {
+        var sdx = pts[i][0] - pts[i - 1][0];
+        var sdy = pts[i][1] - pts[i - 1][1];
+        totalLen += Math.sqrt(sdx * sdx + sdy * sdy);
+      }
     }
   });
+  // A segment occupies about len/cell cells, so the whole index is about
+  // totalLen/cell entries; widening the cell to fit the budget bounds it (see
+  // GRID_INSERTION_BUDGET). The reach is the floor, not the target: a cell
+  // narrower than the reach would break the 3x3 query window.
+  var cell = Math.max(reach, totalLen / GRID_INSERTION_BUDGET);
   // +1 cell index shift keeps probed -1 neighbors non-negative; rowSpan packs
   // (col, row) into a collision-free integer key.
   var rowSpan = Math.floor((ymax - ymin) / cell) + 3;
@@ -454,24 +486,50 @@ function buildSegmentGrid(verts, coordDistances) {
   function rowOf(y) { return Math.floor((y - ymin) / cell); }
   var seg = {x0: [], y0: [], x1: [], y1: [], feat: [], reach: []};
   var grid = new Map();
+
+  // Index a segment into every cell it crosses, column by column: within one
+  // column the segment covers a single y-range (it is a straight line clipped to
+  // that column's x-range), so the exact row span is two floor()s. This costs
+  // O(len/cell) entries, where stamping the segment's bounding box instead costs
+  // O((len/cell)^2) for a diagonal segment -- on a nationwide input buffered by a
+  // few meters that quadratic term ran to ~1e9 entries and exceeded the runtime's
+  // maximum Map size.
+  function addSegment(ax, ay, bx, by, idx) {
+    if (ax > bx) {
+      var tx = ax; ax = bx; bx = tx;
+      var ty = ay; ay = by; by = ty;
+    }
+    var dx = bx - ax, dy = by - ay;
+    var cxa = colOf(ax), cxb = colOf(bx);
+    for (var gx = cxa; gx <= cxb; gx++) {
+      var yLo = ay, yHi = by;
+      if (dx > 0) {
+        // clip the segment to this column and take the y-range of the piece
+        var xLo = Math.max(ax, xmin + gx * cell);
+        var xHi = Math.min(bx, xmin + (gx + 1) * cell);
+        yLo = ay + dy * (xLo - ax) / dx;
+        yHi = ay + dy * (xHi - ax) / dx;
+      }
+      var gya = rowOf(Math.min(yLo, yHi));
+      var gyb = rowOf(Math.max(yLo, yHi));
+      for (var gy = gya; gy <= gyb; gy++) {
+        var key = cellKey(gx, gy);
+        var bucket = grid.get(key);
+        if (bucket) bucket.push(idx); else grid.set(key, [idx]);
+      }
+    }
+  }
+
   paths.forEach(function(path) {
     var pts = path.points;
     var feat = path.owner;
-    var reach = coordDistances[feat];
+    var featReach = coordDistances[feat];
     for (var k = 0; k + 1 < pts.length; k++) {
       var ax = pts[k][0], ay = pts[k][1], bx = pts[k + 1][0], by = pts[k + 1][1];
       var idx = seg.feat.length;
       seg.x0.push(ax); seg.y0.push(ay); seg.x1.push(bx); seg.y1.push(by);
-      seg.feat.push(feat); seg.reach.push(reach);
-      var cxa = colOf(Math.min(ax, bx)), cxb = colOf(Math.max(ax, bx));
-      var cya = rowOf(Math.min(ay, by)), cyb = rowOf(Math.max(ay, by));
-      for (var gx = cxa; gx <= cxb; gx++) {
-        for (var gy = cya; gy <= cyb; gy++) {
-          var key = cellKey(gx, gy);
-          var bucket = grid.get(key);
-          if (bucket) bucket.push(idx); else grid.set(key, [idx]);
-        }
-      }
+      seg.feat.push(feat); seg.reach.push(featReach);
+      addSegment(ax, ay, bx, by, idx);
     }
   });
   return {seg: seg, grid: grid, cellKey: cellKey, colOf: colOf, rowOf: rowOf};
@@ -481,7 +539,7 @@ function buildSegmentGrid(verts, coordDistances) {
 // within their combined reach, or Infinity if none. Works for any point, not
 // just original vertices, so a long edge whose endpoints are out of reach but
 // whose middle crosses a gap is still measured correctly at the interior sites.
-function gapAtPoint(ctx, x, y, feat, reachF) {
+export function gapAtPoint(ctx, x, y, feat, reachF) {
   return nearestCrossFeatureSegmentDist(x, y, feat, reachF, ctx.seg, ctx.grid,
     ctx.cellKey, ctx.colOf, ctx.rowOf, Infinity);
 }
@@ -647,21 +705,52 @@ function buildVertexLayout(paths) {
   return {paths: layout, count: count};
 }
 
+// True when any vertex borders a real gap: within reach of another feature, but
+// farther than the touching threshold. Matching keptSites' keep rule, so when
+// this is false every densified site would be discarded and there is nothing for
+// the medial to cut.
+export function hasContestedGap(gaps, maxDistance) {
+  var touch = maxDistance * TOUCHING_GAP_FRACTION;
+  for (var i = 0; i < gaps.length; i++) {
+    if (isFinite(gaps[i]) && gaps[i] > touch) return true;
+  }
+  return false;
+}
+
 // The spacing for a path segment: the tighter of its two endpoints' gap-derived
 // spacings (so a segment straddling a narrowing gap samples at the finer rate).
-function segmentSpacing(path, k, gaps, maxSpacing, spacingFloor, coarsen) {
-  var sA = spacingFromGap(gaps[path.vids[k]], maxSpacing, spacingFloor, coarsen);
-  var sB = spacingFromGap(gaps[path.vids[k + 1]], maxSpacing, spacingFloor, coarsen);
-  return Math.min(sA, sB);
+// Infinity means "do not densify" (see spacingFromGap). When both endpoints are
+// open-coast but the segment is long enough that its middle could still pass
+// within reach of another feature, the midpoint is probed via @ctx so a
+// contested channel bounded by long unvertexed edges is not missed.
+function segmentSpacing(path, k, gaps, maxSpacing, spacingFloor, coarsen, ctx) {
+  var gA = gaps[path.vids[k]], gB = gaps[path.vids[k + 1]];
+  var sA = spacingFromGap(gA, maxSpacing, spacingFloor, coarsen);
+  var sB = spacingFromGap(gB, maxSpacing, spacingFloor, coarsen);
+  var s = Math.min(sA, sB);
+  if (isFinite(s) || !ctx) return s;
+  // both endpoints open: only a long segment can hide a contested middle
+  // (shorter than the reach, either endpoint would have seen it)
+  var a = path.points[k], b = path.points[k + 1];
+  var dx = b[0] - a[0], dy = b[1] - a[1];
+  if (dx * dx + dy * dy <= 4 * maxSpacing * maxSpacing) return s;
+  var midGap = gapAtPoint(ctx, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2,
+    path.owner, maxSpacing);
+  return spacingFromGap(midGap, maxSpacing, spacingFloor, coarsen);
 }
 
 // Re-sample every candidate path: emit each original vertex (tagged with its
 // vid) plus interior points spaced by the local gap-derived spacing (see
 // segmentSpacing). Paths are open, so the last vertex has no following segment.
-// Long edges are densified even where their endpoints are out of reach, so a
-// contested middle is sampled; keptSites later prunes the points that turn out
-// not to border a real gap.
-function densifyVertices(verts, gaps, coordDistances, spacingFloor, coarsen) {
+// Open-coast segments (both endpoints out of reach of every other feature) are
+// not densified -- keptSites would discard those interior points, and densifying
+// them at spacing = buffer distance is what used to emit tens of millions of
+// sites along a nationwide coastline. A segment with one contested endpoint
+// still densifies at that endpoint's rate, so a channel that pinches shut is
+// sampled into its mouth. Long open-coast edges are midpoint-probed (see
+// segmentSpacing) so a contested channel whose bounding edges lack a vertex
+// within reach is still sampled.
+export function densifyVertices(verts, gaps, coordDistances, spacingFloor, coarsen, ctx) {
   var coords = [];
   var owner = [];
   var origin = []; // vid for original vertices, -1 for interpolated points
@@ -675,10 +764,11 @@ function densifyVertices(verts, gaps, coordDistances, spacingFloor, coarsen) {
       origin.push(path.vids[k]);
       if (k + 1 >= m) continue; // open path: no segment past the last vertex
       var b = path.points[k + 1];
-      var s = segmentSpacing(path, k, gaps, maxSpacing, spacingFloor, coarsen);
+      var s = segmentSpacing(path, k, gaps, maxSpacing, spacingFloor, coarsen, ctx);
       var dx = b[0] - a[0], dy = b[1] - a[1];
       var len = Math.sqrt(dx * dx + dy * dy);
-      if (s > 0 && len > s) {
+      // s == Infinity for open-coast segments (see spacingFromGap): skip
+      if (s > 0 && isFinite(s) && len > s) {
         var steps = Math.floor(len / s);
         for (var t = 1; t <= steps; t++) {
           var f = t / (steps + 1);
@@ -692,8 +782,15 @@ function densifyVertices(verts, gaps, coordDistances, spacingFloor, coarsen) {
   return {coords: coords, owner: owner, origin: origin};
 }
 
-function spacingFromGap(gap, maxSpacing, spacingFloor, coarsen) {
-  if (!isFinite(gap)) return maxSpacing;
+// Spacing used to densify a segment endpoint. Open coast (no other feature
+// within reach) returns Infinity so densifyVertices emits no interior points --
+// those sites cannot shape the medial and used to dominate the site count on
+// large inputs. Touching/coincident borders keep the coarse buffer-distance
+// spacing (the source boundary already partitions them; fine sampling would only
+// flood the triangulation with collinear sites). Real gaps densify at a fraction
+// of the local width, floored and capped.
+export function spacingFromGap(gap, maxSpacing, spacingFloor, coarsen) {
+  if (!isFinite(gap)) return Infinity;
   // A gap at or below the buffer's positional tolerance means the two features
   // effectively touch: there is no contested channel to run a medial down, and
   // the shared source boundary already partitions the overlap. Densifying it
@@ -711,18 +808,18 @@ function spacingFromGap(gap, maxSpacing, spacingFloor, coarsen) {
 // interior points per segment). Pure counting, no Delaunay -- cheap enough to
 // binary-search coarsen against. Counts pre-keep sites (the densification work),
 // which is what coarsen actually bounds.
-function predictSiteCount(verts, gaps, coordDistances, spacingFloor, coarsen) {
+function predictSiteCount(verts, gaps, coordDistances, spacingFloor, coarsen, ctx) {
   var total = verts.count; // every original vertex is emitted
   verts.paths.forEach(function(path) {
     var maxSpacing = coordDistances[path.owner];
     var m = path.vids.length;
     for (var k = 0; k + 1 < m; k++) {
-      var s = segmentSpacing(path, k, gaps, maxSpacing, spacingFloor, coarsen);
+      var s = segmentSpacing(path, k, gaps, maxSpacing, spacingFloor, coarsen, ctx);
       var a = path.points[k];
       var b = path.points[k + 1];
       var dx = b[0] - a[0], dy = b[1] - a[1];
       var len = Math.sqrt(dx * dx + dy * dy);
-      if (s > 0 && len > s) total += Math.floor(len / s);
+      if (s > 0 && isFinite(s) && len > s) total += Math.floor(len / s);
     }
   });
   return total;
@@ -732,17 +829,17 @@ function predictSiteCount(verts, gaps, coordDistances, spacingFloor, coarsen) {
 // count decreases monotonically as coarsen grows (spacing widens), so binary
 // search converges; capped because near-coincident gaps (gap ~ 0) can't be
 // thinned by coarsen and are bounded by spacingFloor instead.
-function fitCoarsen(verts, gaps, coordDistances, spacingFloor) {
-  if (predictSiteCount(verts, gaps, coordDistances, spacingFloor, 1) <= SITE_BUDGET) {
+function fitCoarsen(verts, gaps, coordDistances, spacingFloor, ctx) {
+  if (predictSiteCount(verts, gaps, coordDistances, spacingFloor, 1, ctx) <= SITE_BUDGET) {
     return 1;
   }
   var lo = 1, hi = 1024;
-  if (predictSiteCount(verts, gaps, coordDistances, spacingFloor, hi) > SITE_BUDGET) {
+  if (predictSiteCount(verts, gaps, coordDistances, spacingFloor, hi, ctx) > SITE_BUDGET) {
     return hi; // even fully coarsened we can't fit; accept the floor-bounded count
   }
   for (var i = 0; i < 20; i++) {
     var mid = (lo + hi) / 2;
-    if (predictSiteCount(verts, gaps, coordDistances, spacingFloor, mid) > SITE_BUDGET) {
+    if (predictSiteCount(verts, gaps, coordDistances, spacingFloor, mid, ctx) > SITE_BUDGET) {
       lo = mid;
     } else {
       hi = mid;
