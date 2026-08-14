@@ -1,6 +1,6 @@
 import Flatbush from 'flatbush';
 import { getDatasetCRS, isLatLngCRS } from '../crs/mapshaper-projections';
-import { greatCircleDistance, distance2D, R2D, R } from '../geom/mapshaper-basic-geom';
+import { fastLonLatDistance, distance2D, R2D, R } from '../geom/mapshaper-basic-geom';
 import { convertDistanceParam } from '../geom/mapshaper-units';
 import { traversePaths } from '../paths/mapshaper-path-utils';
 import { buildTopology } from '../topology/mapshaper-topology';
@@ -137,7 +137,7 @@ function getMedianExternalSegmentLength(records, arcs, spherical) {
       for (var k = 1; k < n; k++) {
         var a = offs + k - 1, b = offs + k;
         var len = spherical ?
-          greatCircleDistance(data.xx[a], data.yy[a], data.xx[b], data.yy[b]) :
+          fastLonLatDistance(data.xx[a], data.yy[a], data.xx[b], data.yy[b]) :
           distance2D(data.xx[a], data.yy[a], data.xx[b], data.yy[b]);
         if (len > 0 && isFinite(len)) lengths.push(len);
       }
@@ -168,7 +168,7 @@ function findMouthSeeds(records, distance, spherical) {
       var b = records[bi];
       if (bi == ai || b.owner == a.owner || b.arc == a.arc) return;
       var d = spherical ?
-        greatCircleDistance(a.x, a.y, b.x, b.y) :
+        fastLonLatDistance(a.x, a.y, b.x, b.y) :
         distance2D(a.x, a.y, b.x, b.y);
       if (d <= distance && d < bestDist) {
         best = bi;
@@ -274,7 +274,7 @@ function vertexWithinTolerance(vertex, otherSide, arcs, closeDistance, spherical
   var foot = closestPointOnArc(vertex.x, vertex.y, otherSide, arcs);
   if (!foot) return false;
   var d = spherical ?
-    greatCircleDistance(vertex.x, vertex.y, foot[0], foot[1]) :
+    fastLonLatDistance(vertex.x, vertex.y, foot[0], foot[1]) :
     distance2D(vertex.x, vertex.y, foot[0], foot[1]);
   return isFinite(d) && d <= closeDistance;
 }
@@ -284,7 +284,7 @@ function pathLengthBetween(side, lo, hi, spherical) {
   for (var k = lo; k < hi; k++) {
     var a = side[k], b = side[k + 1];
     len += spherical ?
-      greatCircleDistance(a.x, a.y, b.x, b.y) :
+      fastLonLatDistance(a.x, a.y, b.x, b.y) :
       distance2D(a.x, a.y, b.x, b.y);
   }
   return len;
@@ -399,7 +399,7 @@ function snapSideToOpposite(side, lo, hi, other, arcs, closeDistance, spherical,
     var foot = closestPointOnArc(v.x, v.y, other, arcs);
     if (!foot) continue;
     var d = spherical ?
-      greatCircleDistance(v.x, v.y, foot[0], foot[1]) :
+      fastLonLatDistance(v.x, v.y, foot[0], foot[1]) :
       distance2D(v.x, v.y, foot[0], foot[1]);
     if (!(d > 0) || d > closeDistance) continue;
     var mid = [(v.x + foot[0]) / 2, (v.y + foot[1]) / 2];

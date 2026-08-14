@@ -272,6 +272,31 @@ describe("mapshaper-geom.js", function() {
     })
   })
 
+  // Local equirectangular meters vs haversine: ample for gap-closing scales.
+  describe('fastLonLatDistance()', function() {
+    function metersOffset(lng, lat, eastM, northM) {
+      var R = 6378137;
+      var dLat = (northM / R) * (180 / Math.PI);
+      var dLng = (eastM / (R * Math.cos(lat * Math.PI / 180))) * (180 / Math.PI);
+      return [lng + dLng, lat + dLat];
+    }
+
+    it('matches greatCircleDistance within 0.1% for local 1m–1km separations', function() {
+      var originLng = -75.5, originLat = 36.5;
+      [1, 10, 100, 1000].forEach(function(meters) {
+        [[meters, 0], [0, meters], [meters * 0.6, meters * 0.8]].forEach(function(off) {
+          var p = metersOffset(originLng, originLat, off[0], off[1]);
+          var fast = geom.fastLonLatDistance(originLng, originLat, p[0], p[1]);
+          var exact = geom.greatCircleDistance(originLng, originLat, p[0], p[1]);
+          var rel = Math.abs(fast - exact) / exact;
+          assert(rel < 0.001,
+            'separation ~' + meters + 'm: rel err ' + rel +
+            ' (fast=' + fast + ' exact=' + exact + ')');
+        });
+      });
+    })
+  })
+
   describe('latLngToXYZ()/xyzToLngLat()', function () {
     function test(lng, lat) {
       var p = [], p2 = [];

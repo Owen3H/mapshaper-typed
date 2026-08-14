@@ -190,6 +190,15 @@ export function greatCircleDistance(lng1, lat1, lng2, lat2) {
   return dist * R;
 }
 
+// Fast local meters distance for geographic decimal-degree coordinates.
+// Equirectangular; one cosine. Prefer greatCircleDistance only when
+// global-scale accuracy matters.
+export function fastLonLatDistance(lng1, lat1, lng2, lat2) {
+  var dx = (lng2 - lng1) * Math.cos(lat1 * D2R);
+  var dy = lat2 - lat1;
+  return degreesToMeters(Math.sqrt(dx * dx + dy * dy));
+}
+
 
 export function triangleArea(ax, ay, bx, by, cx, cy) {
   var area = Math.abs(((ay - cy) * (bx - cx) + (by - cy) * (cx - ax)) / 2);
