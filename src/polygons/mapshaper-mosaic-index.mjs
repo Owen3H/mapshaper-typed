@@ -69,6 +69,26 @@ export function MosaicIndex(lyr, nodes, optsArg) {
     return tileShapeIndex.getUnusedTileIds().map(tileIdToTile);
   };
 
+  // Return unused tiles together with the source-feature owner of each boundary
+  // arc. Used by -clean to partition multi-owner gaps before assigning them.
+  this.getUnusedTileData = function(filter) {
+    return tileShapeIndex.getUnusedTileIds().reduce(function(out, tileId) {
+      var tile = mosaic[tileId];
+      if (filter && !filter(tile[0])) return out;
+      var boundary = [];
+      tile[0].forEach(function(arcId) {
+        var neighborTileId = arcTileIndex.getShapeIdByArcId(~arcId);
+        var shapeId = neighborTileId < 0 ? -1 :
+          tileShapeIndex.getShapeIdByTileId(neighborTileId);
+        if (shapeId >= 0) {
+          boundary.push({arcId: arcId, shapeId: shapeId});
+        }
+      });
+      out.push({tileId: tileId, tile: tile, boundary: boundary});
+      return out;
+    }, []);
+  };
+
   this.getTilesByShapeIds = function(shapeIds) {
     return getTileIdsByShapeIds(shapeIds).map(tileIdToTile);
   };

@@ -77,10 +77,18 @@ export function buildInterFeatureMedialLines(shapes, coordDistances, arcs, opts)
   profileStart('medial:assembleChains');
   var chains = assembleChains(medial.segments, medial.coords);
   profileEnd('medial:assembleChains');
+  profileStart('medial:recenter');
+  chains = chains.map(function(chain) {
+    return recenterMedialChain(chain, sites.grid);
+  });
+  profileEnd('medial:recenter');
   if (opts.smooth) {
     profileStart('medial:smooth');
     chains = chains.map(function(chain) {
-      return smoothMedialChain(chain, sites.grid);
+      // Smoothing uses one kernel width for the whole chain (see
+      // smoothMedialChain), so on a channel whose width varies it can bow the
+      // line out of the narrow stretches; re-center again to pull it back.
+      return recenterMedialChain(smoothMedialChain(chain, sites.grid), sites.grid);
     });
     profileEnd('medial:smooth');
   }
@@ -98,7 +106,9 @@ export function buildInterFeatureMedialLines(shapes, coordDistances, arcs, opts)
   for (var di = 0; di < coordDistances.length; di++) {
     if (coordDistances[di] > extendDist) extendDist = coordDistances[di];
   }
-  if (extendDist > 0) {
+  // Local gap partitioning joins multi-owner junctions before extending only
+  // the remaining outer endpoints; it opts out of this blanket extension.
+  if (extendDist > 0 && !opts.no_extend) {
     chains = chains.map(function(chain) {
       return extendChainEndpoints(chain, extendDist);
     });
@@ -320,6 +330,150 @@ function clearanceAt(grid, x, y) {
   return Math.sqrt(best);
 }
 
+// A medial vertex counts as off-center when its distance to the nearer bank
+// falls below this fraction of its distance to the opposite bank (1 = exactly
+// centered). Where a channel narrows past the site spacing the sampled Voronoi
+// can no longer resolve it: the triangles spanning the neck are slivers whose
+// circumcenters land on, or beyond, one bank, so the assembled chain zigzags
+// from side to side instead of running down the middle. Finer sampling cannot
+// cure this -- a channel that pinches to a point has zero width while the
+// spacing has a floor (see spacingFromGap) -- so the geometry is corrected
+// afterwards instead. 0.5 leaves the well-sampled interior (measured balance
+// ~0.9) untouched and catches the zigzag (~0.1 and below).
+var MEDIAL_BALANCE_TOLERANCE = 0.5;
+
+// Pull medial vertices that are off-center, or have slipped inside a source
+// polygon, back onto the local centerline: each is replaced by the midpoint of
+// its nearest footpoint on either bank. That midpoint is equidistant from the two
+// banks by construction and lies between them, so it stays inside the channel
+// however narrow it gets; where the channel pinches shut both footpoints converge
+// on the neck and the line passes straight through it rather than bouncing off
+// the sides.
+//
+// Valid vertices are left exactly as sampled, so a well-resolved channel keeps
+// its true Voronoi geometry. Chain endpoints are also left alone: they sit
+// outside the overlap on purpose (hull rays, junction ends) so the cut-line can
+// reach the enclosing boundary, and re-centering them would pull the cut back
+// inside the tile it has to span.
+export function recenterMedialChain(points, ctx) {
+  if (!ctx || points.length < 3) return points;
+  points = straightenChainTails(points, ctx);
+  if (points.length < 3) return points;
+  var out = [points[0]];
+  for (var i = 1; i < points.length - 1; i++) {
+    var p = recenteredVertex(ctx, points[i]);
+    // Successive off-center vertices can re-center onto the same neck point;
+    // keep one copy so the chain has no zero-length segments.
+    if (!samePoint(p, out[out.length - 1])) out.push(p);
+  }
+  var last = points[points.length - 1];
+  if (!samePoint(last, out[out.length - 1])) out.push(last);
+  return out.length >= 2 ? out : points;
+}
+
+// Straighten the runs of vertices at each end of a chain that lie inside a
+// source polygon. Such a vertex cannot be a medial point (its distance to that
+// polygon's boundary would be 0), and it cannot be re-centered either: these
+// runs trail past the mouth of a gap, where the banks converge into a border the
+// medial construction deliberately does not see (a shared arc partitions any
+// overlap by itself, so collectCandidateArcPaths prunes it), leaving no channel
+// to center them in. They are not dropped, because a chain has to poke out past
+// the gap it divides to node against the enclosing boundary (see
+// extendChainEndpoints): the run is collapsed to one straight segment, which
+// keeps the chain's reach and loses only its wandering.
+function straightenChainTails(points, ctx) {
+  var last = points.length - 1;
+  var lo = 0, hi = last;
+  while (lo < hi && insideAnyPolygon(ctx, points[lo])) lo++;
+  while (hi > lo && insideAnyPolygon(ctx, points[hi])) hi--;
+  if (hi - lo < 1) return points; // no interior vertex survives: leave it alone
+  if (lo === 0 && hi === last) return points;
+  var out = points.slice(lo, hi + 1);
+  if (lo > 0) out.unshift(points[0]);
+  if (hi < last) out.push(points[last]);
+  return out;
+}
+
+function insideAnyPolygon(ctx, p) {
+  var near = nearestSegment(ctx, p[0], p[1], -1);
+  return near.id !== -1 && insideOwnerPolygon(ctx.seg, near.id, p[0], p[1]);
+}
+
+// @p re-centered between its two nearest banks, or @p itself when it is already
+// a valid centerline point or only one feature is in range.
+var footA = [0, 0], footB = [0, 0]; // scratch, not retained
+function recenteredVertex(ctx, p) {
+  var near = nearestSegment(ctx, p[0], p[1], -1);
+  if (near.id === -1) return p;
+  var far = nearestSegment(ctx, p[0], p[1], ctx.seg.feat[near.id]);
+  if (far.id === -1) return p;
+  // Only a pair of banks within their combined buffer reach forms a channel this
+  // vertex could be the centerline of. Past the mouth of a gap the opposite bank
+  // can be arbitrarily far away, and pulling the vertex to the midpoint of that
+  // pair would move it hundreds of metres off any boundary.
+  if (far.dist > ctx.seg.reach[near.id] + ctx.seg.reach[far.id]) return p;
+  var offCenter = near.dist < far.dist * MEDIAL_BALANCE_TOLERANCE;
+  if (!offCenter && !insideOwnerPolygon(ctx.seg, near.id, p[0], p[1])) return p;
+  segmentFoot(ctx.seg, near.id, p[0], p[1], footA);
+  segmentFoot(ctx.seg, far.id, p[0], p[1], footB);
+  return [(footA[0] + footB[0]) / 2, (footA[1] + footB[1]) / 2];
+}
+
+// True when (x, y) lies on the interior side of indexed segment @s, i.e. inside
+// the feature that owns it. Source rings are traversed with the polygon interior
+// on their right, and seg.side records whether the stored segment direction
+// matches its owner's traversal, so the sign of the cross product places the
+// point. Judged against the point's nearest segment, this is the test that
+// catches a medial vertex thrown out of a pinching gap into a neighbouring
+// polygon -- distance cannot: such a vertex is a channel width behind one bank
+// and two channel widths from the other, the same ratio as a merely off-center
+// point still inside the channel. A true medial vertex is never inside a source
+// polygon (its distance to that polygon's boundary would be 0).
+function insideOwnerPolygon(seg, s, x, y) {
+  var dx = seg.x1[s] - seg.x0[s], dy = seg.y1[s] - seg.y0[s];
+  var cross = dx * (y - seg.y0[s]) - dy * (x - seg.x0[s]);
+  return cross * seg.side[s] < 0;
+}
+
+// The nearest indexed source segment to (x, y), skipping segments owned by
+// @excludeFeat (-1 excludes nothing). Probes the 3x3 grid-cell neighborhood
+// (cell == max reach). id is -1 when the window holds no eligible segment.
+function nearestSegment(ctx, x, y, excludeFeat) {
+  var seg = ctx.seg;
+  var cx = ctx.colOf(x), cy = ctx.rowOf(y);
+  var bestId = -1, best = Infinity;
+  for (var gx = cx - 1; gx <= cx + 1; gx++) {
+    for (var gy = cy - 1; gy <= cy + 1; gy++) {
+      var bucket = ctx.grid.get(ctx.cellKey(gx, gy));
+      if (!bucket) continue;
+      for (var b = 0; b < bucket.length; b++) {
+        var s = bucket[b];
+        if (seg.feat[s] === excludeFeat) continue;
+        var d2 = pointSegDistSq2(x, y, seg.x0[s], seg.y0[s], seg.x1[s], seg.y1[s]);
+        if (d2 < best) { best = d2; bestId = s; }
+      }
+    }
+  }
+  return {id: bestId, dist: Math.sqrt(best)};
+}
+
+// Closest point to (x, y) on indexed segment @s, clamped to its endpoints,
+// written into @out.
+function segmentFoot(seg, s, x, y, out) {
+  var ax = seg.x0[s], ay = seg.y0[s];
+  var dx = seg.x1[s] - ax, dy = seg.y1[s] - ay;
+  var len2 = dx * dx + dy * dy;
+  var t = len2 > 0 ? ((x - ax) * dx + (y - ay) * dy) / len2 : 0;
+  if (t < 0) t = 0;
+  if (t > 1) t = 1;
+  out[0] = ax + t * dx;
+  out[1] = ay + t * dy;
+}
+
+function samePoint(a, b) {
+  return a[0] === b[0] && a[1] === b[1];
+}
+
 // Boundary sample spacing as a fraction of the local gap width: smaller gives a
 // smoother medial axis (more sites) in narrow channels. 0.5 keeps the spacing
 // at most half the gap, so a channel of width w has at least two samples per
@@ -367,7 +521,12 @@ function collectCandidateArcPaths(shapes, coordDistances, arcs) {
     if (f === -1 && r === -1) continue; // arc not used by a buffered feature
     if (f !== -1 && r !== -1) continue; // shared interior border -- not a gap
     var pts = arcCoords(arcs, i);
-    if (pts.length >= 2) paths.push({owner: f !== -1 ? f : r, points: pts});
+    // forward records whether the owner traverses the arc in the stored
+    // direction, which is what fixes the interior side of its segments (see
+    // insideOwnerPolygon).
+    if (pts.length >= 2) {
+      paths.push({owner: f !== -1 ? f : r, points: pts, forward: f !== -1});
+    }
   }
   return paths;
 }
@@ -484,7 +643,7 @@ export function buildSegmentGrid(verts, coordDistances) {
   function cellKey(cx, cy) { return (cx + 1) * rowSpan + (cy + 1); }
   function colOf(x) { return Math.floor((x - xmin) / cell); }
   function rowOf(y) { return Math.floor((y - ymin) / cell); }
-  var seg = {x0: [], y0: [], x1: [], y1: [], feat: [], reach: []};
+  var seg = {x0: [], y0: [], x1: [], y1: [], feat: [], reach: [], side: []};
   var grid = new Map();
 
   // Index a segment into every cell it crosses, column by column: within one
@@ -524,11 +683,12 @@ export function buildSegmentGrid(verts, coordDistances) {
     var pts = path.points;
     var feat = path.owner;
     var featReach = coordDistances[feat];
+    var side = path.forward === false ? -1 : 1;
     for (var k = 0; k + 1 < pts.length; k++) {
       var ax = pts[k][0], ay = pts[k][1], bx = pts[k + 1][0], by = pts[k + 1][1];
       var idx = seg.feat.length;
       seg.x0.push(ax); seg.y0.push(ay); seg.x1.push(bx); seg.y1.push(by);
-      seg.feat.push(feat); seg.reach.push(featReach);
+      seg.feat.push(feat); seg.reach.push(featReach); seg.side.push(side);
       addSegment(ax, ay, bx, by, idx);
     }
   });

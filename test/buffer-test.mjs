@@ -1306,6 +1306,48 @@ describe('mapshaper-buffer.js', function () {
       });
     })
 
+    // A gap that narrows to a point cannot be resolved by finer sampling: its
+    // width goes to zero while the site spacing has a floor. The sliver triangles
+    // spanning such a neck have circumcenters that land past a bank, and the
+    // medial chain used to follow them, wandering into the neighbouring polygons
+    // (72% of its vertices ended up inside one) and zigzagging from bank to bank.
+    // The centering pass measures each vertex against the source segments and
+    // pulls it back between the banks. This fixture is a three-state gap that
+    // pinches shut in several places; its chain endpoints are excluded because
+    // those are extended past the source boundary on purpose.
+    it('keeps the medial inside a gap that pinches shut', function () {
+      var file = 'test/data/features/clean/ex24_three_state_internal_gap.json';
+      return api.applyCommands('-i ' + file +
+        ' -buffer 200m topological debug-voronoi -o format=geojson medial.json'
+      ).then(function(out) {
+        var fc = JSON.parse(out['medial.json']);
+        var geoms = (fc.geometries || (fc.features || []).map(function(f) {
+          return f.geometry;
+        })).filter(Boolean);
+        var dataset = api.internal.importFile(file, {});
+        api.internal.buildTopology(dataset);
+        var shapes = dataset.layers[0].shapes;
+        var inside = 0, total = 0;
+        geoms.forEach(function(g) {
+          var parts = g.type == 'LineString' ? [g.coordinates] : g.coordinates;
+          parts.forEach(function(part) {
+            for (var i = 1; i < part.length - 1; i++) {
+              total++;
+              var hit = shapes.some(function(shape) {
+                return api.geom.testPointInPolygon(part[i][0], part[i][1], shape,
+                  dataset.arcs);
+              });
+              if (hit) inside++;
+            }
+          });
+        });
+        assert(total > 100, 'expected a populated medial network');
+        assert(inside / total < 0.25,
+          'medial vertices should stay out of the source polygons, ' +
+          inside + ' of ' + total + ' inside');
+      });
+    })
+
     // The undocumented debug-delaunay flag emits the Delaunay triangulation of
     // the adaptive sample sites (the mesh the medial axis is built from) as
     // triangle polygons, topological-only.

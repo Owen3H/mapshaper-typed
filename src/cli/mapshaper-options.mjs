@@ -772,6 +772,14 @@ export function getOptionParser() {
 
   parser.command('clean')
     .describe('fixes geometry issues, such as polygon overlaps and gaps')
+    .option('close-gaps', {
+      describe: 'close narrow gaps between mosaic polygons',
+      type: 'flag'
+    })
+    .option('close-distance', {
+      describe: 'maximum distance for closing exterior gaps (default is automatic)',
+      type: 'distance'
+    })
     .option('gap-fill-area', minGapAreaOpt)
     .option('sliver-control', sliverControlOpt)
     .option('snap-interval', snapIntervalOpt)

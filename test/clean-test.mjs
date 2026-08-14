@@ -1,6 +1,29 @@
 import assert from 'assert';
+import fs from 'fs';
 import api from '../mapshaper.js';
 var ArcCollection = api.internal.ArcCollection;
+
+function featureRings(feature) {
+  var g = feature.geometry;
+  var polygons = g.type == 'Polygon' ? [g.coordinates] : g.coordinates;
+  var rings = [];
+  polygons.forEach(function(poly) {
+    poly.forEach(function(ring) { rings.push(ring); });
+  });
+  return rings;
+}
+
+function distToRings(px, py, rings) {
+  var min = Infinity;
+  rings.forEach(function(ring) {
+    for (var i = 1; i < ring.length; i++) {
+      var d = api.geom.pointSegDistSq(px, py, ring[i - 1][0], ring[i - 1][1],
+        ring[i][0], ring[i][1]);
+      if (d < min) min = d;
+    }
+  });
+  return Math.sqrt(min);
+}
 
 function clean(shapes, arcs) {
   var dataset = {
@@ -165,6 +188,236 @@ describe('mapshaper-clean.js', function () {
       var area2 = json.features[2].properties.area;
       assert(area1 > 60000000);
       assert(area2 > 25000000)
+    })
+
+    describe('close-gaps option', function() {
+      var ex25 = 'test/data/features/clean/ex25_slice_in_polygon.json';
+      var ex26 = 'test/data/features/clean/ex26_external_gap_between_polygons.json';
+      var ex24 = 'test/data/features/clean/ex24_three_state_internal_gap.json';
+      var ex27 = 'test/data/features/clean/ex27_staggered_external_gap.json';
+
+      function getEasternTips(json) {
+        return json.features.map(function(f) {
+          var coords = f.geometry.type == 'Polygon' ?
+            f.geometry.coordinates : f.geometry.coordinates.flat();
+          var best = null;
+          coords.forEach(function(ring) {
+            ring.forEach(function(p) {
+              if (p[0] < -75.868 || p[0] > -75.865 ||
+                  p[1] < 36.5503 || p[1] > 36.5506) return;
+              if (!best || p[0] > best[0]) best = p;
+            });
+          });
+          return best;
+        });
+      }
+
+      function getSeamXCoords(feature) {
+        var ring = feature.geometry.coordinates[0];
+        return ring.filter(function(p) {
+          return p[0] > 4.9 && p[0] < 5.1;
+        }).map(function(p) { return p[0]; });
+      }
+
+      it('closes an external seam automatically', async function() {
+        var out = await api.applyCommands(
+          '-i ' + ex26 + ' -clean close-gaps -o out.json');
+        var json = JSON.parse(String(out['out.json']));
+        var tips = getEasternTips(json);
+        assert.deepEqual(tips[0], tips[1],
+          'the two polygons should share the snapped mouth vertex');
+        // The rest of this fixture's crack consists of corresponding vertices.
+        // Once the mouth is snapped, clean rebuilds it as one shared boundary
+        // rather than assigning a long gap polygon to either feature.
+        assert(tips[0][0] > -75.868);
+      })
+
+      it('respects an explicit close-distance', async function() {
+        var out = await api.applyCommands(
+          '-i ' + ex26 + ' -clean close-gaps close-distance=0.001m -o out.json');
+        var json = JSON.parse(String(out['out.json']));
+        var tips = getEasternTips(json);
+        assert.notDeepEqual(tips[0], tips[1],
+          'a 1mm limit should not close the approximately 3mm mouth');
+
+        out = await api.applyCommands(
+          '-i ' + ex26 + ' -clean close-gaps close-distance=1m -o out.json');
+        json = JSON.parse(String(out['out.json']));
+        tips = getEasternTips(json);
+        assert.deepEqual(tips[0], tips[1]);
+      })
+
+      it('does not close a cut within one polygon', async function() {
+        var normal = await api.applyCommands('-i ' + ex25 + ' -clean -o out.json');
+        var closing = await api.applyCommands(
+          '-i ' + ex25 + ' -clean close-gaps -o out.json');
+        assert.equal(String(closing['out.json']), String(normal['out.json']),
+          'single-feature geometry should be byte-identical');
+      })
+
+      // Facing edges stay within tolerance for a sustained length, but vertices
+      // on either bank are staggered -- the old mutual-nearest run filter would
+      // reject this seam. The mouth is a within-tolerance vertex pair.
+      it('closes a staggered external seam', async function() {
+        var out = await api.applyCommands(
+          '-i ' + ex27 +
+          ' -clean close-gaps close-distance=500m -o out.json');
+        var json = JSON.parse(String(out['out.json']));
+        var left = json.features.find(function(f) {
+          return f.properties.name == 'left';
+        });
+        var right = json.features.find(function(f) {
+          return f.properties.name == 'right';
+        });
+        var leftXs = getSeamXCoords(left);
+        var rightXs = getSeamXCoords(right);
+        assert(leftXs.length > 0 && rightXs.length > 0);
+        // After snapping, the two banks should meet near the midline (x = 5).
+        // Coordinates are degree-like; the ~0.003° (~333m) crack is closed with
+        // close-distance=500m. Vertices on either bank are staggered in y.
+        leftXs.forEach(function(x) {
+          assert(Math.abs(x - 5) < 0.001,
+            'left seam should collapse toward the midline, got ' + x);
+        });
+        rightXs.forEach(function(x) {
+          assert(Math.abs(x - 5) < 0.001,
+            'right seam should collapse toward the midline, got ' + x);
+        });
+
+        // A short distant near-miss must not be snapped (locality / min length).
+        var distant = json.features.find(function(f) {
+          return f.properties.name == 'distant';
+        });
+        var neighbor = json.features.find(function(f) {
+          return f.properties.name == 'distant_neighbor';
+        });
+        var dRight = Math.max.apply(null, distant.geometry.coordinates[0].map(
+          function(p) { return p[0]; }));
+        var nLeft = Math.min.apply(null, neighbor.geometry.coordinates[0].map(
+          function(p) { return p[0]; }));
+        assert(nLeft - dRight > 0.002,
+          'short distant near-miss should remain open');
+      })
+
+      // Guards against a quadratic seam walk: before the staggered-edge change,
+      // this national mosaic finished in ~0.7s. A generous 3s bound fails CI on a
+      // clear regression without being flaky on ordinary machines.
+      it('close-gaps stays fast on a national mosaic', async function() {
+        this.timeout(10000);
+        var file = 'test/data/features/buffer/__01_thin_gap_polygons.json';
+        var t0 = Date.now();
+        await api.applyCommands('-i ' + file + ' -clean close-gaps -o out.json');
+        var ms = Date.now() - t0;
+        assert(ms < 3000,
+          'close-gaps on the national mosaic should stay under 3s, took ' + ms + 'ms');
+      })
+
+      it('partitions a three-feature interior gap among its neighbors', async function() {
+        var sourceOut = await api.applyCommands(
+          '-i ' + ex24 + ' -each "area=this.area" -o source.json');
+        var cleanOut = await api.applyCommands(
+          '-i ' + ex24 + ' -clean close-gaps -each "area=this.area" -o clean.json');
+        var source = JSON.parse(String(sourceOut['source.json']));
+        var clean = JSON.parse(String(cleanOut['clean.json']));
+        var gains = clean.features.map(function(f, i) {
+          return f.properties.area - source.features[i].properties.area;
+        });
+        assert(gains.every(function(gain) { return gain > 1e6; }),
+          'all three polygons should receive a substantial portion of the gap');
+        assert(Math.max.apply(null, gains) / Math.min.apply(null, gains) < 2,
+          'no polygon should receive a long winner-take-all spike');
+
+        var dataset = api.internal.importGeoJSON(clean, {});
+        api.internal.buildTopology(dataset);
+        var arcOwners = Array.from({length: dataset.arcs.size()}, function() {
+          return new Set();
+        });
+        api.internal.traversePaths(dataset.layers[0].shapes, function(o) {
+          var arcId = o.arcId < 0 ? ~o.arcId : o.arcId;
+          arcOwners[arcId].add(o.shapeId);
+        });
+        var sharedArcs = dataset.arcs.toArray().filter(function(arc, i) {
+          return arcOwners[i].size > 1;
+        });
+        var endpointCounts = {};
+        sharedArcs.forEach(function(arc) {
+          [arc[0], arc[arc.length - 1]].forEach(function(p) {
+            var key = p.join('~');
+            endpointCounts[key] = (endpointCounts[key] || 0) + 1;
+          });
+        });
+        var junctionKey = Object.keys(endpointCounts).find(function(key) {
+          return endpointCounts[key] == 3;
+        });
+        assert(junctionKey, 'the partition should have one three-way junction');
+        var junction = junctionKey.split('~').map(Number);
+        var incidentVectors = sharedArcs.reduce(function(vectors, arc) {
+          var a = arc[0], b = arc[arc.length - 1], neighbor;
+          if (a[0] == junction[0] && a[1] == junction[1]) neighbor = arc[1];
+          if (b[0] == junction[0] && b[1] == junction[1]) {
+            neighbor = arc[arc.length - 2];
+          }
+          if (neighbor) {
+            vectors.push([
+              neighbor[0] - junction[0],
+              neighbor[1] - junction[1]
+            ]);
+          }
+          return vectors;
+        }, []);
+        assert.equal(incidentVectors.length, 3);
+        assert(incidentVectors.every(function(v) {
+          var major = Math.max(Math.abs(v[0]), Math.abs(v[1]));
+          var minor = Math.min(Math.abs(v[0]), Math.abs(v[1]));
+          return major < 0.002 || minor / major < 0.1;
+        }), 'the junction should not contain long diagonal connectors');
+        var sharedPointCount = sharedArcs.reduce(function(sum, arc) {
+          return sum + arc.length;
+        }, 0);
+        assert(sharedPointCount < 500,
+          'medial boundaries should be smoothed rather than retaining raw zigzags');
+      })
+
+      // Where this fixture's gap narrows past the medial's sampling spacing, the
+      // partition boundary used to jump clear across the channel and back --
+      // hugging one bank for a stretch, then the other -- because the sampled
+      // Voronoi throws its circumcenters out of a pinching channel. Walk the
+      // cleaned boundary through the gap corridor and count how often it flips
+      // from one bank to the other; it used to flip 98 times.
+      it('keeps the partition boundary off the banks where the gap pinches', async function() {
+        var out = await api.applyCommands('-i ' + ex24 + ' -clean close-gaps -o out.json');
+        var source = JSON.parse(fs.readFileSync(ex24, 'utf8'));
+        var cleaned = JSON.parse(String(out['out.json']));
+        var banks = source.features.map(featureRings);
+        var flips = 0, hugging = 0, centered = 0;
+        cleaned.features.forEach(function(feature, featureId) {
+          featureRings(feature).forEach(function(ring) {
+            var bank = 0; // which bank the boundary last hugged, 0 == neither
+            ring.forEach(function(p) {
+              var dists = banks.map(function(rings, i) {
+                return {id: i, dist: distToRings(p[0], p[1], rings)};
+              }).sort(function(a, b) { return a.dist - b.dist; });
+              var near = dists[0], far = dists[1];
+              // Consider only vertices inside a real gap corridor: a second
+              // feature nearby (0.003 degrees) but not coincident.
+              if (far.dist > 0.003 || far.dist < 1e-7) { bank = 0; return; }
+              var offset = (far.dist - near.dist) / (far.dist + near.dist);
+              if (offset > 0.8) { // sitting on one bank rather than between them
+                hugging++;
+                var side = near.id === featureId ? 1 : -1;
+                if (bank !== 0 && side !== bank) flips++;
+                bank = side;
+              } else if (offset < 0.3) {
+                centered++;
+              }
+            });
+          });
+        });
+        assert(centered > 100, 'expected a populated gap corridor');
+        assert.equal(flips, 0, 'the boundary should not zigzag between the banks');
+        assert(hugging < 25,
+          'the boundary should stay between the banks, hugging count ' + hugging);
+      })
     })
 
   })

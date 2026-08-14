@@ -71,6 +71,13 @@ export function dissolvePolygonGroups2(groups, lyr, dataset, opts) {
   profileStart('dissolvePolygonGroups2');
   profileStart('dpg2.NodeCollection');
   var arcFilter = getArcPresenceTest(lyr.shapes, dataset.arcs);
+  if (opts._mosaic_cut_arcs) {
+    var layerArcFilter = arcFilter;
+    arcFilter = function(arcId) {
+      var id = arcId < 0 ? ~arcId : arcId;
+      return layerArcFilter(arcId) || opts._mosaic_cut_arcs[id];
+    };
+  }
   var nodes = new NodeCollection(dataset.arcs, arcFilter);
   profileEnd('dpg2.NodeCollection');
   var mosaicOpts = {

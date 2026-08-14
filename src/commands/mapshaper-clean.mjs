@@ -1,8 +1,11 @@
 import { dissolvePolygonGroups2 } from '../dissolve/mapshaper-polygon-dissolve2';
 import { cleanPolylineLayerGeometry } from '../polylines/mapshaper-polyline-clean';
+import { closePolygonMosaicGaps } from '../polygons/mapshaper-close-gaps';
+import { partitionPolygonMosaicGaps } from '../polygons/mapshaper-partition-gaps';
 import { dissolveArcs } from '../paths/mapshaper-arc-dissolve';
 import { layerHasGeometry, layerHasPaths } from '../dataset/mapshaper-layer-utils';
 import { addIntersectionCuts } from '../paths/mapshaper-intersection-cuts';
+import { traversePaths } from '../paths/mapshaper-path-utils';
 import { rewindPolygons } from '../polygons/mapshaper-ring-nesting';
 import { buildTopology } from '../topology/mapshaper-topology';
 import { profileStart, profileEnd } from '../utils/mapshaper-profile';
@@ -23,6 +26,23 @@ export function cleanLayers(layers, dataset, optsArg) {
   var deepClean = !opts.only_arcs;
   var pathClean = utils.some(layers, layerHasPaths);
   var nodes;
+  if (opts.close_gaps && pathClean && dataset.arcs) {
+    profileStart('closePolygonMosaicGaps');
+    noteArcsWillChange(dataset.arcs, {operation: 'clean-closeGaps'});
+    var polygonLayers = layers.filter(function(lyr) {
+      return lyr.geometry_type == 'polygon';
+    });
+    polygonLayers.forEach(function(lyr) {
+      noteLayerWillChange(lyr, {operation: 'clean-closeGaps', unit: 'arc-ids'});
+    });
+    if (closePolygonMosaicGaps(layers, dataset, opts)) {
+      markArcsChanged(dataset.arcs, {operation: 'clean-closeGaps'});
+      polygonLayers.forEach(function(lyr) {
+        markLayerChanged(lyr, {operation: 'clean-closeGaps', unit: 'arc-ids'});
+      });
+    }
+    profileEnd('closePolygonMosaicGaps');
+  }
   if (opts.debug) {
     addIntersectionCuts(dataset, opts);
     profileEnd('cleanLayers');
@@ -40,9 +60,23 @@ export function cleanLayers(layers, dataset, optsArg) {
         nodes = addIntersectionCuts(dataset, opts);
       }
       if (lyr.geometry_type == 'polygon') {
+        delete opts._mosaic_cut_arcs;
+        if (opts.close_gaps) {
+          profileStart('partitionPolygonMosaicGaps');
+          noteArcsWillChange(dataset.arcs, {operation: 'clean-partitionGaps'});
+          var cutLayer = partitionPolygonMosaicGaps(lyr, dataset, nodes, opts);
+          if (cutLayer) {
+            markArcsChanged(dataset.arcs, {operation: 'clean-partitionGaps'});
+            nodes = addIntersectionCuts(dataset, opts);
+            opts._mosaic_cut_arcs = collectArcIds(cutLayer.shapes);
+            dataset.layers.splice(dataset.layers.indexOf(cutLayer), 1);
+          }
+          profileEnd('partitionPolygonMosaicGaps');
+        }
         profileStart('cleanPolygonLayerGeometry');
         cleanPolygonLayerGeometry(lyr, dataset, opts);
         profileEnd('cleanPolygonLayerGeometry');
+        delete opts._mosaic_cut_arcs;
       } else if (lyr.geometry_type == 'polyline') {
         profileStart('cleanPolylineLayerGeometry');
         cleanPolylineLayerGeometry(lyr, dataset, opts);
@@ -77,6 +111,14 @@ function cleanPolygonLayerGeometry(lyr, dataset, opts) {
   noteLayerWillChange(lyr, {operation: 'cleanPolygonLayerGeometry', unit: 'shapes'});
   lyr.shapes = dissolvePolygonGroups2(groups, lyr, dataset, opts);
   markLayerChanged(lyr, {operation: 'cleanPolygonLayerGeometry', unit: 'shapes'});
+}
+
+function collectArcIds(shapes) {
+  var ids = {};
+  traversePaths(shapes, function(o) {
+    ids[o.arcId < 0 ? ~o.arcId : o.arcId] = true;
+  });
+  return ids;
 }
 
 // Remove duplicate points from multipoint geometries

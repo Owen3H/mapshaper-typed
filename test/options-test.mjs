@@ -107,6 +107,14 @@ describe('mapshaper-options.js', function () {
     bad("-innerlines FIELD"); // doesn't take an argument
   })
 
+  describe('clean', function () {
+    good('-clean close-gaps close-distance=1m', {
+      close_gaps: true,
+      close_distance: '1m'
+    });
+    bad('-clean close-distance');
+  })
+
   describe('each', function() {
     good('-each target=filtered \'name="foo"', {target: 'filtered', expression: 'name="foo"'});
   });
