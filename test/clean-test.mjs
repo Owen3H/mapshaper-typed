@@ -420,6 +420,7 @@ describe('mapshaper-clean.js', function () {
       it('close-outer-gaps stays fast on a national mosaic', async function() {
         this.timeout(10000);
         var file = 'test/data/features/buffer/__big/01_thin_gap_polygons.json';
+        if (!fs.existsSync(file)) this.skip();
         var t0 = Date.now();
         await api.applyCommands('-i ' + file + ' -clean close-outer-gaps -o out.json');
         var ms = Date.now() - t0;
@@ -524,6 +525,7 @@ describe('mapshaper-clean.js', function () {
       it('keeps a precinct mosaic free of long spikes', async function() {
         this.timeout(10000);
         var file = 'test/data/features/clean/__franklin.json';
+        if (!fs.existsSync(file)) this.skip();
         var out = await api.applyCommands('-i ' + file + ' -clean -o out.json');
         var json = JSON.parse(String(out['out.json']));
         var worst = 0;

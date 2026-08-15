@@ -1,3 +1,10 @@
+v0.7.53
+* Added `gap-width=` to `-clean` and `-dissolve`, for filling gaps narrower than a given distance (e.g. `gap-width=2m`). A gap's width is estimated from its area and perimeter, so slender cracks are filled while more compact holes of similar area, such as small lakes, are more likely to be kept. `-clean` now applies this width test by default, in place of the area test it used before; `gap-fill-area=` and `sliver-control=` are deprecated, but still accepted.
+* Added `-clean close-outer-gaps`, which closes cracks that open onto the outside of a polygon mosaic, up to the width set by `gap-width=`, so that they are filled like enclosed gaps. It is opt-in because a narrow opening in a coverage is not always a mistake.
+* Robustness and quality improvements in `-buffer` and `-clean`.
+* Fixed `TypeError: Cannot read properties of null` when exporting FlatGeobuf with a `precision=` value that collapses a feature's geometry.
+* Features with null geometry are now written to (and read back from) FlatGeobuf files as records with no geometry, matching what the GeoJSON and Shapefile exporters do.
+
 v0.7.52
 * Added a "snip" tool to the web UI for interactively dividing polyline features.
 

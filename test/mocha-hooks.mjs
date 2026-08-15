@@ -1,5 +1,15 @@
 import api from '../mapshaper.js';
 
+// The GUI modules expect a browser: src/gui/gui-core.mjs reads window.mapshaper
+// as its first statement, so importing any of them under Node throws unless a
+// stand-in is already in place. Installed here rather than in the test files
+// that need it, because a file reached through a static import has no chance to
+// install anything first, and in parallel mode there is no saying which worker
+// runs it. Mocha loads this file once in every worker (global fixtures, by
+// contrast, run only in the main process), so the stand-ins are in place before
+// any test file is loaded.
+installBrowserGlobals();
+
 export const mochaHooks = {
   beforeEach: function() {
     resetMapshaperLogging();
@@ -8,6 +18,28 @@ export const mochaHooks = {
     resetMapshaperLogging();
   }
 };
+
+function installBrowserGlobals() {
+  // No document property on the window stand-in: runningInBrowser() tests for
+  // one, and mapshaper takes browser code paths (canvas encoding, image
+  // decoding) when it is there. The global document below is a stand-in for the
+  // GUI modules that reach for one as they load; nothing outside src/gui uses
+  // it without checking runningInBrowser() first.
+  defineGlobal('window', {mapshaper: api});
+  defineGlobal('document', {
+    createElement: function() {
+      return {style: {cssText: ''}};
+    }
+  });
+}
+
+// Defined non-enumerably, so that --check-leaks does not read it as a global
+// leaked by whichever test ran first, and configurably, so that a test needing
+// a fuller stand-in can still replace it.
+function defineGlobal(name, value) {
+  if (name in global) return;
+  Object.defineProperty(global, name, {value: value, configurable: true});
+}
 
 function resetMapshaperLogging() {
   api.internal.setLoggingFunctions(
