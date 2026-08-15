@@ -73,7 +73,10 @@ export function getIntervalConversionFactor(paramUnits, crs) {
     k = 1;
   } else if (fromParam && !fromCRS) {
     // known param units, unknown CRS -- error condition, not convertible
-    stop('Unable to convert', paramUnits, 'to unknown coordinates');
+    stop('Unable to convert', paramUnits,
+      'to unknown coordinates: the data has no coordinate reference system. ' +
+      'Give one with -proj init=<crs> (e.g. -proj init=EPSG:3857), ' +
+      'or use a distance in the data\'s own units.');
   } else if (!fromParam && fromCRS) {
     // unknown param units, known CRS -- assume param in meters (bw compatibility)
     k = 1 / fromCRS;

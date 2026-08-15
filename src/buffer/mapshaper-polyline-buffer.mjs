@@ -444,8 +444,22 @@ export function applyOutlineArtifactHoleFilter(bufLyr, bufArcs, srcLyr, srcDatas
     if (filterOpts.skipShape && filterOpts.skipShape(srcShape, srcArcs)) return bufShape;
     var intervalPct = simplifyFn ? simplifyFn(distance) / distance : 0;
     return filterOutlineArtifactHolesFromShape(bufShape, bufArcs, srcShape,
-      srcArcs, distance, intervalPct, sagPct, oneSided, sideOpts, spherical);
+      srcArcs, distance, intervalPct, sagPct, oneSided, sideOpts, spherical,
+      filterOpts.coverageIndex || null);
   });
+}
+
+// True if some other output feature covers the inside of this hole, making it
+// that feature's territory rather than an artifact of this one's
+// construction. @index is a PathIndex over every output shape: a hole is
+// outside its own feature by definition, so an enclosed probe can only be
+// another feature's.
+function holeIsNeighborTerritory(path, arcs, index) {
+  var probes = getHoleInteriorProbes(getProjectedRingPoints(path, arcs, false));
+  for (var i = 0; i < probes.length; i++) {
+    if (index.pointIsEnclosed(probes[i])) return true;
+  }
+  return false;
 }
 
 // Remove artifact rings left by dissolving the self-intersecting outline rings
@@ -457,8 +471,12 @@ export function applyOutlineArtifactHoleFilter(bufLyr, bufArcs, srcLyr, srcDatas
 // that its entire region lies inside the true buffer, and kept otherwise.
 // Filters one buffer shape (one source feature's dissolved outline); returns
 // the filtered shape, or null if nothing survives.
+// @coverageIndex: optional PathIndex over every output shape; a hole another
+// feature covers is kept whatever the distance test says. See the topological
+// polygon buffer, whose holes can be a neighbour's territory.
 export function filterOutlineArtifactHolesFromShape(bufShape, bufArcs, srcShape,
-    srcArcs, distance, intervalPct, sagPct, oneSided, sideOpts, spherical) {
+    srcArcs, distance, intervalPct, sagPct, oneSided, sideOpts, spherical,
+    coverageIndex) {
   var sourceSegments = null;
   var sourceParts = null;
   var shape2 = (bufShape || []).filter(function(path) {
@@ -471,6 +489,9 @@ export function filterOutlineArtifactHolesFromShape(bufShape, bufArcs, srcShape,
       return false;
     }
     if (!isHole) return true;
+    if (coverageIndex && holeIsNeighborTerritory(path, bufArcs, coverageIndex)) {
+      return true;
+    }
     if (oneSided) {
       if (!sourceParts) {
         sourceParts = getSourcePathParts(srcShape, srcArcs, spherical);

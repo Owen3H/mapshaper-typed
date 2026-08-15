@@ -1084,6 +1084,72 @@ describe('mapshaper-buffer.js', function () {
       assert.equal(pointInGeometry([2140, 1500], geoms[0]), false);
     })
 
+    // An enclave -- one feature filling a hole in another, as US independent
+    // cities sit inside their counties -- is the configuration that exposed the
+    // outline artifact-hole filter deleting deliberate holes. The ring the
+    // partition withholds from the surrounding feature lies inside that
+    // feature's own buffer, so the filter read it as a dissolve artifact and
+    // filled it, handing it the enclave. It got worse with radius, because a
+    // larger buffer leaves a shallower ring: at 400 the whole enclave went.
+    it('topological buffers do not swallow an enclave, at any radius', async function () {
+      var enclave = {type: 'FeatureCollection', features: [{
+        type: 'Feature', properties: {id: 0},
+        geometry: {type: 'Polygon', coordinates: [
+          [[0, 0], [0, 3000], [3000, 3000], [3000, 0], [0, 0]],
+          [[1000, 1000], [2000, 1000], [2000, 2000], [1000, 2000], [1000, 1000]]
+        ]}
+      }, {
+        type: 'Feature', properties: {id: 1},
+        geometry: {type: 'Polygon', coordinates: [
+          [[1000, 1000], [1000, 2000], [2000, 2000], [2000, 1000], [1000, 1000]]
+        ]}
+      }]};
+      for (const radius of [50, 100, 200, 400]) {
+        var out = await api.applyCommands(
+          '-i polygons.json -buffer ' + radius +
+          ' topological -o format=geojson buffer.json',
+          {'polygons.json': enclave}
+        );
+        var geoms = getOutputGeometries(out);
+        assert.equal(countInterFeatureOverlaps(geoms), 0,
+          'features double-cover at radius ' + radius);
+        // the enclave keeps a core of its own that the surround cannot claim
+        assert.equal(pointInGeometry([1500, 1500], geoms[1]), true,
+          'enclave lost its centre at radius ' + radius);
+        assert.equal(pointInGeometry([1500, 1500], geoms[0]), false,
+          'surround swallowed the enclave centre at radius ' + radius);
+      }
+    })
+
+    // fill-gaps erodes the union of the dilated features, and that union is
+    // rebuilt from bare coordinates. Until it was given the source CRS, the
+    // erosion had nothing to convert '1km' against and the whole command failed
+    // with 'Unable to convert kilometers to unknown coordinates'. Only projected
+    // input was affected: on lat-long data getDatasetCrsInfo guesses wgs84 from
+    // the coordinate bounds, which hid this for every lat-long fixture.
+    describe('fill-gaps accepts real-world distance units on projected input', function () {
+      [['a FlatGeobuf carrying a CRS in its header',
+        'test/data/features/buffer/greenland_merc_polygon_error.fgb'],
+       ['a shapefile with a .prj',
+        'test/data/shapefile/two_states_mercator.shp']].forEach(function(pair) {
+        it(pair[0], async function () {
+          var out = await api.applyCommands(
+            '-i ' + pair[1] + ' -buffer 1km fill-gaps -o format=geojson buffer.json');
+          var geoms = getOutputGeometries(out).filter(Boolean);
+          assert(geoms.length > 0, 'produced no geometry');
+        });
+      });
+
+      // The same command in the data's own units never needed a CRS, so it
+      // worked throughout; it is here to show the units are what mattered.
+      it('and in bare coordinate units, as it always did', async function () {
+        var out = await api.applyCommands(
+          '-i test/data/shapefile/two_states_mercator.shp ' +
+          '-buffer 1000 fill-gaps -o format=geojson buffer.json');
+        assert(getOutputGeometries(out).filter(Boolean).length > 0);
+      });
+    })
+
     it('topological buffers reject negative distances', async function () {
       await assert.rejects(function() {
         return api.applyCommands(
@@ -1115,14 +1181,49 @@ describe('mapshaper-buffer.js', function () {
       assert(geometryHasHole(geom));
     })
 
-    it('topological buffers do not leave sliver holes along source margins', async function () {
+    // This used to assert that the margin slivers were filled in. They are not
+    // artifacts: both sit inside a neighbouring county's buffer, so filling them
+    // double-covered 0.2 km2 of it. What the fixture is really guarding is that
+    // no two features claim the same ground, so it now asserts that directly.
+    it('topological buffers do not double-cover along source margins', async function () {
       var out = await api.applyCommands(
         '-i test/data/shapefile/six_counties.shp ' +
         '-buffer 100m topological -o format=geojson buffer.json'
       );
       var geoms = getOutputGeometries(out);
 
-      assert.equal(getSmallHoleCount(geoms, 1e-8), 0);
+      assert.equal(countInterFeatureOverlaps(geoms), 0);
+    })
+
+    // The complement of the check above, on the same fixture. That one catches
+    // territory holes wrongly deleted; this one catches voids wrongly created.
+    //
+    // A topological buffer partitions exactly the ground a plain buffer of the
+    // same radius covers, so every hole in it has to be one of two things: a
+    // tile withheld because it is a neighbour's territory, or ground no buffer
+    // of that radius reaches. A hole that is neither is a defect of the
+    // partition. Asking the plain buffer settles it without any tolerance: at
+    // 100m this fixture has twelve holes, four territory and eight true gaps,
+    // among them a 44 m2 three-vertex sliver whose interior lies wholly outside
+    // the plain buffer union. The per-shape artifact pass used to delete that
+    // sliver, which is why removing it was right.
+    describe('every hole in a topological buffer is territory or a true gap', function () {
+      [['test/data/shapefile/six_counties.shp', '100m'],
+       ['test/data/features/buffer/w_or_wa_states.json', '2km']].forEach(function(pair) {
+        it(pair[0].split('/').pop() + ' at ' + pair[1], async function () {
+          var cmd = '-i ' + pair[0] + ' -buffer ' + pair[1] + ' ';
+          var geoms = getOutputGeometries(await api.applyCommands(
+            cmd + 'topological -o format=geojson buffer.json'));
+          // dissolve2 because enclosure in a set of *overlapping* paths is a
+          // parity test, not a union: ground two buffers cover reads as outside.
+          var union = getOutputGeometries(await api.applyCommands(
+            cmd + '-dissolve2 -o format=geojson buffer.json'));
+          var holes = classifyBufferHoles(geoms, union);
+
+          assert.deepEqual(holes.illegitimate, []);
+          assert(holes.territory.length + holes.gap.length > 0, 'no holes to judge');
+        });
+      });
     })
 
     // Regression: New Hanover County's small detached ring (area ~845k) sits
@@ -2351,8 +2452,9 @@ describe('mapshaper-buffer.js', function () {
       var def = await bufferGeoms('-i ' + file + ' -buffer 100m topological');
       var sec = await bufferGeoms('-i ' + file + ' -buffer 100m topological band-method');
       assert(getTotalBufferArea(sec) > 0);
-      // Clean-outline topological may drop spurious holes the band path keeps.
-      assert(countHoles(def) <= countHoles(sec));
+      // Clean-outline topological keeps the holes where a neighbour's territory
+      // was withheld from this feature; the band path fills some of them in.
+      assert(countHoles(def) >= countHoles(sec));
       assert(Math.abs(getTotalBufferArea(def) - getTotalBufferArea(sec)) /
         getTotalBufferArea(sec) < 0.005);
     })
@@ -3080,16 +3182,110 @@ function geometryHasVertex(geom, p) {
   });
 }
 
-function getSmallHoleCount(geoms, threshold) {
-  return geoms.reduce(function(memo, geom) {
+// Number of mosaic tiles that more than one feature claims: an exact count of
+// the places where two output features cover the same ground.
+function countInterFeatureOverlaps(geoms) {
+  var dataset = api.internal.importGeoJSON({
+    type: 'GeometryCollection',
+    geometries: geoms.filter(Boolean)
+  }, {});
+  var lyr = dataset.layers[0];
+  var nodes = api.internal.addIntersectionCuts(dataset, {rebuild_topology: true});
+  var mosaicIndex = new api.internal.MosaicIndex(lyr, nodes,
+    {flat: false, no_holes: false});
+  var count = 0;
+  for (var i = 0; i < mosaicIndex.mosaic.length; i++) {
+    if (mosaicIndex.getSourceIdsByTileId(i).length > 1) count++;
+  }
+  return count;
+}
+
+// Sorts every hole in a topological buffer into territory (another output
+// feature covers it), gap (its interior is outside the plain buffer union of
+// the same radius, so no buffer reaches it), or illegitimate -- neither, which
+// means the partition dropped ground it was supposed to hand to someone.
+// @union: the dissolved plain buffer, one non-overlapping shape.
+function classifyBufferHoles(geoms, union) {
+  var shapes = geoms.filter(Boolean);
+  var outIndex = makePathIndex(shapes);
+  var unionIndex = makePathIndex(union.filter(Boolean));
+  var out = {territory: [], gap: [], illegitimate: []};
+  shapes.forEach(function(geom, featureId) {
     var polys = geom.type == 'Polygon' ? [geom.coordinates] : geom.coordinates;
     polys.forEach(function(polygon) {
       polygon.slice(1).forEach(function(ring) {
-        if (Math.abs(ringArea(ring)) < threshold) memo++;
+        // The probes sit half the ring's local thickness inside it, which also
+        // keeps them clear of the rim, where this output and the plain buffer
+        // disagree by their own chord error and nothing can be concluded.
+        var probes = getHoleInteriorProbes(ring);
+        if (probes.length === 0) return; // too degenerate to probe; not judged
+        var where = {feature: featureId, area: Math.abs(ringArea(ring)),
+          vertices: ring.length - 1};
+        // A hole is outside its own feature by definition, so an enclosed probe
+        // can only be some other feature's ground.
+        if (probes.some(function(p) { return outIndex.pointIsEnclosed(p); })) {
+          out.territory.push(where);
+        } else if (probes.every(function(p) { return !unionIndex.pointIsEnclosed(p); })) {
+          out.gap.push(where);
+        } else {
+          out.illegitimate.push(where);
+        }
       });
     });
-    return memo;
-  }, 0);
+  });
+  return out;
+}
+
+function makePathIndex(geoms) {
+  var dataset = api.internal.importGeoJSON({
+    type: 'GeometryCollection',
+    geometries: geoms
+  }, {});
+  return new api.internal.PathIndex(
+    dataset.layers[0].shapes.filter(Boolean), dataset.arcs);
+}
+
+// Mirrors getHoleInteriorProbes in the polyline buffer: nudge edge midpoints
+// inward by roughly half the ring's local thickness, keeping the ones a
+// point-in-ring test confirms are inside.
+function getHoleInteriorProbes(ring) {
+  var area = Math.abs(ringArea(ring));
+  var perim = getRingPerimeter(ring);
+  var nudge = perim > 0 ? area / perim : 0;
+  var step = Math.max(1, Math.floor((ring.length - 1) / 12));
+  var probes = [];
+  var i, a, b, ex, ey, len, mx, my, px, py;
+  if (!(nudge > 0)) return probes;
+  for (i = 0; i < ring.length - 1 && probes.length < 12; i += step) {
+    a = ring[i];
+    b = ring[i + 1];
+    ex = b[0] - a[0];
+    ey = b[1] - a[1];
+    len = Math.sqrt(ex * ex + ey * ey);
+    if (!(len > 0)) continue;
+    mx = (a[0] + b[0]) / 2;
+    my = (a[1] + b[1]) / 2;
+    px = mx - ey / len * nudge;
+    py = my + ex / len * nudge;
+    if (pointInPolygonCoords([px, py], [ring])) {
+      probes.push([px, py]);
+      continue;
+    }
+    px = mx + ey / len * nudge;
+    py = my - ex / len * nudge;
+    if (pointInPolygonCoords([px, py], [ring])) probes.push([px, py]);
+  }
+  return probes;
+}
+
+function getRingPerimeter(ring) {
+  var sum = 0;
+  for (var i = 0; i < ring.length - 1; i++) {
+    var dx = ring[i + 1][0] - ring[i][0];
+    var dy = ring[i + 1][1] - ring[i][1];
+    sum += Math.sqrt(dx * dx + dy * dy);
+  }
+  return sum;
 }
 
 function getOutputGeometries(out, filename) {

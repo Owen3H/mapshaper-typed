@@ -142,6 +142,15 @@ export function makePolygonBuffer(lyr, dataset, opts) {
   }
   var output = buildPolygonBufferOutput(lyr, dataset, opts);
   var dataset2 = importGeoJSON(output.geojson, {type: 'polygon'});
+  // A buffer is in the same CRS as its input, and the GeoJSON round trip above
+  // does not carry one. Say so, because a caller that buffers this result again
+  // has to parse a distance against it -- fill-gaps does exactly that when it
+  // erodes the union of the dilated features. Without this, such a distance can
+  // only be resolved for a lat-long input, where getDatasetCrsInfo guesses
+  // wgs84 from the coordinate bounds; on projected input there is nothing to
+  // guess from and the buffer failed with 'Unable to convert kilometers to
+  // unknown coordinates'.
+  setDatasetCrsInfo(dataset2, getDatasetCrsInfo(dataset));
   if (spherical) {
     splitAntimeridianBufferDataset(dataset2);
     if (output.dissolveAfterSplit) {
@@ -153,7 +162,21 @@ export function makePolygonBuffer(lyr, dataset, opts) {
       lyr, dataset, opts, spherical, {
         skipShape: function(shape, arcs) {
           return shapeHasFillInsideHole(shape, arcs);
-        }
+        },
+        // Under the topological path a hole is often a tile withheld from this
+        // feature because it is a neighbour's territory (see
+        // getTopologicalBufferTileIds). The distance test cannot tell those from
+        // dissolve artifacts -- both lie inside this feature's own buffer -- so
+        // it deleted them, giving this feature ground another feature also
+        // claims. It got worse as the radius grew, since a bigger buffer leaves
+        // a shallower ring behind: across 3108 US counties it double-covered
+        // 7.6km2 at R=500m and 507km2 at R=5km, mostly Virginia's independent
+        // cities inside the counties enclosing them, and on 01_thin_gap_detail2
+        // at 5km it consumed one of the two features outright. Holes that no
+        // other feature covers are still the filter's to judge.
+        coverageIndex: opts.topological ?
+          new PathIndex(dataset2.layers[0].shapes.filter(Boolean), dataset2.arcs) :
+          null
       });
   }
   cullSubTolerancePolygonArtifacts(dataset2, lyr, dataset, opts);
@@ -885,6 +908,10 @@ function unionBufferDataset(dataset, opts) {
   if (coords.length === 0) return null;
   var unionDataset = getBufferDataset(coords);
   if (!unionDataset.arcs) return null;
+  // getBufferDataset builds from bare coordinates, so carry the CRS across:
+  // fill-gaps buffers this union again to erode it, and that needs a CRS to
+  // resolve a distance given in real-world units.
+  setDatasetCrsInfo(unionDataset, getDatasetCrsInfo(dataset));
   dissolveBufferDataset2(unionDataset, Object.assign({}, opts, {winding_fill: false}));
   return unionDataset;
 }
@@ -1665,22 +1692,22 @@ function makeTopologicalPolygonBufferGeometries(shapes, distances, sourceIds,
   var sourceIdIndex = getIdLookup(sourceIds);
   var bufferIdIndex = getIdToFeatureIdLookup(bufferIds);
   var sourceAreas = getSourceShapeAreas(shapes, sourceArcs);
-  var sourceInteriorPoints = getSourceInteriorPoints(shapes, sourceArcs);
   var ownerCtx = createTileOwnerContext(shapes, sourceArcs, sourceAreas,
     mosaicIndex.nodes.arcs);
   profileStart('topo:assignTiles');
   var result = shapes.map(function(shape, i) {
     var distance = distances[i];
-    var tileIds, geom;
+    var tileIds;
     if (!distance || !shape) return null;
     tileIds = getTopologicalBufferTileIds(sourceIds[i], bufferIds[i],
       i, mosaicIndex, sourceIdIndex, bufferIdIndex, ownerCtx);
-    geom = getTileIdsGeometry(tileIds, mosaicIndex, pathfind);
-    // Preserve holes that coincide with another feature's source territory (a
-    // tile excluded to prevent buffer overlap, see getTopologicalBufferTileIds);
-    // the single-shape artifact/sliver heuristics would otherwise fill them.
-    return removePositiveBufferArtifactHoles(geom, shape, sourceArcs, distance,
-      {points: sourceInteriorPoints, featureId: i});
+    // No artifact-hole filtering here. Every hole in this geometry is a tile
+    // withheld from this feature on purpose (see getTopologicalBufferTileIds),
+    // so there is nothing for a single-shape heuristic to clean up and it can
+    // only do harm: the interior-point territory test it used to run missed the
+    // holes it could not sample, and filling those handed a neighbour's ground
+    // to this feature -- 18.6 km2 of it across 3108 US counties at R=5km.
+    return getTileIdsGeometry(tileIds, mosaicIndex, pathfind);
   });
   profileEnd('topo:assignTiles');
   return result;
@@ -1899,22 +1926,6 @@ function getSourceShapeAreas(shapes, arcs) {
   });
 }
 
-// One interior point per positive ring-group (part) of every source shape,
-// tagged with its feature id. A multipart source contributes a point for each
-// detached part (e.g. a small island ring), so the topological hole filter can
-// recognize a neighbor's territory even when it is one part of a multipolygon.
-function getSourceInteriorPoints(shapes, arcs) {
-  var points = [];
-  shapes.forEach(function(shape, featureId) {
-    if (!shape) return;
-    getPolygonRingGroupShapes(shape, arcs).forEach(function(group) {
-      var p = findAnchorPoint(group, arcs);
-      if (p) points.push({x: p.x, y: p.y, featureId: featureId});
-    });
-  });
-  return points;
-}
-
 function getIdLookup(ids) {
   var index = [];
   ids.forEach(function(id) {
@@ -2126,11 +2137,7 @@ function bufferGeomHasCandidateHole(geom) {
   return false;
 }
 
-// @territory (optional, topological pipeline only): {points, featureId} where
-// points are source-part interior points tagged by feature id; a candidate hole
-// enclosing another feature's point is that neighbor's territory (excluded to
-// prevent overlap) and is always kept.
-function removePositiveBufferArtifactHoles(geom, shape, arcs, distance, territory) {
+function removePositiveBufferArtifactHoles(geom, shape, arcs, distance) {
   if (!geom) return null;
   // Nothing to filter unless the result actually has interior rings. Skip the
   // index build (filterArtifactHoles is itself a no-op on hole-free polygons,
@@ -2155,9 +2162,7 @@ function removePositiveBufferArtifactHoles(geom, shape, arcs, distance, territor
     shapeIndex: buildShapeSegmentIndex(shape, arcs),
     pathIndex: shape && shape.length > 0 ? new PathIndex([shape], arcs) : null,
     holeIndex: sourceHoles.length > 0 ?
-      buildShapeSegmentIndex(sourceHoles.map(function(h) {return h[0];}), arcs) : null,
-    territoryPoints: territory ? territory.points : null,
-    featureId: territory ? territory.featureId : -1
+      buildShapeSegmentIndex(sourceHoles.map(function(h) {return h[0];}), arcs) : null
   };
   if (geom.type == 'Polygon') {
     geom.coordinates = filterArtifactHoles(geom.coordinates, minHoleArea, ctx);
@@ -2267,61 +2272,9 @@ function getSourceHoleShapes(shape, arcs) {
 function filterArtifactHoles(polygon, minHoleArea, ctx) {
   if (polygon.length < 2) return polygon;
   return [polygon[0]].concat(polygon.slice(1).filter(function(ring) {
-    // A hole over another feature's source is real territory (kept regardless of
-    // size or how deep it sits in this feature's buffer); see getSourceInteriorPoints.
-    if (ringEnclosesOtherTerritory(ring, ctx)) return true;
     return Math.abs(getGeoJSONRingArea(ring)) > minHoleArea &&
       !positiveBufferHoleIsArtifact(ring, ctx);
   }));
-}
-
-function ringEnclosesOtherTerritory(ring, ctx) {
-  var points = ctx.territoryPoints;
-  if (!points) return false;
-  var bounds = getGeoJSONRingBounds(ring);
-  for (var i = 0; i < points.length; i++) {
-    if (points[i].featureId === ctx.featureId) continue;
-    if (!pointInGeoJSONRingBounds(points[i].x, points[i].y, bounds)) continue;
-    if (pointInGeoJSONRing(points[i].x, points[i].y, ring)) return true;
-  }
-  return false;
-}
-
-function getGeoJSONRingBounds(ring) {
-  var n = ring.length - 1; // skip duplicate closing vertex
-  if (n <= 0) n = ring.length;
-  var xmin = Infinity, ymin = Infinity, xmax = -Infinity, ymax = -Infinity;
-  var i, x, y;
-  for (i = 0; i < n; i++) {
-    x = ring[i][0];
-    y = ring[i][1];
-    if (x < xmin) xmin = x;
-    if (x > xmax) xmax = x;
-    if (y < ymin) ymin = y;
-    if (y > ymax) ymax = y;
-  }
-  return {xmin: xmin, ymin: ymin, xmax: xmax, ymax: ymax};
-}
-
-function pointInGeoJSONRingBounds(x, y, bounds) {
-  return x >= bounds.xmin && x <= bounds.xmax &&
-    y >= bounds.ymin && y <= bounds.ymax;
-}
-
-// Ray-casting point-in-ring test for a closed GeoJSON ring (array of [x, y],
-// first == last). Boundary cases are irrelevant here: territory probe points are
-// well inside their source part, far from any hole-ring edge.
-function pointInGeoJSONRing(x, y, ring) {
-  var inside = false;
-  for (var i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    var xi = ring[i][0], yi = ring[i][1];
-    var xj = ring[j][0], yj = ring[j][1];
-    if ((yi > y) !== (yj > y) &&
-        x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
-      inside = !inside;
-    }
-  }
-  return inside;
 }
 
 function positiveBufferHoleIsArtifact(ring, ctx) {
