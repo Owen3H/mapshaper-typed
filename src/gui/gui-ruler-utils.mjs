@@ -1,6 +1,8 @@
-export function getDistanceDisplay(distanceMeters, unitHint) {
-  var unit = unitHint || (distanceMeters >= 1000 ? 'km' : 'm');
-  var value = unit == 'km' ? distanceMeters / 1000 : distanceMeters;
+export function getDistanceDisplay(distanceMeters) {
+  var unit = getDistanceUnit(distanceMeters);
+  var value = unit == 'km' && distanceMeters / 1000 ||
+    unit == 'm' && distanceMeters || unit == 'cm' && distanceMeters * 100 ||
+    unit == 'mm' && distanceMeters * 1000 || 0;
   return {
     value,
     unit,
@@ -14,7 +16,9 @@ export function formatDistanceValue(value) {
 }
 
 export function getDistanceUnit(distanceMeters) {
-  return distanceMeters >= 1000 ? 'km' : 'm';
+  return distanceMeters >= 1000 && 'km' ||
+    distanceMeters >= 0.1 && 'm' || distanceMeters >= 0.01 && 'cm' ||
+    distanceMeters > 0 && 'mm' || 'm';
 }
 
 export function pointIsInLngLatRange(p) {
@@ -58,7 +62,8 @@ function getDistanceDecimals(value) {
   if (value >= 100) return 0;
   if (value >= 10) return 1;
   if (value >= 1) return 2;
-  return 3;
+  if (value > 0) return 3;
+  return 1;
 }
 
 function lngLatToUnitVector(lng, lat) {

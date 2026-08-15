@@ -452,11 +452,10 @@ export function RulerTool(gui, ext) {
     var projectedMeters = isLatLng ? null : getProjectedPathDistanceMeters(path);
     var geographicMeters = getGeographicPathDistanceMeters(path);
     var displayedMeters = geographicMeters !== null ? geographicMeters : projectedMeters;
-    var unit = getDistanceUnit(displayedMeters || 0);
     return {
       projectedMeters,
       geographicMeters,
-      distanceLabel: displayedMeters === null ? null : getDistanceDisplay(displayedMeters, unit).label
+      distanceLabel: displayedMeters === null ? null : getDistanceDisplay(displayedMeters).label
     };
   }
 
