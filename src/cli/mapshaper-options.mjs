@@ -40,11 +40,15 @@ export function getOptionParser() {
       },
       minGapAreaOpt = {
         old_alias: 'min-gap-area',
-        describe: 'threshold for filling gaps, e.g. 1.5km2 (default is small)',
+        describe: '(deprecated) use gap-width= instead',
         type: 'area'
       },
+      gapWidthOpt = {
+        describe: 'fill gaps narrower than this width, e.g. 2m (default is automatic)',
+        type: 'distance'
+      },
       sliverControlOpt = {
-        describe: 'boost gap-fill-area of slivers (0-1, default is 1)',
+        describe: '(deprecated) use gap-width= instead',
         type: 'number'
       },
       calcOpt = {
@@ -772,14 +776,11 @@ export function getOptionParser() {
 
   parser.command('clean')
     .describe('fixes geometry issues, such as polygon overlaps and gaps')
-    .option('close-gaps', {
-      describe: 'close narrow gaps between mosaic polygons',
+    .option('close-outer-gaps', {
+      describe: 'close cracks that open to the outside of the mosaic',
       type: 'flag'
     })
-    .option('close-distance', {
-      describe: 'maximum distance for closing exterior gaps (default is automatic)',
-      type: 'distance'
-    })
+    .option('gap-width', gapWidthOpt)
     .option('gap-fill-area', minGapAreaOpt)
     .option('sliver-control', sliverControlOpt)
     .option('snap-interval', snapIntervalOpt)
@@ -979,8 +980,9 @@ export function getOptionParser() {
       type: 'flag',
       describe: '[points] use 2D math to find centroids of latlong points'
     })
+    .option('gap-width', gapWidthOpt)
     .option('gap-fill-area', {
-      describe: '[polygons] threshold for filling gaps, e.g. 1.5km2',
+      describe: '[polygons] (deprecated) use gap-width= instead',
       type: 'area'
     })
     .option('sliver-control', sliverControlOpt)
@@ -1009,8 +1011,9 @@ export function getOptionParser() {
     .option('calc', calcOpt)
     .option('sum-fields', sumFieldsOpt)
     .option('copy-fields', copyFieldsOpt)
+    .option('gap-width', gapWidthOpt)
     .option('gap-fill-area', {
-      describe: 'threshold for filling gaps, e.g. 1.5km2',
+      describe: '(deprecated) use gap-width= instead',
       type: 'area'
     })
     .option('sliver-control', sliverControlOpt)

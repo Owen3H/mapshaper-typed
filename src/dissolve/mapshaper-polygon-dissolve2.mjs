@@ -89,12 +89,17 @@ export function dissolvePolygonGroups2(groups, lyr, dataset, opts) {
   var mosaicIndex = new MosaicIndex(lyr, nodes, mosaicOpts);
   profileEnd('dpg2.MosaicIndex');
   // gap fill doesn't work yet with overlapping shapes
-  var fillGaps = !opts.allow_overlaps && (opts.sliver_control || opts.gap_fill_area);
+  var fillGaps = !opts.allow_overlaps &&
+    (opts.gap_width || opts.sliver_control || opts.gap_fill_area);
   var cleanupData, filterData;
   if (fillGaps) {
     profileStart('dpg2.removeGaps');
-    var sliverOpts = utils.extend({sliver_control: 1}, opts);
-    filterData = getSliverFilter(lyr, dataset, sliverOpts);
+    var filterOpts = utils.extend({}, opts);
+    // Legacy area path: keep the historical default of full sliver control.
+    if (filterOpts.gap_width == null && filterOpts.sliver_control == null) {
+      filterOpts.sliver_control = 1;
+    }
+    filterData = getSliverFilter(lyr, dataset, filterOpts);
     cleanupData = mosaicIndex.removeGaps(filterData.filter);
     profileEnd('dpg2.removeGaps');
   }

@@ -19,7 +19,7 @@ export { composeDissolveLayer };
 
 // Options that require the topology-repair algorithm and are not supported
 // by the no-repair fast path.
-var REPAIR_REQUIRED_OPTS = ['gap_fill_area', 'sliver_control', 'allow_overlaps'];
+var REPAIR_REQUIRED_OPTS = ['gap_width', 'gap_fill_area', 'sliver_control', 'allow_overlaps'];
 
 // Sample size used to detect intersections in no-repair mode. Detection stops
 // after this many hits, so the warning message can include sample locations

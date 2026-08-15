@@ -11,6 +11,10 @@ export function degreesToMeters(deg) {
   return deg * D2R * R;
 }
 
+export function metersToDegrees(m) {
+  return m / (D2R * R);
+}
+
 export function distance3D(ax, ay, az, bx, by, bz) {
   var dx = ax - bx,
     dy = ay - by,

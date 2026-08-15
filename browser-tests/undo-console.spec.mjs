@@ -14,6 +14,8 @@ var DIVIDE_FIXTURES = 'test/data/features/divide/ex1_line.json,test/data/feature
 var INLAY_FIXTURES = 'test/data/features/inlay/ex1_outer.json,test/data/features/inlay/ex1_inner.json';
 var MOSAIC_FIXTURE = 'test/data/features/mosaic/two_polygons.json';
 var POLYGONS_FIXTURE = 'test/data/features/polygons/ia_county_lines.json';
+var GAP_PARTITION_FIXTURE = 'test/data/features/clean/ex24_three_state_internal_gap.json';
+var OUTER_CRACK_FIXTURE = 'test/data/features/clean/ex27_staggered_external_gap.json';
 var ALPHA_SHAPES_FIXTURE = 'test/data/features/alpha_shapes/points.geojson';
 
 var COMMAND_CASES = [{
@@ -166,6 +168,18 @@ var COMMAND_CASES = [{
   name: 'geometry cleaning',
   command: 'clean',
   fixture: LINE_FIXTURE
+}, {
+  // A gap bordering three features is partitioned with cut arcs, which replaces
+  // the dataset's arc collection.
+  name: 'geometry cleaning that partitions a gap',
+  command: 'clean gap-width=250m',
+  fixture: GAP_PARTITION_FIXTURE
+}, {
+  // Pinching a crack's mouth shut moves coordinates and re-cuts the dataset
+  // before the crack is filled, so the arcs are rewritten twice over.
+  name: 'geometry cleaning that closes an outer crack',
+  command: 'clean close-outer-gaps gap-width=500m',
+  fixture: OUTER_CRACK_FIXTURE
 }, {
   name: 'point layer copy from vertices',
   command: 'points + vertices',
@@ -462,6 +476,33 @@ test('polygon reprojection stores one arcs payload and no layer payload', async 
   expect(commandPayloads.filter(function(item) {
     return item.role == 'redo';
   })).toHaveLength(0);
+});
+
+// Undo has to put back the arc collection itself, not just its coordinates.
+// Restoring coordinates into a collection the dataset no longer refers to left
+// the layer's shapes pointing at arc ids from a collection that had been merged
+// and dissolved, and cleaning again dropped most of the features as empty.
+test('cleaning again after an undo repeats the same result', async function({page}) {
+  await loadFixture(page, GAP_PARTITION_FIXTURE);
+
+  var before = await getUndoState(page);
+  var featureCount = before.model.datasets[0].layers[0].shapeCount;
+
+  await runConsoleCommand(page, 'clean gap-width=250m');
+  var cleaned = await getUndoState(page);
+  expect(cleaned.model.checksum).not.toBe(before.model.checksum);
+
+  await page.evaluate(function() {
+    return window.mapshaper.undoTest.undo();
+  });
+  await expect.poll(async function() {
+    return (await getUndoState(page)).model.checksum;
+  }).toBe(before.model.checksum);
+
+  await runConsoleCommand(page, 'clean gap-width=250m');
+  var recleaned = await getUndoState(page);
+  expect(recleaned.model.datasets[0].layers[0].shapeCount).toBe(featureCount);
+  expect(recleaned.model.checksum).toBe(cleaned.model.checksum);
 });
 
 test('repeated clean does not store unchanged arcs payloads', async function({page}) {

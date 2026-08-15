@@ -88,6 +88,34 @@ describe('mapshaper-dissolve2.js dissolve tests', function () {
       test(input, 'gap-fill-area=1.1', expect, done);
     })
 
+    it('dissolving single polygon with gap-width= removes a narrow hole', function (done) {
+      // 1×1 hole: characteristic width 2A/P = 0.5
+      var input = {
+        type: 'Polygon',
+        coordinates: [[[0, 100], [0, 103], [3, 103], [3, 100], [0, 100]],
+          [[1, 101], [2, 101], [2, 102], [1, 102], [1, 101]]]
+      };
+      var expect = {
+        type: 'Polygon',
+        coordinates: [[[0, 100], [0, 103], [3, 103], [3, 100], [0,100]]]
+      };
+      test(input, 'gap-width=0.6', expect, done);
+    })
+
+    it('gap-width= below hole width retains the hole', function (done) {
+      var input = {
+        type: 'Polygon',
+        coordinates: [[[0, 100], [0, 103], [3, 103], [3, 100], [0, 100]],
+          [[1, 101], [2, 101], [2, 102], [1, 102], [1, 101]]]
+      };
+      var expect = {
+        type: 'Polygon',
+        coordinates: [[[0, 100], [0, 103], [3, 103], [3, 100], [0, 100]],
+          [[1, 101], [2, 101], [2, 102], [1, 102], [1, 101]]]
+      };
+      test(input, 'gap-width=0.4', expect, done);
+    })
+
     it('gap-fill-area=<area> supports units', function(done) {
       // Fig. 14
       var input = {

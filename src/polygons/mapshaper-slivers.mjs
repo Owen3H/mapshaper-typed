@@ -1,16 +1,54 @@
 
 import { roundToSignificantDigits } from '../geom/mapshaper-rounding';
 import { getDatasetCRS } from '../crs/mapshaper-projections';
-import { convertAreaParam, getAreaLabel } from '../geom/mapshaper-units';
+import { convertAreaParam, convertDistanceParam, getAreaLabel } from '../geom/mapshaper-units';
+import { fastLonLatDistance, distance2D } from '../geom/mapshaper-basic-geom';
 import geom from '../geom/mapshaper-geom';
 import { forEachSegmentInPath } from '../paths/mapshaper-path-utils';
 import { editShapes } from '../paths/mapshaper-shape-utils';
 import { error } from '../utils/mapshaper-logging';
 
-// Used by -clean -dissolve2 -filter-slivers -filter-islands to generate area filters
-// for removing small polygon rings.
-// Assumes lyr is a polygon layer.
+// Default gap-width as a fraction of the layer's median polygon-ring segment
+// length. Shared by interior fill and exterior close-outer-gaps.
+export var GAP_WIDTH_SEGMENT_FRACTION = 0.01;
+
+// Used by -clean -dissolve -filter-slivers -filter-islands to generate filters
+// for removing small polygon rings / filling mosaic gaps.
+// Prefers gap_width= (including 'auto'). Legacy gap_fill_area / sliver_control
+// remain for compatibility when gap_width is not set.
 export function getSliverFilter(lyr, dataset, opts) {
+  opts = opts || {};
+  if (opts.gap_width != null) {
+    return getGapWidthFilter(lyr, dataset, opts);
+  }
+  return getLegacyAreaFilter(lyr, dataset, opts);
+}
+
+function getGapWidthFilter(lyr, dataset, opts) {
+  var crs = getDatasetCRS(dataset);
+  var widthArg = opts.gap_width;
+  if (+widthArg === 0) {
+    return {
+      filter: function() { return false; },
+      threshold: 0,
+      label: '0 width threshold'
+    };
+  }
+  var threshold = (widthArg === 'auto') ?
+    getDefaultGapWidth(lyr, dataset.arcs) :
+    convertDistanceParam(widthArg, crs);
+  var filter = getGapWidthTest(dataset.arcs, threshold);
+  if (opts.keep_shapes) {
+    filter = keepShapes(filter);
+  }
+  return {
+    threshold: threshold,
+    filter: filter,
+    label: getGapWidthLabel(threshold, crs)
+  };
+}
+
+function getLegacyAreaFilter(lyr, dataset, opts) {
   var areaArg = opts.min_gap_area || opts.min_area || opts.gap_fill_area;
   if (+areaArg == 0) {
     return {
@@ -18,7 +56,7 @@ export function getSliverFilter(lyr, dataset, opts) {
       threshold: 0
     };
   }
-  var sliverControl = opts.sliver_control >= 0 ? opts.sliver_control : 0; // 0 is default
+  var sliverControl = opts.sliver_control >= 0 ? opts.sliver_control : 0;
   var crs = getDatasetCRS(dataset);
   var threshold = areaArg && areaArg != 'auto' ?
       convertAreaParam(areaArg, crs) :
@@ -42,7 +80,6 @@ export function getSliverFilter(lyr, dataset, opts) {
 function keepShapes(filter) {
   var flags;
   return function(path, pathId, paths) {
-    // console.log("keepShapes()", path, pathId, paths)
     if (pathId === 0) {
       flags = paths.map(path => filter(path));
     }
@@ -61,11 +98,37 @@ function getSliverLabel(areaStr, variable) {
   return areaStr + ' threshold';
 }
 
+export function getGapWidthLabel(width, crs) {
+  var meters = width;
+  if (crs && crs.to_meter > 0 && !crs.is_latlong) {
+    meters = width * crs.to_meter;
+  }
+  if (crs && (crs.is_latlong || crs.to_meter > 0)) {
+    if (meters < 1) return roundToSignificantDigits(meters * 1000, 2) + 'mm width threshold';
+    if (meters < 1000) return roundToSignificantDigits(meters, 2) + 'm width threshold';
+    return roundToSignificantDigits(meters / 1000, 2) + 'km width threshold';
+  }
+  return roundToSignificantDigits(width, 2) + ' width threshold';
+}
+
 function getMinAreaTest(minArea, dataset) {
   var pathArea = dataset.arcs.isPlanar() ? geom.getPlanarPathArea : geom.getSphericalPathArea;
   return function(path) {
     var area = pathArea(path, dataset.arcs);
     return Math.abs(area) < minArea;
+  };
+}
+
+// Fill when characteristic width 2A/P is below the threshold. Equivalent to
+// the old sliver-control=1 effective-area test when threshold = sqrt(A0/π).
+export function getGapWidthTest(arcs, maxWidth) {
+  var pathArea = arcs.isPlanar() ? geom.getPlanarPathArea : geom.getSphericalPathArea;
+  var pathPerim = arcs.isPlanar() ? geom.getPlanarPathPerimeter : geom.getSphericalPathPerimeter;
+  return function(ring) {
+    var area = Math.abs(pathArea(ring, arcs));
+    var perim = pathPerim(ring, arcs);
+    if (!(perim > 0)) return false;
+    return 2 * area / perim < maxWidth;
   };
 }
 
@@ -94,10 +157,46 @@ export function getSliverAreaFunction(arcs, strength) {
   };
 }
 
+// Median polygon-ring segment length * GAP_WIDTH_SEGMENT_FRACTION.
+export function getDefaultGapWidth(lyr, arcs) {
+  return getMedianPolygonSegmentLength(lyr, arcs) * GAP_WIDTH_SEGMENT_FRACTION;
+}
+
+export function getMedianPolygonSegmentLength(lyr, arcs) {
+  var lengths = collectPolygonSegmentLengths(lyr, arcs);
+  if (lengths.length === 0) return 0;
+  lengths.sort(); // numeric sort: lengths is a Float64Array
+  return lengths[Math.floor(lengths.length / 2)];
+}
+
+// Returns a Float64Array, so that the median can use a comparator-free numeric
+// sort. This measures every segment of every polygon ring, so on a detailed
+// mosaic the sort dominates.
+function collectPolygonSegmentLengths(lyr, arcs) {
+  var lengths = new Float64Array(1024);
+  var n = 0;
+  var calcLen = arcs.isPlanar() ? distance2D : fastLonLatDistance;
+  var onSeg = function(i, j, xx, yy) {
+    var len = calcLen(xx[i], yy[i], xx[j], yy[j]);
+    if (len > 0 && isFinite(len)) {
+      if (n === lengths.length) {
+        var grown = new Float64Array(n * 2);
+        grown.set(lengths);
+        lengths = grown;
+      }
+      lengths[n++] = len;
+    }
+  };
+  editShapes(lyr.shapes, function(path) {
+    forEachSegmentInPath(path, arcs, onSeg);
+  });
+  return lengths.subarray(0, n);
+}
+
 // Calculate a default area threshold using average segment length,
 // but increase the threshold for high-detail datasets and decrease it for
 // low-detail datasets (using segments per ring as a measure of detail).
-//
+// Kept for legacy gap_fill_area=auto.
 export function getDefaultSliverThreshold(lyr, arcs) {
   var ringCount = 0;
   var calcLen = arcs.isPlanar() ? geom.distance2D : geom.greatCircleDistance;

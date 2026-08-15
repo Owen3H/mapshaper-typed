@@ -58,7 +58,22 @@ export function MosaicIndex(lyr, nodes, optsArg) {
       var tile = mosaic[tileId];
       return filter(tile[0]); // test tile ring, ignoring any holes (does this matter?)
     });
-    filledIds.forEach(assignTileToAdjacentShape);
+    // Choose every tile's owner before filling any of them. A tile that has just
+    // been filled would otherwise present itself to the next one as a feature
+    // boundary, so a gap divided into sections could award every section to
+    // whichever feature received the first -- along a cut as long as the
+    // boundaries it was meant to divide between.
+    var chosen = filledIds.map(findAdjacentShapeId);
+    var deferredIds = [];
+    filledIds.forEach(function(tileId, i) {
+      if (chosen[i] > -1) {
+        tileShapeIndex.addTileToShape(chosen[i], tileId);
+      } else {
+        deferredIds.push(tileId);
+      }
+    });
+    // A tile bordered only by other gaps can be filled once they have been.
+    deferredIds.forEach(assignTileToAdjacentShape);
     return {
       removed: filledIds.length,
       remaining: remainingIds.length - filledIds.length
@@ -538,7 +553,9 @@ export function MosaicIndex(lyr, nodes, optsArg) {
     return mosaic[id];
   }
 
-  function assignTileToAdjacentShape(tileId) {
+  // The shape sharing the longest boundary with a tile, or -1 if the tile is
+  // bordered only by unassigned tiles.
+  function findAdjacentShapeId(tileId) {
     var ring = mosaic[tileId][0];
     var arcs = nodes.arcs;
     var arcId, neighborShapeId, neighborTileId, arcLen;
@@ -555,6 +572,11 @@ export function MosaicIndex(lyr, nodes, optsArg) {
         maxArcLen = arcLen;
       }
     }
+    return shapeId;
+  }
+
+  function assignTileToAdjacentShape(tileId) {
+    var shapeId = findAdjacentShapeId(tileId);
     if (shapeId > -1) {
       tileShapeIndex.addTileToShape(shapeId, tileId);
     }
@@ -578,6 +600,26 @@ export function MosaicIndex(lyr, nodes, optsArg) {
     fetchedTileIndex.clear();
     return uniqIds;
   }
+}
+
+// Flags, by absolute arc id, for arcs with no mosaic tile on one of their sides:
+// the border between the mosaic and the space outside it. Space that polygons
+// enclose becomes a tile, however narrow, so an arc facing untiled space faces
+// the outside, and a gap there is one that gap filling cannot reach.
+//
+// Only the mosaic is needed, not the tile assignment a MosaicIndex goes on to
+// make, so this builds the cheaper half on its own.
+export function getOutsideFacingArcFlags(nodes) {
+  var mosaic = buildPolygonMosaic(nodes).mosaic;
+  var arcTileIndex = new ShapeArcIndex(mosaic, nodes.arcs);
+  var flags = new Uint8Array(nodes.arcs.size());
+  for (var i = 0; i < flags.length; i++) {
+    if (arcTileIndex.getShapeIdByArcId(i) < 0 ||
+        arcTileIndex.getShapeIdByArcId(~i) < 0) {
+      flags[i] = 1;
+    }
+  }
+  return flags;
 }
 
 // Map arc ids to shape ids, assuming perfect topology

@@ -190,7 +190,7 @@ describe('mapshaper-clean.js', function () {
       assert(area2 > 25000000)
     })
 
-    describe('close-gaps option', function() {
+    describe('close-outer-gaps option', function() {
       var ex25 = 'test/data/features/clean/ex25_slice_in_polygon.json';
       var ex26 = 'test/data/features/clean/ex26_external_gap_between_polygons.json';
       var ex24 = 'test/data/features/clean/ex24_three_state_internal_gap.json';
@@ -212,79 +212,133 @@ describe('mapshaper-clean.js', function () {
         });
       }
 
-      function getSeamXCoords(feature) {
-        var ring = feature.geometry.coordinates[0];
-        return ring.filter(function(p) {
-          return p[0] > 4.9 && p[0] < 5.1;
-        }).map(function(p) { return p[0]; });
+      // Every distinct x coordinate along the crack, across all features.
+      function getSeamXCoords(json) {
+        var xs = {};
+        json.features.forEach(function(f) {
+          f.geometry.coordinates.flat().forEach(function(p) {
+            if (p[0] > 4.9 && p[0] < 5.1) xs[p[0]] = true;
+          });
+        });
+        return Object.keys(xs).map(parseFloat).sort();
       }
 
-      it('closes an external seam automatically', async function() {
+      // A crack that opens onto the space outside the mosaic is not enclosed by
+      // polygons, so no tile covers it and gap filling cannot reach it. Pinching
+      // its mouths shut encloses it, and the filling that follows awards it to one
+      // of its neighbors: one bank becomes the boundary between them, and the
+      // other is gone.
+      it('closes a crack that opens to the outside', async function() {
+        var plain = await api.applyCommands('-i ' + ex27 + ' -clean -o out.json');
+        assert.deepEqual(getSeamXCoords(JSON.parse(String(plain['out.json']))),
+          [4.9985, 5.0015], 'without the flag both banks should survive');
+
         var out = await api.applyCommands(
-          '-i ' + ex26 + ' -clean close-gaps -o out.json');
-        var json = JSON.parse(String(out['out.json']));
-        var tips = getEasternTips(json);
-        assert.deepEqual(tips[0], tips[1],
-          'the two polygons should share the snapped mouth vertex');
-        // The rest of this fixture's crack consists of corresponding vertices.
-        // Once the mouth is snapped, clean rebuilds it as one shared boundary
-        // rather than assigning a long gap polygon to either feature.
-        assert(tips[0][0] > -75.868);
+          '-i ' + ex27 + ' -clean close-outer-gaps gap-width=500m -o out.json');
+        var banks = getSeamXCoords(JSON.parse(String(out['out.json'])));
+        assert(banks.indexOf(5.0015) == -1,
+          'the east bank should be gone, got ' + banks.join(' '));
+        assert(banks.indexOf(4.9985) > -1,
+          'the west bank should be untouched, got ' + banks.join(' '));
+        // Only the mouths move, to the midpoint of the pair pinched together.
+        assert.deepEqual(banks, [4.9985, 5]);
       })
 
-      it('respects an explicit close-distance', async function() {
+      it('respects an explicit gap-width', async function() {
         var out = await api.applyCommands(
-          '-i ' + ex26 + ' -clean close-gaps close-distance=0.001m -o out.json');
-        var json = JSON.parse(String(out['out.json']));
-        var tips = getEasternTips(json);
-        assert.notDeepEqual(tips[0], tips[1],
-          'a 1mm limit should not close the approximately 3mm mouth');
+          '-i ' + ex27 + ' -clean close-outer-gaps gap-width=100m -o out.json');
+        assert.deepEqual(getSeamXCoords(JSON.parse(String(out['out.json']))),
+          [4.9985, 5.0015], 'a 100m limit should leave the ~333m crack open');
 
         out = await api.applyCommands(
-          '-i ' + ex26 + ' -clean close-gaps close-distance=1m -o out.json');
-        json = JSON.parse(String(out['out.json']));
-        tips = getEasternTips(json);
-        assert.deepEqual(tips[0], tips[1]);
+          '-i ' + ex27 + ' -clean close-outer-gaps gap-width=500m -o out.json');
+        assert.deepEqual(getSeamXCoords(JSON.parse(String(out['out.json']))),
+          [4.9985, 5]);
+      })
+
+      // Two features whose shared boundary coincides for 100km, but whose eastern
+      // ends stop 3mm short of each other. The boundary is merged without being
+      // asked, and what is left is a near-touch rather than a crack: two edges
+      // that diverge immediately into the width of the features they bound.
+      it('leaves a near-touch at the edge of the mosaic alone', async function() {
+        var plain = await api.applyCommands('-i ' + ex26 + ' -clean -o out.json');
+        var tips = getEasternTips(JSON.parse(String(plain['out.json'])));
+        var apart = api.geom.greatCircleDistance(tips[0][0], tips[0][1],
+          tips[1][0], tips[1][1]);
+        assert(apart < 0.005, 'the tips are millimeters apart, got ' + apart);
+
+        var out = await api.applyCommands(
+          '-i ' + ex26 + ' -clean close-outer-gaps gap-width=1m -o out.json');
+        assert.equal(String(out['out.json']), String(plain['out.json']),
+          'a near-touch this short is not a crack to close');
+      })
+
+      // What the flag must not do is change how an interior gap is handled: those
+      // are enclosed, so gap filling reaches them whether or not this pass runs.
+      it('leaves interior gaps to gap filling', async function() {
+        var input = '-i ' + ex24 + ' -clean gap-width=250m';
+        var plain = await api.applyCommands(input + ' -o out.json');
+        var flagged = await api.applyCommands(
+          input + ' close-outer-gaps -o out.json');
+        assert(String(plain['out.json']).length > 0);
+        assert.equal(String(flagged['out.json']), String(plain['out.json']),
+          'interior geometry should be byte-identical');
+      })
+
+      // A channel between two features that runs right through the coverage opens
+      // to the outside at both of its ends, so sealing one leaves it open at the
+      // other. Dissolving the pair tells us whether anything is left between them.
+      it('closes a channel that is open at both ends', async function() {
+        var west = [], east = [];
+        for (var i = 0; i <= 20; i++) {
+          west.push([5, i * 0.5]);
+          east.push([5.02, i * 0.5]);
+        }
+        var input = {'in.json': JSON.stringify({
+          type: 'FeatureCollection',
+          features: [{
+            type: 'Feature', properties: {name: 'A'},
+            geometry: {type: 'Polygon',
+              coordinates: [[[0, 0]].concat(west, [[0, 10], [0, 0]])]}
+          }, {
+            type: 'Feature', properties: {name: 'B'},
+            geometry: {type: 'Polygon',
+              coordinates: [[[10, 0]].concat(east.slice().reverse(),
+                [[10, 10], [10, 0]])]}
+          }]
+        })};
+        var plain = await api.applyCommands(
+          '-i in.json -clean gap-width=3km -dissolve -o out.json', input);
+        assert.equal(JSON.parse(String(plain['out.json'])).geometries[0].type,
+          'MultiPolygon',
+          'the channel is not enclosed, so filling cannot reach it');
+
+        var out = await api.applyCommands(
+          '-i in.json -clean close-outer-gaps gap-width=3km -dissolve -o out.json',
+          input);
+        var dissolved = JSON.parse(String(out['out.json'])).geometries[0];
+        assert.equal(dissolved.type, 'Polygon',
+          'both mouths pinched shut, the channel becomes a gap and is filled');
+        assert.equal(dissolved.coordinates.length, 1, 'and nothing is left of it');
       })
 
       it('does not close a cut within one polygon', async function() {
         var normal = await api.applyCommands('-i ' + ex25 + ' -clean -o out.json');
         var closing = await api.applyCommands(
-          '-i ' + ex25 + ' -clean close-gaps -o out.json');
+          '-i ' + ex25 + ' -clean close-outer-gaps -o out.json');
         assert.equal(String(closing['out.json']), String(normal['out.json']),
           'single-feature geometry should be byte-identical');
       })
 
-      // Facing edges stay within tolerance for a sustained length, but vertices
-      // on either bank are staggered -- the old mutual-nearest run filter would
-      // reject this seam. The mouth is a within-tolerance vertex pair.
-      it('closes a staggered external seam', async function() {
+      // Facing edges stay within tolerance for a sustained length, but vertices on
+      // either bank are staggered, so no pairing of vertices can find them. The
+      // crack above is detected all the same; a short near-miss elsewhere in the
+      // same fixture must not be.
+      it('leaves a short near-miss between two features open', async function() {
         var out = await api.applyCommands(
           '-i ' + ex27 +
-          ' -clean close-gaps close-distance=500m -o out.json');
+          ' -clean close-outer-gaps gap-width=500m -o out.json');
         var json = JSON.parse(String(out['out.json']));
-        var left = json.features.find(function(f) {
-          return f.properties.name == 'left';
-        });
-        var right = json.features.find(function(f) {
-          return f.properties.name == 'right';
-        });
-        var leftXs = getSeamXCoords(left);
-        var rightXs = getSeamXCoords(right);
-        assert(leftXs.length > 0 && rightXs.length > 0);
-        // After snapping, the two banks should meet near the midline (x = 5).
-        // Coordinates are degree-like; the ~0.003° (~333m) crack is closed with
-        // close-distance=500m. Vertices on either bank are staggered in y.
-        leftXs.forEach(function(x) {
-          assert(Math.abs(x - 5) < 0.001,
-            'left seam should collapse toward the midline, got ' + x);
-        });
-        rightXs.forEach(function(x) {
-          assert(Math.abs(x - 5) < 0.001,
-            'right seam should collapse toward the midline, got ' + x);
-        });
-
-        // A short distant near-miss must not be snapped (locality / min length).
         var distant = json.features.find(function(f) {
           return f.properties.name == 'distant';
         });
@@ -299,24 +353,200 @@ describe('mapshaper-clean.js', function () {
           'short distant near-miss should remain open');
       })
 
+      // Two features whose facing boundaries are the same line digitized twice,
+      // @n vertices each, a crack @width degrees apart. Detail like this arrives
+      // as a single long arc, and every facing pair of vertices along it is a
+      // mouth seed, so the pair is the shape that costs the seam walk most: the
+      // county mosaics above are the same thing in miniature, a few vertices per
+      // arc at a time.
+      function longDuplicateBoundary(n, width) {
+        var west = [], east = [];
+        for (var i = 0; i <= n; i++) {
+          var y = 46 + i * 9e-6;
+          var wiggle = Math.sin(i / 7) * 3e-6;
+          west.push([-119 + wiggle, y]);
+          // staggered, so no pairing of vertices can be found by snapping
+          east.push([-119 + width + Math.sin((i + 0.5) / 7) * 3e-6, y + 4.5e-6]);
+        }
+        // each feature runs up its side of the crack and back round the outside
+        function feature(name, side, outerX) {
+          var ring = side.concat([
+            [outerX, side[side.length - 1][1]],
+            [outerX, side[0][1]],
+            side[0]
+          ]);
+          return {
+            type: 'Feature',
+            properties: {name: name},
+            geometry: {type: 'Polygon', coordinates: [ring]}
+          };
+        }
+        return {
+          type: 'FeatureCollection',
+          features: [
+            feature('west', west, -119.01),
+            feature('east', east, -118.99)
+          ]
+        };
+      }
+
+      // Every seed along a crack grows into the same run of the same two arcs, so
+      // walking that run once per seed rather than once, and scanning a whole arc
+      // per vertex test rather than the segments near it, each cost this pair the
+      // product of its own detail twice over. At the size below either one on its
+      // own takes over ten seconds, and together they never finished.
+      it('close-outer-gaps stays fast on a long detailed crack', async function() {
+        this.timeout(30000);
+        var input = {
+          'in.json': JSON.stringify(longDuplicateBoundary(20000, 4.5e-6))
+        };
+        var t0 = Date.now();
+        var out = await api.applyCommands(
+          '-i in.json -clean close-outer-gaps gap-width=1m -dissolve -o out.json',
+          input);
+        var ms = Date.now() - t0;
+        // dissolving away the only attribute leaves bare geometry
+        var dissolved = JSON.parse(String(out['out.json'])).geometries[0];
+        assert.equal(dissolved.type, 'Polygon',
+          'the crack should be closed, leaving one ring');
+        assert.equal(dissolved.coordinates.length, 1, 'and no hole behind it');
+        assert(ms < 3000, 'closing a long crack should stay under 3s, took ' +
+          ms + 'ms');
+      })
+
       // Guards against a quadratic seam walk: before the staggered-edge change,
       // this national mosaic finished in ~0.7s. A generous 3s bound fails CI on a
       // clear regression without being flaky on ordinary machines.
-      it('close-gaps stays fast on a national mosaic', async function() {
+      it('close-outer-gaps stays fast on a national mosaic', async function() {
         this.timeout(10000);
         var file = 'test/data/features/buffer/__01_thin_gap_polygons.json';
         var t0 = Date.now();
-        await api.applyCommands('-i ' + file + ' -clean close-gaps -o out.json');
+        await api.applyCommands('-i ' + file + ' -clean close-outer-gaps -o out.json');
         var ms = Date.now() - t0;
         assert(ms < 3000,
-          'close-gaps on the national mosaic should stay under 3s, took ' + ms + 'ms');
+          'close-outer-gaps on the national mosaic should stay under 3s, took ' + ms + 'ms');
       })
+    })
+
+    // A boundary shared by two features, but digitized or computed twice, leaves
+    // a slit far too narrow to see. Filling it as a gap awards it to one feature,
+    // which then carries a zero-width spike along a border it shares with others
+    // -- visible as a stray line as soon as that feature is stroked. -clean
+    // collapses these seams without being asked, unlike the wider cracks that
+    // close-outer-gaps handles.
+    describe('duplicate boundary collapse', function() {
+
+      // Two polygons whose facing edges are the same boundary twice over,
+      // @width apart, with vertices staggered so that no amount of pairwise
+      // vertex snapping can see the pairing.
+      function duplicateBoundary(width) {
+        var left = [[0, 0], [2, 0]];
+        var right = [[2 + width, 0], [4, 0], [4, 1], [2 + width, 1]];
+        for (var i = 1; i <= 20; i++) left.push([2, i / 20]);
+        left.push([0, 1], [0, 0]);
+        for (var j = 19; j >= 1; j--) right.push([2 + width, (j - 0.5) / 20]);
+        right.push([2 + width, 0]);
+        return {
+          type: 'FeatureCollection',
+          features: [{
+            type: 'Feature',
+            properties: {name: 'a'},
+            geometry: {type: 'Polygon', coordinates: [left]}
+          }, {
+            type: 'Feature',
+            properties: {name: 'b'},
+            geometry: {type: 'Polygon', coordinates: [right]}
+          }]
+        };
+      }
+
+      // Every distinct x coordinate along the seam, across both features.
+      function seamXCoords(json) {
+        var xs = {};
+        json.features.forEach(function(f) {
+          f.geometry.coordinates.flat().forEach(function(p) {
+            if (Math.abs(p[0] - 2) < 1e-6) xs[p[0]] = true;
+          });
+        });
+        return Object.keys(xs);
+      }
+
+      // Vertices where an outline doubles back on itself, with the length of the
+      // shorter arm: the signature of a zero-width sliver merged into a feature.
+      function spikeArms(feature) {
+        var arms = [];
+        var polygons = feature.geometry.type == 'Polygon' ?
+          [feature.geometry.coordinates] : feature.geometry.coordinates;
+        polygons.flat().forEach(function(ring) {
+          for (var i = 1; i + 1 < ring.length; i++) {
+            var ux = ring[i][0] - ring[i - 1][0], uy = ring[i][1] - ring[i - 1][1];
+            var vx = ring[i + 1][0] - ring[i][0], vy = ring[i + 1][1] - ring[i][1];
+            var lu = Math.sqrt(ux * ux + uy * uy), lv = Math.sqrt(vx * vx + vy * vy);
+            if (!lu || !lv) continue;
+            if ((ux * vx + uy * vy) / (lu * lv) < -0.999) {
+              arms.push(Math.min(lu, lv) * 111320); // degrees to approximate meters
+            }
+          }
+        });
+        return arms;
+      }
+
+      it('collapses a seam narrow enough to be a rounding artifact', async function() {
+        // 1e-13 degrees is about 11 nanometers.
+        var out = await api.applyCommands('-i in.json -clean -o out.json',
+          {'in.json': duplicateBoundary(1e-13)});
+        var xs = seamXCoords(JSON.parse(String(out['out.json'])));
+        assert.equal(xs.length, 1,
+          'both banks should land on one boundary, got ' + xs.join(' '));
+      })
+
+      it('leaves a seam wide enough to be real, unless asked', async function() {
+        // 1e-10 degrees is about 11 microns: still invisible, but orders of
+        // magnitude above the precision of the coordinates, so -clean does not
+        // presume the two banks are the same line.
+        var input = {'in.json': duplicateBoundary(1e-10)};
+        var out = await api.applyCommands('-i in.json -clean -o out.json', input);
+        assert.equal(seamXCoords(JSON.parse(String(out['out.json']))).length, 2);
+
+        // The crack is open at both ends of this fixture, so close-outer-gaps
+        // pinches those shut and the filling that follows awards what is left to
+        // one of the two features: the west bank goes, leaving one boundary.
+        out = await api.applyCommands(
+          '-i in.json -clean close-outer-gaps -o out.json', input);
+        var banks = seamXCoords(JSON.parse(String(out['out.json'])));
+        assert(banks.indexOf('2') == -1,
+          'the west bank should be gone, got ' + banks.join(' '));
+      })
+
+      // Precinct boundaries carrying thousands of duplicate seams, several of
+      // them kilometers long. Awarding one to a single precinct used to grow that
+      // precinct's outline by 167m of doubled-back boundary.
+      it('keeps a precinct mosaic free of long spikes', async function() {
+        this.timeout(10000);
+        var file = 'test/data/features/clean/__franklin.json';
+        var out = await api.applyCommands('-i ' + file + ' -clean -o out.json');
+        var json = JSON.parse(String(out['out.json']));
+        var worst = 0;
+        json.features.forEach(function(f) {
+          spikeArms(f).forEach(function(arm) {
+            worst = Math.max(worst, arm);
+          });
+        });
+        assert(worst < 50,
+          'no outline should double back over tens of meters, worst was ' +
+          worst.toFixed(1) + 'm');
+      })
+    })
+
+    describe('interior gap partition', function() {
+      var ex24 = 'test/data/features/clean/ex24_three_state_internal_gap.json';
 
       it('partitions a three-feature interior gap among its neighbors', async function() {
         var sourceOut = await api.applyCommands(
           '-i ' + ex24 + ' -each "area=this.area" -o source.json');
         var cleanOut = await api.applyCommands(
-          '-i ' + ex24 + ' -clean close-gaps -each "area=this.area" -o clean.json');
+          '-i ' + ex24 +
+          ' -clean gap-width=250m -each "area=this.area" -o clean.json');
         var source = JSON.parse(String(sourceOut['source.json']));
         var clean = JSON.parse(String(cleanOut['clean.json']));
         var gains = clean.features.map(function(f, i) {
@@ -378,14 +608,15 @@ describe('mapshaper-clean.js', function () {
           'medial boundaries should be smoothed rather than retaining raw zigzags');
       })
 
-      // Where this fixture's gap narrows past the medial's sampling spacing, the
-      // partition boundary used to jump clear across the channel and back --
-      // hugging one bank for a stretch, then the other -- because the sampled
-      // Voronoi throws its circumcenters out of a pinching channel. Walk the
-      // cleaned boundary through the gap corridor and count how often it flips
-      // from one bank to the other; it used to flip 98 times.
+      // A partition boundary is only in the right place if it runs between the
+      // two features it separates. Where this fixture's gap narrows, an earlier
+      // construction sampled its way out of the channel and put the boundary on
+      // one bank for a stretch and then the other, moving a state line by the
+      // full width of the gap and flipping sides 98 times. Walk the cleaned
+      // boundary through the gap corridor and check where it sits.
       it('keeps the partition boundary off the banks where the gap pinches', async function() {
-        var out = await api.applyCommands('-i ' + ex24 + ' -clean close-gaps -o out.json');
+        var out = await api.applyCommands(
+          '-i ' + ex24 + ' -clean gap-width=250m -o out.json');
         var source = JSON.parse(fs.readFileSync(ex24, 'utf8'));
         var cleaned = JSON.parse(String(out['out.json']));
         var banks = source.features.map(featureRings);
@@ -413,10 +644,98 @@ describe('mapshaper-clean.js', function () {
             });
           });
         });
-        assert(centered > 100, 'expected a populated gap corridor');
+        assert(centered > 20, 'expected a populated gap corridor');
         assert.equal(flips, 0, 'the boundary should not zigzag between the banks');
-        assert(hugging < 25,
-          'the boundary should stay between the banks, hugging count ' + hugging);
+        // A ratio rather than a count: a partition boundary needs no more
+        // vertices than the banks it runs between, so the absolute number of
+        // them is a property of the fixture, not of the partition's quality.
+        assert(hugging * 4 < centered,
+          'the boundary should stay between the banks, hugging ' + hugging +
+          ' of ' + (hugging + centered) + ' vertices in the corridor');
+      })
+
+      // A corridor 998 units long and @w wide, enclosed by a slab to the north,
+      // a slab to the south and a block at each end. The two long banks carry a
+      // vertex every @step, so the corridor can be orders of magnitude narrower
+      // than the features around it are long while still being coarser than the
+      // scale the data was drawn at.
+      function hairlineCorridor(w, step) {
+        var north = [], south = [];
+        for (var x = 1; x < 999; x += step) {
+          north.push([x, w]);
+          south.push([x, 0]);
+        }
+        north.push([999, w]);
+        south.push([999, 0]);
+        function feature(name, points) {
+          return {
+            type: 'Feature',
+            properties: {name: name},
+            geometry: {type: 'Polygon', coordinates: [points.concat([points[0]])]}
+          };
+        }
+        return {
+          type: 'FeatureCollection',
+          features: [
+            feature('west', [[0, -1], [1, -1], [1, 1], [0, 1]]),
+            feature('east', [[999, -1], [1000, -1], [1000, 1], [999, 1]]),
+            feature('north', north.concat([[999, 1], [1, 1]])),
+            feature('south', south.reverse().concat([[1, -1], [999, -1]]))
+          ]
+        };
+      }
+
+      async function corridorGains(w, step) {
+        var input = {'in.json': JSON.stringify(hairlineCorridor(w, step))};
+        var before = await api.applyCommands(
+          '-i in.json -each "area=this.area" -o out.json', input);
+        var after = await api.applyCommands('-i in.json -clean gap-width=' +
+          (w * 2) + ' -each "area=this.area" -o out.json', input);
+        var source = JSON.parse(String(before['out.json'])).features;
+        return JSON.parse(String(after['out.json'])).features
+          .map(function(f, i) {
+            return f.properties.area - source[i].properties.area;
+          });
+      }
+
+      // Dividing a gap this shape defeated an earlier construction that sampled
+      // points inside it and joined the ones equidistant from three boundaries:
+      // such a sample only finds the middle of a channel while the samples are
+      // closer together than the channel is wide, so the work grew with the
+      // gap's length-to-width ratio until it exhausted memory. Taking the
+      // division from the boundary's own vertices instead costs the same at any
+      // aspect ratio.
+      it('divides a hairline corridor however narrow it is', async function() {
+        this.timeout(20000);
+        for (var o of [[0.05, 1], [0.0025, 0.05]]) {
+          var gap = 998 * o[0];
+          var gains = await corridorGains(o[0], o[1]);
+          var aspect = ', aspect ratio ' + Math.round(998 / o[0]);
+          assert(Math.abs(gains[2] - gap / 2) < gap / 20 &&
+            Math.abs(gains[3] - gap / 2) < gap / 20,
+            'the corridor should be halved between the features along it' +
+            aspect + ', gains were ' + gains.join(' '));
+          assert(gains[0] < gap / 20 && gains[1] < gap / 20,
+            'the blocks capping the corridor should receive little of it' +
+            aspect + ', gains were ' + gains.join(' '));
+        }
+      })
+
+      // Dividing a gap gives each neighbor a strip of it, and the boundary
+      // between two strips runs half the gap's width from the bank it was cut
+      // from, out and back. That is a fair division of a gap wide enough to see
+      // and a hairline sliver on a gap narrower than the data's own detail, which
+      // is better given whole to one neighbor: its boundary then moves across to
+      // the far bank, by less than the width of the gap.
+      it('gives a gap finer than the data whole to one neighbor', async function() {
+        var gains = (await corridorGains(0.001, 1)).sort(function(a, b) {
+          return b - a;
+        });
+        var gap = 998 * 0.001;
+        assert(Math.abs(gains[0] - gap) < gap / 20,
+          'one feature should receive the whole corridor, gains were ' +
+          gains.join(' '));
+        assert(gains[1] < gap / 20, 'the rest should receive none of it');
       })
     })
 

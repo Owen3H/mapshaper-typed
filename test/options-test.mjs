@@ -108,11 +108,11 @@ describe('mapshaper-options.js', function () {
   })
 
   describe('clean', function () {
-    good('-clean close-gaps close-distance=1m', {
-      close_gaps: true,
-      close_distance: '1m'
+    good('-clean close-outer-gaps gap-width=1m', {
+      close_outer_gaps: true,
+      gap_width: '1m'
     });
-    bad('-clean close-distance');
+    bad('-clean gap-width');
   })
 
   describe('each', function() {
@@ -198,6 +198,7 @@ describe('mapshaper-options.js', function () {
     good("-dissolve STATE", {fields: ['STATE']});
     good("-dissolve STATE,REGION", {fields: ['STATE', 'REGION']});
     good("-dissolve name=foo", {name: "foo"});
+    good("-dissolve gap-width=2m", {gap_width: '2m'});
     good("-dissolve FIPS sum-fields POP copy-fields NAME,FIPS", {fields: ["FIPS"], copy_fields: ["NAME", "FIPS"], sum_fields: ["POP"]});
     bad("-dissolve STATE COUNTY");
     bad("-dissolve name -o"); // expects name=<lyr name>
