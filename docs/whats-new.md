@@ -11,6 +11,15 @@ This is a curated list of recently added features. For the full list of changes,
 
 <div class="whats-new-entry">
 
+**Clean command improvements.**
+
+- A new `close-outer-gaps` option closes cracks that open onto the outside of a polygon mosaic.
+- The `gap-width=` option is now the preferred way to set the threshold for filling gaps. Gap artifacts tend to be long and thin slivers, so a width parameter is more suitable than the now-deprecated `gap-fill-area=` and `sliver-control=` options.
+
+</div>
+
+<div class="whats-new-entry">
+
 **Snip tool.** The web UI has a snip mode for cutting polyline features apart. Hover over a line to see its vertices, then click a vertex or a point along a segment to divide it in two. The shorter piece becomes a new feature, so on a multipart feature the rest stays connected. Rings take two clicks, since one cut leaves them in one piece.
 
 </div>
