@@ -73,6 +73,123 @@ describe('flatgeobuf export', function () {
     assert.equal(lyr.shapes[2].length, 1);
   });
 
+  // A path that is shorter than the output precision interval rounds to a
+  // single point and is dropped, leaving the feature without a geometry.
+  it('keeps a feature whose geometry collapses at the output precision', async function () {
+    var input = {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        properties: {name: 'kept'},
+        geometry: {type: 'LineString', coordinates: [[0, 0], [1, 1]]}
+      }, {
+        type: 'Feature',
+        properties: {name: 'collapsed'},
+        geometry: {type: 'LineString', coordinates: [[2, 2], [2.0000001, 2.0000001]]}
+      }]
+    };
+    var output = await api.applyCommands('-i in.json -o format=flatgeobuf precision=0.000001',
+      {'in.json': input});
+    var fgbName = Object.keys(output)[0];
+    var dataset = await api.internal.importContentAsync({
+      fgb: {filename: fgbName, content: output[fgbName]}
+    }, {});
+    var lyr = dataset.layers[0];
+
+    assert.equal(lyr.geometry_type, 'polyline');
+    assert.deepEqual(lyr.data.getRecords().map(rec => rec.name), ['kept', 'collapsed']);
+    assert.deepEqual(lyr.shapes[1], null);
+  });
+
+  it('writes a null shape as a record with no geometry', async function () {
+    var input = {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        properties: {name: 'a'},
+        geometry: {type: 'LineString', coordinates: [[0, 0], [1, 1]]}
+      }, {
+        type: 'Feature',
+        properties: {name: 'b'},
+        geometry: null
+      }]
+    };
+    var output = await api.applyCommands('-i in.json -o format=flatgeobuf', {'in.json': input});
+    var fgbName = Object.keys(output)[0];
+    var dataset = await api.internal.importContentAsync({
+      fgb: {filename: fgbName, content: output[fgbName]}
+    }, {});
+    var lyr = dataset.layers[0];
+
+    assert.equal(lyr.geometry_type, 'polyline');
+    assert.deepEqual(lyr.data.getRecords().map(rec => rec.name), ['a', 'b']);
+    assert.deepEqual(lyr.shapes[1], null);
+  });
+
+  // Features are read in place, so a record with no coordinates must still leave
+  // the records that follow it 8-byte aligned.
+  it('reads coordinates of features that follow a null geometry', async function () {
+    var input = {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        properties: {name: 'first'},
+        geometry: null
+      }, {
+        type: 'Feature',
+        properties: {name: 'second'},
+        geometry: {type: 'LineString', coordinates: [[0, 0], [1, 1]]}
+      }, {
+        type: 'Feature',
+        properties: {name: 'third'},
+        geometry: null
+      }, {
+        type: 'Feature',
+        properties: {name: 'fourth'},
+        geometry: {type: 'MultiLineString', coordinates: [[[3, 3], [4, 4]], [[6, 6], [7, 7]]]}
+      }]
+    };
+    var output = await api.applyCommands('-i in.json -o format=flatgeobuf', {'in.json': input});
+    var fgbName = Object.keys(output)[0];
+    var roundtrip = await api.applyCommands('-i in.fgb -o out.json', {'in.fgb': output[fgbName]});
+    var features = JSON.parse(roundtrip['out.json']).features;
+
+    assert.deepEqual(features.map(feat => feat.properties.name),
+      ['first', 'second', 'third', 'fourth']);
+    assert.deepEqual(features.map(feat => feat.geometry), [
+      null,
+      {type: 'LineString', coordinates: [[0, 0], [1, 1]]},
+      null,
+      {type: 'MultiLineString', coordinates: [[[3, 3], [4, 4]], [[6, 6], [7, 7]]]}
+    ]);
+  });
+
+  it('exports a layer in which every feature has a null geometry', async function () {
+    var input = {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        properties: {name: 'a'},
+        geometry: null
+      }, {
+        type: 'Feature',
+        properties: {name: 'b'},
+        geometry: null
+      }]
+    };
+    var output = await api.applyCommands('-i in.json -o format=flatgeobuf', {'in.json': input});
+    var fgbName = Object.keys(output)[0];
+    var dataset = await api.internal.importContentAsync({
+      fgb: {filename: fgbName, content: output[fgbName]}
+    }, {});
+    var lyr = dataset.layers[0];
+
+    // A collection of null geometries imports as an attribute-only layer, the
+    // same as the equivalent GeoJSON.
+    assert.deepEqual(lyr.data.getRecords().map(rec => rec.name), ['a', 'b']);
+    assert(!lyr.geometry_type);
+  });
+
   it('exports one .fgb file per layer', async function () {
     var a = {
       type: 'FeatureCollection',

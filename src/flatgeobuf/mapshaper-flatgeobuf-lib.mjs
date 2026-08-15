@@ -1,6 +1,6 @@
 import { fromFeature } from 'flatgeobuf/lib/mjs/geojson/feature.js';
 import { serialize } from 'flatgeobuf/lib/mjs/geojson/featurecollection.js';
-import { buildFeature } from 'flatgeobuf/lib/mjs/generic/feature.js';
+import { buildFeature, parseProperties } from 'flatgeobuf/lib/mjs/generic/feature.js';
 import { buildHeader } from 'flatgeobuf/lib/mjs/generic/featurecollection.js';
 import { magicbytes, SIZE_PREFIX_LEN } from 'flatgeobuf/lib/mjs/constants.js';
 import { Header } from 'flatgeobuf/lib/mjs/flat-geobuf/header.js';
@@ -47,11 +47,25 @@ function getFeatureReader(bytes, headerMetaArg) {
     var featureLength = bb.readUint32(offset);
     bb.setPosition(offset);
     var feature = Feature.getSizePrefixedRootAsFeature(bb);
-    geojsonFeature = fromFeature(id++, feature, headerMeta);
+    geojsonFeature = readGeoJSONFeature(feature, headerMeta, id++);
     delete geojsonFeature.id;
     offset += SIZE_PREFIX_LEN + featureLength;
     return geojsonFeature;
   };
+}
+
+// The geometry field of a FlatGeobuf Feature is optional; fromFeature() assumes
+// it is present, so features without one are converted here.
+function readGeoJSONFeature(feature, headerMeta, id) {
+  if (feature.geometry() === null) {
+    return {
+      type: 'Feature',
+      id: id,
+      geometry: null,
+      properties: parseProperties(feature, headerMeta.columns)
+    };
+  }
+  return fromFeature(id, feature, headerMeta);
 }
 
 function buildHeaderWithCRS(headerMeta, crsMeta) {
@@ -98,24 +112,31 @@ function serializeWithColumns(source, columns) {
 function encodeCollection(source, columns, forcedType) {
   var headerMeta = null;
   var sink = null;
+  // Null-geometry features encountered before the collection's geometry type is
+  // known, and therefore before the header can be written.
+  var deferred = [];
   for (var i = 0; i < source.length; i++) {
     var feature = source.getFeature(i);
+    var properties = normalizeProperties(feature.properties, columns);
+    if (!feature.geometry) {
+      // A feature's geometry can go missing during export -- e.g. a path that
+      // collapses to a single point at the output coordinate precision -- and a
+      // layer can also contain null shapes to begin with. Write a record with
+      // no geometry, matching what the GeoJSON and Shapefile exporters do.
+      // Such a feature says nothing about the collection's geometry type, so it
+      // must not make a homogeneous layer look mixed.
+      var nullFeature = buildNullGeometryFeature(properties, columns);
+      if (sink) {
+        sink.append(nullFeature);
+      } else {
+        deferred.push(nullFeature);
+      }
+      continue;
+    }
     var type = GeometryType[feature.geometry.type] || GeometryType.Unknown;
     if (!headerMeta) {
-      headerMeta = {
-        geometryType: forcedType === null ? type : forcedType,
-        columns: columns,
-        envelope: null,
-        featuresCount: source.length,
-        indexNodeSize: 0,
-        crs: null,
-        title: null,
-        description: null,
-        metadata: null
-      };
-      sink = new ByteSink(magicbytes.length + estimateEncodedBytes(source));
-      sink.append(magicbytes);
-      sink.append(buildHeader(headerMeta));
+      headerMeta = getEncodedHeaderMeta(forcedType === null ? type : forcedType, columns, source.length);
+      sink = initSink(source, headerMeta, deferred);
     } else if (forcedType === null && type != headerMeta.geometryType) {
       return null;
     }
@@ -123,9 +144,64 @@ function encodeCollection(source, columns, forcedType) {
       parseGC(feature.geometry) :
       parseGeometry(feature.geometry);
     omitRedundantGeometryType(geometry, headerMeta.geometryType);
-    sink.append(buildFeature(geometry, normalizeProperties(feature.properties, columns), headerMeta));
+    sink.append(buildFeature(geometry, properties, headerMeta));
+  }
+  if (!sink) {
+    // No feature had a geometry, so the collection has no geometry type.
+    headerMeta = getEncodedHeaderMeta(forcedType === null ? GeometryType.Unknown : forcedType,
+      columns, source.length);
+    sink = initSink(source, headerMeta, deferred);
   }
   return sink.toBytes();
+}
+
+function getEncodedHeaderMeta(geometryType, columns, featuresCount) {
+  return {
+    geometryType: geometryType,
+    columns: columns,
+    envelope: null,
+    featuresCount: featuresCount,
+    indexNodeSize: 0,
+    crs: null,
+    title: null,
+    description: null,
+    metadata: null
+  };
+}
+
+function initSink(source, headerMeta, deferredFeatures) {
+  var sink = new ByteSink(magicbytes.length + estimateEncodedBytes(source));
+  sink.append(magicbytes);
+  sink.append(buildHeader(headerMeta));
+  for (var i = 0; i < deferredFeatures.length; i++) {
+    sink.append(deferredFeatures[i]);
+  }
+  return sink;
+}
+
+// Encodes a feature with attributes but no geometry, which FlatGeobuf supports
+// by omitting the Feature table's optional geometry field. buildFeature() always
+// writes a geometry, so the properties are encoded with it and then re-emitted:
+// property values are written in a typed binary layout that is better read from
+// one implementation than copied.
+function buildNullGeometryFeature(properties, columns) {
+  var meta = {columns: columns};
+  var withGeometry = buildFeature({xy: [], type: GeometryType.Unknown}, properties, meta);
+  var bb = new flatbuffers.ByteBuffer(withGeometry);
+  var propertyBytes = Feature.getSizePrefixedRootAsFeature(bb).propertiesArray();
+  var builder = new flatbuffers.Builder();
+  // Features are concatenated in the file and read in place, so every feature
+  // buffer has to leave the next one 8-byte aligned or reading a Float64 array
+  // of coordinates from it throws. Buffers holding coordinates are padded to a
+  // multiple of 8 because of those arrays; a feature with only property bytes
+  // needs the alignment requested explicitly.
+  builder.prep(8, 0);
+  var propertiesOffset = propertyBytes && propertyBytes.length > 0 ?
+    Feature.createPropertiesVector(builder, propertyBytes) : 0;
+  Feature.startFeature(builder);
+  if (propertiesOffset) Feature.addProperties(builder, propertiesOffset);
+  builder.finishSizePrefixed(Feature.endFeature(builder));
+  return builder.asUint8Array();
 }
 
 // Encoding the first feature is the only sample available before the buffer
