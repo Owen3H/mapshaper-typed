@@ -67,6 +67,15 @@ This is a curated list of recently added features. For the full list of changes,
 
 <div class="whats-new-entry">
 
+**Clean command improvements.**
+
+- A new `close-outer-gaps` option closes cracks that open onto the outside of a polygon mosaic.
+- The `gap-width=` option is now the preferred way to set the threshold for filling gaps. Gap artifacts tend to be long and thin slivers, so a width parameter is more suitable than the now-deprecated `gap-fill-area=` and `sliver-control=` options.
+
+</div>
+
+<div class="whats-new-entry">
+
 **Snip tool.** The web UI has a snip mode for cutting polyline features apart. Hover over a line to see its vertices, then click a vertex or a point along a segment to divide it in two. The shorter piece becomes a new feature, so on a multipart feature the rest stays connected. Rings take two clicks, since one cut leaves them in one piece.
 
 </div>
@@ -736,15 +745,25 @@ This command attempts to repair various kinds of abnormal geometry that might ca
 
 Features with null geometries are deleted, unless the `allow-empty` flag is used.
 
-Polygon features are cleaned by removing overlaps and filling small gaps between adjacent polygons. Only gaps that are completely enclosed can be filled. Areas that are contained by more than one polygon (overlaps) are assigned to the polygon with the largest area. Similarly, gaps are assigned to the largest-area polygon. This rule may give undesired results and will likely change in the future.
+Polygon features are cleaned by removing overlaps and filling small gaps between adjacent polygons. Areas that are contained by more than one polygon (overlaps) are assigned to the polygon with the largest area.
+
+A filled gap goes to the feature it shares the longest boundary with, except where it borders three or more features: such a gap is divided between them, each receiving the part of it that lies nearest, so that a crack running past several features does not become a spur on whichever one claimed it. A gap narrower than the detail of the data around it is given whole to one feature instead — that moves a boundary by less than the width of the gap, where dividing it would give several features a hair-thin sliver each.
+
+A boundary that two neighboring features each carry their own copy of, differing only in the last digits of its coordinates, is merged into one shared boundary. Left alone, the hair-thin gap between the two copies would be filled like any other gap, and awarded to one of the features, which would then carry a zero-width spike along a boundary it shares with its neighbors — visible as a stray line as soon as that feature is drawn with an outline.
+
+Only gaps that are completely enclosed by polygons can be filled. Use `close-outer-gaps` to reach a crack that opens onto the outside instead.
 
 Line features are cleaned by removing self-intersections within the same path. Self-intersecting paths are split at the point of intersection and converted into multiple paths within the same feature. When two separate paths intersect in-between segment endpoints, new vertices are inserted at the point of intersection.
 
 Point features are cleaned by removing duplicate coordinates within the same feature.
 
-`gap-fill-area=`  (polygons) Gaps smaller than this area will be filled; larger gaps will be retained as holes in the polygon mosaic. Example values: 2km2 500m2 0. Defaults to a  dynamic value calculated from the geometry of the dataset.
+`gap-width=`  (polygons) Fill gaps narrower than this width (e.g. `2m`, `0`). Each gap’s width is estimated from its area and perimeter (roughly, how wide a long thin shape would be if straightened out), so slender cracks are filled while more compact holes of similar area, such as small lakes, are more likely to be kept. Defaults to an automatic value based on the median segment length of the layer. The same width applies to the cracks that `close-outer-gaps` reaches.
 
-`sliver-control=` (polygons) Preferentially remove slivers (polygons with a high perimeter-area ratio). Accepts values from 0-1, default is 1. Implementation: multiplies the area of gap areas by the "Polsby Popper" compactness metric before applying area threshold.
+`close-outer-gaps`  (polygons) Close cracks that open onto the outside of the mosaic, up to the width set by `gap-width=`. Such a crack is not enclosed by polygons, so there is no gap for the ordinary filling to find. Its mouth is pinched shut where the two sides come within that width of each other, which encloses it, and it is then filled — or divided between its neighbors, where it borders three or more of them — like any other gap. Only the pinched pair of vertices moves, half the width of the mouth each, and interior gaps are filled exactly as they are without this option. It is opt-in because it seals off narrow openings in a coverage, which are not always mistakes.
+
+`gap-fill-area=`  (polygons, deprecated) Use `gap-width=` instead. Gaps smaller than this area will be filled; larger gaps will be retained as holes in the polygon mosaic. Example values: 2km2 500m2 0.
+
+`sliver-control=` (polygons, deprecated) Use `gap-width=` instead. Preferentially remove slivers (polygons with a high perimeter-area ratio). Accepts values from 0-1, default is 1. Implementation: multiplies the area of gap areas by the "Polsby Popper" compactness metric before applying area threshold.
 
 `overlap-rule=` (polygons) Assign overlapping polygon areas to one of the overlapping features based on this rule. Possible options are: min-id, max-id, min-area, max-area (default is max-area).
 
@@ -925,13 +944,15 @@ For polygon layers, `-dissolve` repairs topology before dissolving, so it produc
 
 `planar`   [points] Treat decimal degree coordinates as planar cartesian coordinates when calculating dissolve centroids. (By default, mapshaper calculates the centroids of lat-long point data in 3D space.)
 
-`gap-fill-area=`  [polygons] Gaps smaller than this area will be filled; larger gaps will be retained as holes in the polygon mosaic. Example values: 2km2 500m2 0. Defaults to a dynamic value calculated from the geometry of the dataset.
+`gap-width=`  [polygons] Fill gaps narrower than this width (e.g. `2m`, `0`). Each gap’s width is estimated from its area and perimeter (roughly, how wide a long thin shape would be if straightened out), so slender cracks are filled while more compact holes of similar area, such as small lakes, are more likely to be kept. Defaults to an automatic value based on the median segment length when gap filling is enabled.
 
-`sliver-control=` [polygons] Preferentially remove slivers (polygons with a high perimeter-area ratio). Accepts values from 0-1, default is 1. Implementation: multiplies the area of gap areas by the "Polsby Popper" compactness metric before applying area threshold.
+`gap-fill-area=`  [polygons, deprecated] Use `gap-width=` instead. Gaps smaller than this area will be filled; larger gaps will be retained as holes in the polygon mosaic. Example values: 2km2 500m2 0.
+
+`sliver-control=` [polygons, deprecated] Use `gap-width=` instead. Preferentially remove slivers (polygons with a high perimeter-area ratio). Accepts values from 0-1, default is 1. Implementation: multiplies the area of gap areas by the "Polsby Popper" compactness metric before applying area threshold.
 
 `allow-overlaps` [polygons] Allow dissolved groups of features to overlap each other. The default behavior is to remove overlaps.
 
-`no-repair` [polygons] Skip topology repair before dissolving. Use when the input is known to be clean and you want a faster dissolve. Mapshaper checks for segment intersections and prints a warning if the assumption appears to be wrong, but it still performs the dissolve. Incompatible with `gap-fill-area=`, `sliver-control=` and `allow-overlaps`.
+`no-repair` [polygons] Skip topology repair before dissolving. Use when the input is known to be clean and you want a faster dissolve. Mapshaper checks for segment intersections and prints a warning if the assumption appears to be wrong, but it still performs the dissolve. Incompatible with `gap-width=`, `gap-fill-area=`, `sliver-control=` and `allow-overlaps`.
 
 `calc=` Use built-in JavaScript functions to create data fields in the dissolved layer. See example below; see [-calc](#-calc) for a list of supported functions.
 

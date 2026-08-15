@@ -2061,6 +2061,10 @@
     return deg * D2R$8 * R$3;
   }
 
+  function metersToDegrees(m) {
+    return m / (D2R$8 * R$3);
+  }
+
   function distance3D(ax, ay, az, bx, by, bz) {
     var dx = ax - bx,
       dy = ay - by,
@@ -2240,6 +2244,15 @@
     return dist * R$3;
   }
 
+  // Fast local meters distance for geographic decimal-degree coordinates.
+  // Equirectangular; one cosine. Prefer greatCircleDistance only when
+  // global-scale accuracy matters.
+  function fastLonLatDistance(lng1, lat1, lng2, lat2) {
+    var dx = (lng2 - lng1) * Math.cos(lat1 * D2R$8);
+    var dy = lat2 - lat1;
+    return degreesToMeters(Math.sqrt(dx * dx + dy * dy));
+  }
+
 
   function triangleArea(ax, ay, bx, by, cx, cy) {
     var area = Math.abs(((ay - cy) * (bx - cx) + (by - cy) * (cx - ax)) / 2);
@@ -2348,9 +2361,11 @@
     distance3D: distance3D,
     distanceSq: distanceSq,
     distanceSq3D: distanceSq3D,
+    fastLonLatDistance: fastLonLatDistance,
     greatCircleDistance: greatCircleDistance,
     innerAngle2: innerAngle2,
     lngLatToXYZ: lngLatToXYZ,
+    metersToDegrees: metersToDegrees,
     pointSegDistSq: pointSegDistSq,
     pointSegDistSq2: pointSegDistSq2,
     pointSegDistSq3D: pointSegDistSq3D,
@@ -17991,7 +18006,10 @@
       k = 1;
     } else if (fromParam && !fromCRS) {
       // known param units, unknown CRS -- error condition, not convertible
-      stop$1('Unable to convert', paramUnits, 'to unknown coordinates');
+      stop$1('Unable to convert', paramUnits,
+        'to unknown coordinates: the data has no coordinate reference system. ' +
+        'Give one with -proj init=<crs> (e.g. -proj init=EPSG:3857), ' +
+        'or use a distance in the data\'s own units.');
     } else if (!fromParam && fromCRS) {
       // unknown param units, known CRS -- assume param in meters (bw compatibility)
       k = 1 / fromCRS;
@@ -18117,10 +18135,47 @@
     parseSizeParam: parseSizeParam
   });
 
-  // Used by -clean -dissolve2 -filter-slivers -filter-islands to generate area filters
-  // for removing small polygon rings.
-  // Assumes lyr is a polygon layer.
+  // Default gap-width as a fraction of the layer's median polygon-ring segment
+  // length. Shared by interior fill and exterior close-outer-gaps.
+  var GAP_WIDTH_SEGMENT_FRACTION = 0.01;
+
+  // Used by -clean -dissolve -filter-slivers -filter-islands to generate filters
+  // for removing small polygon rings / filling mosaic gaps.
+  // Prefers gap_width= (including 'auto'). Legacy gap_fill_area / sliver_control
+  // remain for compatibility when gap_width is not set.
   function getSliverFilter(lyr, dataset, opts) {
+    opts = opts || {};
+    if (opts.gap_width != null) {
+      return getGapWidthFilter(lyr, dataset, opts);
+    }
+    return getLegacyAreaFilter(lyr, dataset, opts);
+  }
+
+  function getGapWidthFilter(lyr, dataset, opts) {
+    var crs = getDatasetCRS(dataset);
+    var widthArg = opts.gap_width;
+    if (+widthArg === 0) {
+      return {
+        filter: function() { return false; },
+        threshold: 0,
+        label: '0 width threshold'
+      };
+    }
+    var threshold = (widthArg === 'auto') ?
+      getDefaultGapWidth(lyr, dataset.arcs) :
+      convertDistanceParam(widthArg, crs);
+    var filter = getGapWidthTest(dataset.arcs, threshold);
+    if (opts.keep_shapes) {
+      filter = keepShapes(filter);
+    }
+    return {
+      threshold: threshold,
+      filter: filter,
+      label: getGapWidthLabel(threshold, crs)
+    };
+  }
+
+  function getLegacyAreaFilter(lyr, dataset, opts) {
     var areaArg = opts.min_gap_area || opts.min_area || opts.gap_fill_area;
     if (+areaArg == 0) {
       return {
@@ -18128,7 +18183,7 @@
         threshold: 0
       };
     }
-    var sliverControl = opts.sliver_control >= 0 ? opts.sliver_control : 0; // 0 is default
+    var sliverControl = opts.sliver_control >= 0 ? opts.sliver_control : 0;
     var crs = getDatasetCRS(dataset);
     var threshold = areaArg && areaArg != 'auto' ?
         convertAreaParam(areaArg, crs) :
@@ -18152,7 +18207,6 @@
   function keepShapes(filter) {
     var flags;
     return function(path, pathId, paths) {
-      // console.log("keepShapes()", path, pathId, paths)
       if (pathId === 0) {
         flags = paths.map(path => filter(path));
       }
@@ -18171,11 +18225,37 @@
     return areaStr + ' threshold';
   }
 
+  function getGapWidthLabel(width, crs) {
+    var meters = width;
+    if (crs && crs.to_meter > 0 && !crs.is_latlong) {
+      meters = width * crs.to_meter;
+    }
+    if (crs && (crs.is_latlong || crs.to_meter > 0)) {
+      if (meters < 1) return roundToSignificantDigits(meters * 1000, 2) + 'mm width threshold';
+      if (meters < 1000) return roundToSignificantDigits(meters, 2) + 'm width threshold';
+      return roundToSignificantDigits(meters / 1000, 2) + 'km width threshold';
+    }
+    return roundToSignificantDigits(width, 2) + ' width threshold';
+  }
+
   function getMinAreaTest(minArea, dataset) {
     var pathArea = dataset.arcs.isPlanar() ? geom.getPlanarPathArea : geom.getSphericalPathArea;
     return function(path) {
       var area = pathArea(path, dataset.arcs);
       return Math.abs(area) < minArea;
+    };
+  }
+
+  // Fill when characteristic width 2A/P is below the threshold. Equivalent to
+  // the old sliver-control=1 effective-area test when threshold = sqrt(A0/π).
+  function getGapWidthTest(arcs, maxWidth) {
+    var pathArea = arcs.isPlanar() ? geom.getPlanarPathArea : geom.getSphericalPathArea;
+    var pathPerim = arcs.isPlanar() ? geom.getPlanarPathPerimeter : geom.getSphericalPathPerimeter;
+    return function(ring) {
+      var area = Math.abs(pathArea(ring, arcs));
+      var perim = pathPerim(ring, arcs);
+      if (!(perim > 0)) return false;
+      return 2 * area / perim < maxWidth;
     };
   }
 
@@ -18204,10 +18284,46 @@
     };
   }
 
+  // Median polygon-ring segment length * GAP_WIDTH_SEGMENT_FRACTION.
+  function getDefaultGapWidth(lyr, arcs) {
+    return getMedianPolygonSegmentLength(lyr, arcs) * GAP_WIDTH_SEGMENT_FRACTION;
+  }
+
+  function getMedianPolygonSegmentLength(lyr, arcs) {
+    var lengths = collectPolygonSegmentLengths(lyr, arcs);
+    if (lengths.length === 0) return 0;
+    lengths.sort(); // numeric sort: lengths is a Float64Array
+    return lengths[Math.floor(lengths.length / 2)];
+  }
+
+  // Returns a Float64Array, so that the median can use a comparator-free numeric
+  // sort. This measures every segment of every polygon ring, so on a detailed
+  // mosaic the sort dominates.
+  function collectPolygonSegmentLengths(lyr, arcs) {
+    var lengths = new Float64Array(1024);
+    var n = 0;
+    var calcLen = arcs.isPlanar() ? distance2D$1 : fastLonLatDistance;
+    var onSeg = function(i, j, xx, yy) {
+      var len = calcLen(xx[i], yy[i], xx[j], yy[j]);
+      if (len > 0 && isFinite(len)) {
+        if (n === lengths.length) {
+          var grown = new Float64Array(n * 2);
+          grown.set(lengths);
+          lengths = grown;
+        }
+        lengths[n++] = len;
+      }
+    };
+    editShapes(lyr.shapes, function(path) {
+      forEachSegmentInPath(path, arcs, onSeg);
+    });
+    return lengths.subarray(0, n);
+  }
+
   // Calculate a default area threshold using average segment length,
   // but increase the threshold for high-detail datasets and decrease it for
   // low-detail datasets (using segments per ring as a measure of detail).
-  //
+  // Kept for legacy gap_fill_area=auto.
   function getDefaultSliverThreshold(lyr, arcs) {
     var ringCount = 0;
     var calcLen = arcs.isPlanar() ? geom.distance2D : geom.greatCircleDistance;
@@ -18250,8 +18366,13 @@
 
   var Slivers = /*#__PURE__*/Object.freeze({
     __proto__: null,
+    GAP_WIDTH_SEGMENT_FRACTION: GAP_WIDTH_SEGMENT_FRACTION,
     calcMaxSliverArea: calcMaxSliverArea,
+    getDefaultGapWidth: getDefaultGapWidth,
     getDefaultSliverThreshold: getDefaultSliverThreshold,
+    getGapWidthLabel: getGapWidthLabel,
+    getGapWidthTest: getGapWidthTest,
+    getMedianPolygonSegmentLength: getMedianPolygonSegmentLength,
     getSliverAreaFunction: getSliverAreaFunction,
     getSliverFilter: getSliverFilter,
     getSliverTest: getSliverTest
@@ -18843,7 +18964,13 @@
       // Look for even better fit close to best-fit point
       p2 = probeForBestAnchorPoint(shp, arcs, p.x - hstep / 2,
           p.x + hstep / 2, 2, weight);
-      if (p2.distance > p.distance) {
+      // The refinement can come back empty even though the coarse sweep did not,
+      // because it samples only two x-values inside a narrow band. On a ring that
+      // encloses no real area -- a collapsed sliver that runs out to a point and
+      // back along itself, which a polygon buffer readily produces -- a ray at
+      // either of those two can enclose no interval at all. The coarse result
+      // already in hand stands in that case.
+      if (p2 && p2.distance > p.distance) {
         p = p2;
       }
     }
@@ -18912,16 +19039,42 @@
     return p;
   }
 
+  // Ceiling on the vertical scan below, which is otherwise unbounded: the scan
+  // walks its chord in steps of vstep, so it runs for roughly the shape's height
+  // over vstep, and nothing constrains that ratio. A tall hairline sliver -- the
+  // kind a buffer mosaic produces between two nearly-coincident arcs -- makes it
+  // astronomical.
+  //
+  // Truncating is safe rather than free: the scan only replaces p when it finds a
+  // strictly better point, so stopping early keeps the best point so far, which
+  // is still inside the polygon -- but on a shape thin enough to need more steps
+  // than this, that point can differ from the one an unbounded scan would reach
+  // (measured on a 1.1m x 111km rectangle: same polygon, ~12% less clearance).
+  // The ceiling does bind on real data -- two of the -clean fixtures reach
+  // ~180,000 steps here -- yet cutting every scan off at 10,000 left all 744
+  // buffer fixture cases byte-identical, because the long tail is usually a
+  // plateau the scan walks without improving on.
+  var MAX_SCAN_STEPS = 10000;
+
   // Try to find a better-fit point than @p by scanning vertically
   // Modify p in-place
   function scanForBetterPoint(p, shp, arcs, vstep, weight) {
     var x = p.x,
         y = p.y,
         dmax = p.distance,
-        d;
+        d, y2;
 
-    while (true) {
-      y += vstep;
+    for (var i = 0; i < MAX_SCAN_STEPS; i++) {
+      y2 = y + vstep;
+      // Stop when the step cannot move the point at all. vstep is the width of
+      // the probe band, and on a shape narrower than the floating-point spacing
+      // at its own coordinates that band collapses to nothing (see the
+      // refinement probe in findAnchorPoint2), leaving y + vstep === y. Every
+      // iteration would then retest the same point forever: a collapsed mosaic
+      // tile 20nm wide, at longitude -119, hung here indefinitely rather than
+      // merely running slowly.
+      if (y2 === y) break;
+      y = y2;
       d = geom.getPointToShapeDistance(x, y, shp, arcs) * weight(x, y);
       // overcome vary small local minima
       if (d > dmax * 0.90 && geom.testPointInPolygon(x, y, shp, arcs)) {
@@ -21677,7 +21830,22 @@
         var tile = mosaic[tileId];
         return filter(tile[0]); // test tile ring, ignoring any holes (does this matter?)
       });
-      filledIds.forEach(assignTileToAdjacentShape);
+      // Choose every tile's owner before filling any of them. A tile that has just
+      // been filled would otherwise present itself to the next one as a feature
+      // boundary, so a gap divided into sections could award every section to
+      // whichever feature received the first -- along a cut as long as the
+      // boundaries it was meant to divide between.
+      var chosen = filledIds.map(findAdjacentShapeId);
+      var deferredIds = [];
+      filledIds.forEach(function(tileId, i) {
+        if (chosen[i] > -1) {
+          tileShapeIndex.addTileToShape(chosen[i], tileId);
+        } else {
+          deferredIds.push(tileId);
+        }
+      });
+      // A tile bordered only by other gaps can be filled once they have been.
+      deferredIds.forEach(assignTileToAdjacentShape);
       return {
         removed: filledIds.length,
         remaining: remainingIds.length - filledIds.length
@@ -21686,6 +21854,26 @@
 
     this.getUnusedTiles = function() {
       return tileShapeIndex.getUnusedTileIds().map(tileIdToTile);
+    };
+
+    // Return unused tiles together with the source-feature owner of each boundary
+    // arc. Used by -clean to partition multi-owner gaps before assigning them.
+    this.getUnusedTileData = function(filter) {
+      return tileShapeIndex.getUnusedTileIds().reduce(function(out, tileId) {
+        var tile = mosaic[tileId];
+        if (filter && !filter(tile[0])) return out;
+        var boundary = [];
+        tile[0].forEach(function(arcId) {
+          var neighborTileId = arcTileIndex.getShapeIdByArcId(~arcId);
+          var shapeId = neighborTileId < 0 ? -1 :
+            tileShapeIndex.getShapeIdByTileId(neighborTileId);
+          if (shapeId >= 0) {
+            boundary.push({arcId: arcId, shapeId: shapeId});
+          }
+        });
+        out.push({tileId: tileId, tile: tile, boundary: boundary});
+        return out;
+      }, []);
     };
 
     this.getTilesByShapeIds = function(shapeIds) {
@@ -22137,7 +22325,9 @@
       return mosaic[id];
     }
 
-    function assignTileToAdjacentShape(tileId) {
+    // The shape sharing the longest boundary with a tile, or -1 if the tile is
+    // bordered only by unassigned tiles.
+    function findAdjacentShapeId(tileId) {
       var ring = mosaic[tileId][0];
       var arcs = nodes.arcs;
       var arcId, neighborShapeId, neighborTileId, arcLen;
@@ -22154,6 +22344,11 @@
           maxArcLen = arcLen;
         }
       }
+      return shapeId;
+    }
+
+    function assignTileToAdjacentShape(tileId) {
+      var shapeId = findAdjacentShapeId(tileId);
       if (shapeId > -1) {
         tileShapeIndex.addTileToShape(shapeId, tileId);
       }
@@ -22177,6 +22372,26 @@
       fetchedTileIndex.clear();
       return uniqIds;
     }
+  }
+
+  // Flags, by absolute arc id, for arcs with no mosaic tile on one of their sides:
+  // the border between the mosaic and the space outside it. Space that polygons
+  // enclose becomes a tile, however narrow, so an arc facing untiled space faces
+  // the outside, and a gap there is one that gap filling cannot reach.
+  //
+  // Only the mosaic is needed, not the tile assignment a MosaicIndex goes on to
+  // make, so this builds the cheaper half on its own.
+  function getOutsideFacingArcFlags(nodes) {
+    var mosaic = buildPolygonMosaic(nodes).mosaic;
+    var arcTileIndex = new ShapeArcIndex(mosaic, nodes.arcs);
+    var flags = new Uint8Array(nodes.arcs.size());
+    for (var i = 0; i < flags.length; i++) {
+      if (arcTileIndex.getShapeIdByArcId(i) < 0 ||
+          arcTileIndex.getShapeIdByArcId(~i) < 0) {
+        flags[i] = 1;
+      }
+    }
+    return flags;
   }
 
   // Map arc ids to shape ids, assuming perfect topology
@@ -22209,7 +22424,8 @@
   var MosaicIndex$1 = /*#__PURE__*/Object.freeze({
     __proto__: null,
     MosaicIndex: MosaicIndex,
-    ShapeArcIndex: ShapeArcIndex
+    ShapeArcIndex: ShapeArcIndex,
+    getOutsideFacingArcFlags: getOutsideFacingArcFlags
   });
 
   // Assumes that arcs do not intersect except at endpoints
@@ -22256,6 +22472,13 @@
     profileStart('dissolvePolygonGroups2');
     profileStart('dpg2.NodeCollection');
     var arcFilter = getArcPresenceTest(lyr.shapes, dataset.arcs);
+    if (opts._mosaic_cut_arcs) {
+      var layerArcFilter = arcFilter;
+      arcFilter = function(arcId) {
+        var id = arcId < 0 ? ~arcId : arcId;
+        return layerArcFilter(arcId) || opts._mosaic_cut_arcs[id];
+      };
+    }
     var nodes = new NodeCollection(dataset.arcs, arcFilter);
     profileEnd('dpg2.NodeCollection');
     var mosaicOpts = {
@@ -22267,12 +22490,17 @@
     var mosaicIndex = new MosaicIndex(lyr, nodes, mosaicOpts);
     profileEnd('dpg2.MosaicIndex');
     // gap fill doesn't work yet with overlapping shapes
-    var fillGaps = !opts.allow_overlaps && (opts.sliver_control || opts.gap_fill_area);
+    var fillGaps = !opts.allow_overlaps &&
+      (opts.gap_width || opts.sliver_control || opts.gap_fill_area);
     var cleanupData, filterData;
     if (fillGaps) {
       profileStart('dpg2.removeGaps');
-      var sliverOpts = utils.extend({sliver_control: 1}, opts);
-      filterData = getSliverFilter(lyr, dataset, sliverOpts);
+      var filterOpts = utils.extend({}, opts);
+      // Legacy area path: keep the historical default of full sliver control.
+      if (filterOpts.gap_width == null && filterOpts.sliver_control == null) {
+        filterOpts.sliver_control = 1;
+      }
+      filterData = getSliverFilter(lyr, dataset, filterOpts);
       cleanupData = mosaicIndex.removeGaps(filterData.filter);
       profileEnd('dpg2.removeGaps');
     }
@@ -22513,6 +22741,1245 @@
     target.push.apply(target, source);
   }
 
+  // Two boundaries that should be one, but were digitized or computed twice, drift
+  // apart by more than the single interval that ordinary vertex snapping repairs,
+  // and their vertices are staggered, so no pairwise snapping ever sees them. In
+  // the test corpus the worst of them sit ~20 intervals apart. This multiple keeps
+  // the default repair at sub-micron scale, far below any gap a map could show,
+  // while still catching them.
+  var PRECISION_SEAM_INTERVALS = 100;
+
+  // Minimum accepted seam length, as a multiple of the median segment length. Two
+  // boundaries that merely pass close to each other for a vertex or two are not a
+  // seam.
+  var MIN_SEAM_SEGMENT_FACTOR = 3;
+
+  // Collapse duplicate boundaries: two arcs carrying what should be one line,
+  // digitized or computed twice and drifting apart by no more than floating-point
+  // rounding (see PRECISION_SEAM_INTERVALS). Vertices on both banks are snapped to
+  // the line midway between them, leaving a single shared boundary.
+  //
+  // Runs unconditionally. Left in place, such a seam becomes an enclosed sliver
+  // that gap filling awards to one neighbor, giving that feature a zero-width spike
+  // along the shared border.
+  //
+  // Returns the number of duplicate boundaries collapsed (see countConnectedGaps).
+  function collapseDuplicateBoundaries(layers, dataset) {
+    var polygonLayers = layers.filter(function(lyr) {
+      return lyr.geometry_type == 'polygon' && lyr.shapes && lyr.shapes.length > 1;
+    });
+    if (polygonLayers.length === 0 || !dataset.arcs) return 0;
+
+    var spherical = isLatLngCRS(getDatasetCRS(dataset));
+    var changed = 0;
+    polygonLayers.forEach(function(lyr) {
+      changed += collapseLayerDuplicates(lyr, dataset.arcs, spherical);
+    });
+    if (changed > 0) {
+      rebuildTopology(dataset);
+      verbose(utils.format('Closed %s duplicate boundar%s', changed,
+        changed == 1 ? 'y' : 'ies'));
+    }
+    return changed;
+  }
+
+  function collapseLayerDuplicates(lyr, arcs, spherical) {
+    var medianSeg = measureMedianSegment(lyr, arcs);
+    var distance = getPrecisionSeamDistance(arcs.getBounds().toArray(), spherical);
+    if (!(distance > 0)) return 0;
+
+    // Keep the automatic search radius when the closing distance is smaller. This
+    // lets us see the complete seam and reject it as a unit instead of partially
+    // snapping the already-near portion while leaving its wider mouth open. A
+    // duplicate boundary often has a mouth several orders of magnitude wider than
+    // the seam behind it.
+    var searchDistance = Math.max(distance, medianSeg * GAP_WIDTH_SEGMENT_FRACTION);
+    var found = findLayerSeams(lyr, arcs, distance, searchDistance, spherical,
+      medianSeg * MIN_SEAM_SEGMENT_FACTOR, null);
+    if (!found) return 0;
+    var snapped = profileWrap('cg.snapSeams', function() {
+      return snapSeams(found.seams, found.seeds, found.arcsById, arcs,
+        found.footpoints, distance);
+    });
+    return countConnectedGaps(snapped);
+  }
+
+  // A crack that opens onto the space outside the mosaic is not enclosed by
+  // polygons, so no tile covers it and gap filling cannot reach it. Snapping the
+  // facing pair of vertices at each open end together encloses the crack, handing
+  // it to the mosaic as an ordinary gap to be filled -- or divided between its
+  // neighbors, where it borders three or more of them -- like any other.
+  //
+  // Only those pairs move: two coordinates per mouth, each by half the width of the
+  // mouth. Interior gaps are left exactly as they were found, so they are filled the
+  // same way whether or not this pass runs.
+  //
+  // Returns the number of mouths pinched shut.
+  function pinchOuterCrackMouths(lyr, dataset, nodes, opts) {
+    var arcs = dataset.arcs;
+    if (!lyr.shapes || lyr.shapes.length < 2 || !arcs) return 0;
+    var crs = getDatasetCRS(dataset);
+    var spherical = isLatLngCRS(crs);
+    var medianSeg = measureMedianSegment(lyr, arcs);
+    // Same width as interior gap filling, from the same automatic default.
+    var distance = resolveCloseDistance(opts, crs,
+      medianSeg * GAP_WIDTH_SEGMENT_FRACTION);
+    if (!(distance > 0)) return 0;
+
+    profileStart('cg.outsideFacingArcs');
+    var outsideFacing = getOutsideFacingArcFlags(nodes);
+    profileEnd('cg.outsideFacingArcs');
+    var found = findLayerSeams(lyr, arcs, distance, distance, spherical,
+      medianSeg * MIN_SEAM_SEGMENT_FACTOR, function(arcId) {
+        return outsideFacing[arcId] === 1;
+      });
+    if (!found) return 0;
+
+    var pinched = profileWrap('cg.pinchMouths', function() {
+      return pinchSeamMouths(found.seams, found.arcsById, arcs, nodes,
+        found.footpoints, distance, spherical);
+    });
+    if (pinched > 0) {
+      rebuildTopology(dataset);
+      message(utils.format('Closed %s external gap%s', pinched,
+        utils.pluralSuffix(pinched)));
+    }
+    return pinched;
+  }
+
+  // Seams between facing arcs owned by different features: stretches where two
+  // boundaries run within @distance of each other for at least @minSeamLength.
+  // @keepArc, when given, limits which arcs are considered.
+  function findLayerSeams(lyr, arcs, distance, searchDistance, spherical,
+      minSeamLength, keepArc) {
+    profileStart('cg.collectVertices');
+    var owners = getArcOwners(lyr.shapes, arcs.size());
+    var records = collectExternalVertices(arcs, owners, keepArc);
+    profileEnd('cg.collectVertices');
+    if (records.length < 4) return null;
+
+    profileStart('cg.findMouthSeeds');
+    var seeds = findMouthSeeds(records, searchDistance, spherical);
+    profileEnd('cg.findMouthSeeds');
+    if (seeds.length === 0) return null;
+
+    var arcsById = indexArcRecords(records);
+    var footpoints = new ArcFootpoints(arcs, spherical);
+    profileStart('cg.growSeams');
+    var seams = growSeamsFromSeeds(seeds, arcsById, footpoints, distance, spherical,
+      minSeamLength);
+    profileEnd('cg.growSeams');
+    if (seams.length === 0) return null;
+    return {seams: seams, seeds: seeds, arcsById: arcsById, footpoints: footpoints};
+  }
+
+  // Same segment median as interior gap-width=auto (all polygon-ring segments).
+  function measureMedianSegment(lyr, arcs) {
+    return profileWrap('cg.medianSegment', function() {
+      return getMedianPolygonSegmentLength(lyr, arcs);
+    });
+  }
+
+  function rebuildTopology(dataset) {
+    profileStart('cg.rebuildTopology');
+    dataset.arcs.dedupCoords();
+    buildTopology(dataset);
+    profileEnd('cg.rebuildTopology');
+  }
+
+  // One crack presents many seams: a seam is a stretch of two facing arcs, and
+  // every node along either side ends one arc and starts another -- where a third
+  // feature meets the boundary, or where an intersection cut fell. Reporting seams
+  // would give a number several times the number of cracks there are to see, so
+  // seams meeting along a shared arc count once.
+  //
+  // Two cracks that face the same arc at different stretches of it are counted as
+  // one. Erring towards the smaller number suits a count of gaps closed better than
+  // splitting one crack into the arcs it happens to be divided into.
+  function countConnectedGaps(seams) {
+    var parents = new Map();
+
+    function find(id) {
+      var parent = parents.get(id);
+      if (parent === undefined) {
+        parents.set(id, id);
+        return id;
+      }
+      while (parent !== id) {
+        id = parent;
+        parent = parents.get(id);
+      }
+      return id;
+    }
+
+    seams.forEach(function(seam) {
+      var a = find(seam.arcA);
+      var b = find(seam.arcB);
+      if (a !== b) parents.set(a, b);
+    });
+    var roots = new Set();
+    seams.forEach(function(seam) { roots.add(find(seam.arcA)); });
+    return roots.size;
+  }
+
+  // Closing distance for the default pass, which collapses duplicate boundaries
+  // and nothing else. @bounds is the arc bounding box in coordinate units; the seam
+  // walk measures distances in meters when those units are degrees.
+  function getPrecisionSeamDistance(bounds, spherical) {
+    var interval = getHighPrecisionSnapInterval(bounds) * PRECISION_SEAM_INTERVALS;
+    return spherical ? degreesToMeters(interval) : interval;
+  }
+
+  function resolveCloseDistance(opts, crs, autoDistance) {
+    var arg = opts.gap_width;
+    if (arg == null || arg === 'auto') return autoDistance;
+    if (+arg === 0) return 0;
+    return convertDistanceParam(arg, crs);
+  }
+
+  // An external arc belongs to exactly one feature. Shared arcs are excluded: they
+  // already represent clean topology and must not be moved by this repair.
+  function getArcOwners(shapes, arcCount) {
+    var first = new Int32Array(arcCount);
+    var second = new Int32Array(arcCount);
+    for (var i = 0; i < arcCount; i++) {
+      first[i] = -1;
+      second[i] = -1;
+    }
+    traversePaths(shapes, function(o) {
+      var id = o.arcId < 0 ? ~o.arcId : o.arcId;
+      var owner = o.shapeId;
+      if (first[id] == -1) first[id] = owner;
+      else if (first[id] != owner) second[id] = owner;
+    });
+    return {first: first, second: second};
+  }
+
+  function collectExternalVertices(arcs, owners, keepArc) {
+    var data = arcs.getVertexData();
+    var records = [];
+    var offs = 0;
+    for (var arcId = 0; arcId < data.nn.length; arcId++) {
+      var n = data.nn[arcId];
+      if (owners.first[arcId] >= 0 && owners.second[arcId] == -1 &&
+          (!keepArc || keepArc(arcId))) {
+        for (var k = 0; k < n; k++) {
+          var i = offs + k;
+          records.push({
+            x: data.xx[i],
+            y: data.yy[i],
+            i: i,
+            arc: arcId,
+            k: k,
+            owner: owners.first[arcId]
+          });
+        }
+      }
+      offs += n;
+    }
+    return records;
+  }
+
+  function indexArcRecords(records) {
+    var byArc = {};
+    records.forEach(function(o) {
+      if (!byArc[o.arc]) byArc[o.arc] = [];
+      byArc[o.arc].push(o);
+    });
+    Object.keys(byArc).forEach(function(id) {
+      byArc[id].sort(function(a, b) { return a.k - b.k; });
+    });
+    return byArc;
+  }
+
+  // Mouth seeds: mutual nearest external vertices on different owners/arcs.
+  // A single positive-distance pair is enough to start an edge walk.
+  function findMouthSeeds(records, distance, spherical) {
+    var index = new Flatbush(records.length);
+    records.forEach(function(o) { index.add(o.x, o.y, o.x, o.y); });
+    index.finish();
+
+    var nearest = new Int32Array(records.length);
+    var distances = new Float64Array(records.length);
+    nearest.fill(-1);
+    records.forEach(function(a, ai) {
+      var padY = getCoordinatePad(distance, a.y, spherical, false);
+      var padX = getCoordinatePad(distance, a.y, spherical, true);
+      var ids = index.search(a.x - padX, a.y - padY, a.x + padX, a.y + padY);
+      var best = -1, bestDist = Infinity;
+      ids.forEach(function(bi) {
+        var b = records[bi];
+        if (bi == ai || b.owner == a.owner || b.arc == a.arc) return;
+        var d = spherical ?
+          fastLonLatDistance(a.x, a.y, b.x, b.y) :
+          distance2D$1(a.x, a.y, b.x, b.y);
+        if (d <= distance && d < bestDist) {
+          best = bi;
+          bestDist = d;
+        }
+      });
+      nearest[ai] = best;
+      distances[ai] = bestDist;
+    });
+
+    var seen = {};
+    var seeds = [];
+    records.forEach(function(a, ai) {
+      var bi = nearest[ai];
+      if (bi < 0 || !(distances[ai] > 0)) return;
+      var best = records[bi];
+      // Positive-distance matches must be mutual nearest neighbors.
+      if (nearest[bi] != ai) return;
+      var lo = Math.min(a.i, best.i), hi = Math.max(a.i, best.i);
+      var key = lo + ':' + hi;
+      if (seen[key]) return;
+      seen[key] = true;
+      seeds.push({a: a, b: best, distance: distances[ai]});
+    });
+    return seeds;
+  }
+
+  function getCoordinatePad(distance, lat, spherical, longitude) {
+    if (spherical) {
+      var deg = distance / R$3 * R2D$8;
+      return longitude ? deg / Math.max(Math.cos(lat / R2D$8), 0.01) : deg;
+    }
+    // convertDistanceParam() has already converted physical units into projected
+    // coordinate units (or left unitless values unchanged).
+    return distance;
+  }
+
+  // Grow a seam from each mouth seed by walking both arcs while each vertex stays
+  // within closeDistance of the opposite arc's edges. Accept only seams whose
+  // walked length on both sides meets minSeamLength. Overlapping seeds that grow
+  // into the same arc-pair range are merged.
+  function growSeamsFromSeeds(seeds, arcsById, footpoints, closeDistance,
+      spherical, minSeamLength) {
+    var seams = [];
+    // Seeds crowd along a crack: every facing pair of vertices along it is one, and
+    // each grows into the same stretch of the same two arcs, since what the walk
+    // finds is the whole run of in-tolerance vertices around the seed rather than
+    // anything particular to where it started. Walking that run once per seed
+    // instead of once is what made this repair take minutes on a detailed mosaic,
+    // so a seed already inside a run grown for its own two arcs is passed over.
+    var grownByPair = new Map();
+    seeds.forEach(function(seed) {
+      var key = arcPairKey(seed.a.arc, seed.b.arc);
+      var grown = grownByPair.get(key);
+      if (!grown) {
+        grown = [];
+        grownByPair.set(key, grown);
+      }
+      if (seamContainsSeed(grown, seed)) return;
+      var seam = growSeamFromSeed(seed, arcsById, footpoints, closeDistance,
+        spherical);
+      if (!seam) return;
+      // Runs rejected as too short are recorded too, so that the seeds along them
+      // are not walked again either.
+      grown.push(seam);
+      if (seam.lengthA < minSeamLength || seam.lengthB < minSeamLength) return;
+      seams.push(seam);
+    });
+    return mergeOverlappingSeams(seams);
+  }
+
+  function arcPairKey(arcA, arcB) {
+    return arcA < arcB ? arcA + '|' + arcB : arcB + '|' + arcA;
+  }
+
+  function indexSeamsByArcPair(seams) {
+    var byPair = new Map();
+    seams.forEach(function(seam) {
+      var key = arcPairKey(seam.arcA, seam.arcB);
+      var group = byPair.get(key);
+      if (!group) {
+        group = [];
+        byPair.set(key, group);
+      }
+      group.push(seam);
+    });
+    return byPair;
+  }
+
+  function growSeamFromSeed(seed, arcsById, footpoints, closeDistance, spherical) {
+    var sideA = arcsById[seed.a.arc];
+    var sideB = arcsById[seed.b.arc];
+    if (!sideA || !sideB) return null;
+
+    var rangeA = expandRangeOnArc(sideA, seed.a.k, sideB, footpoints, closeDistance,
+      spherical);
+    var rangeB = expandRangeOnArc(sideB, seed.b.k, sideA, footpoints, closeDistance,
+      spherical);
+    if (!rangeA || !rangeB) return null;
+
+    return {
+      arcA: seed.a.arc,
+      arcB: seed.b.arc,
+      loA: rangeA.lo,
+      hiA: rangeA.hi,
+      loB: rangeB.lo,
+      hiB: rangeB.hi,
+      lengthA: rangeA.length,
+      lengthB: rangeB.length
+    };
+  }
+
+  // Expand along @side from seed index @seedK while each vertex remains within
+  // closeDistance of @other's edges. Returns the inclusive index range and the
+  // path length covered by the accepted stretch.
+  function expandRangeOnArc(side, seedK, other, footpoints, closeDistance, spherical) {
+    if (seedK < 0 || seedK >= side.length) return null;
+    if (!vertexWithinTolerance(side[seedK], other, footpoints, closeDistance)) {
+      return null;
+    }
+    var lo = seedK;
+    var hi = seedK;
+    while (lo > 0 &&
+        vertexWithinTolerance(side[lo - 1], other, footpoints, closeDistance)) {
+      lo--;
+    }
+    while (hi + 1 < side.length &&
+        vertexWithinTolerance(side[hi + 1], other, footpoints, closeDistance)) {
+      hi++;
+    }
+    return {
+      lo: lo,
+      hi: hi,
+      length: pathLengthBetween(side, lo, hi, spherical)
+    };
+  }
+
+  function vertexWithinTolerance(vertex, otherSide, footpoints, closeDistance) {
+    return !!footpoints.closestPoint(vertex.x, vertex.y, otherSide, closeDistance);
+  }
+
+  function pathLengthBetween(side, lo, hi, spherical) {
+    var len = 0;
+    for (var k = lo; k < hi; k++) {
+      var a = side[k], b = side[k + 1];
+      len += spherical ?
+        fastLonLatDistance(a.x, a.y, b.x, b.y) :
+        distance2D$1(a.x, a.y, b.x, b.y);
+    }
+    return len;
+  }
+
+  function mergeOverlappingSeams(seams) {
+    if (seams.length <= 1) return seams;
+    var out = [];
+    // Only seams on the same two arcs can overlap, so each one is compared against
+    // those alone rather than against every seam found so far.
+    var byPair = new Map();
+    seams.forEach(function(seam) {
+      var a = Math.min(seam.arcA, seam.arcB);
+      var b = Math.max(seam.arcA, seam.arcB);
+      var swapped = seam.arcA > seam.arcB;
+      var norm = {
+        arcA: a,
+        arcB: b,
+        loA: swapped ? seam.loB : seam.loA,
+        hiA: swapped ? seam.hiB : seam.hiA,
+        loB: swapped ? seam.loA : seam.loB,
+        hiB: swapped ? seam.hiA : seam.hiB,
+        lengthA: swapped ? seam.lengthB : seam.lengthA,
+        lengthB: swapped ? seam.lengthA : seam.lengthB
+      };
+      var key = arcPairKey(norm.arcA, norm.arcB);
+      var group = byPair.get(key);
+      if (!group) {
+        group = [];
+        byPair.set(key, group);
+      }
+      var existing = group.find(function(o) {
+        return rangesOverlap(o.loA, o.hiA, norm.loA, norm.hiA) &&
+          rangesOverlap(o.loB, o.hiB, norm.loB, norm.hiB);
+      });
+      if (existing) {
+        existing.loA = Math.min(existing.loA, norm.loA);
+        existing.hiA = Math.max(existing.hiA, norm.hiA);
+        existing.loB = Math.min(existing.loB, norm.loB);
+        existing.hiB = Math.max(existing.hiB, norm.hiB);
+        existing.lengthA = Math.max(existing.lengthA, norm.lengthA);
+        existing.lengthB = Math.max(existing.lengthB, norm.lengthB);
+      } else {
+        group.push(norm);
+        out.push(norm);
+      }
+    });
+    return out;
+  }
+
+  function rangesOverlap(lo1, hi1, lo2, hi2) {
+    return lo1 <= hi2 && lo2 <= hi1;
+  }
+
+  // Snap every vertex in an accepted seam range to the midpoint between itself
+  // and its nearest footpoint on the opposite arc. Works with staggered vertices:
+  // the opposite side need not have a coinciding vertex. Mouth seed pairs are
+  // forced to their shared vertex midpoint so the crack tip closes exactly.
+  // Returns the seams that moved coordinates.
+  function snapSeams(seams, seeds, arcsById, arcs, footpoints, closeDistance) {
+    arcs.getVertexData();
+    var targets = new CoordinateTargets();
+    var snapped = [];
+
+    seams.forEach(function(seam) {
+      var sideA = arcsById[seam.arcA];
+      var sideB = arcsById[seam.arcB];
+      if (!sideA || !sideB) return;
+      var before = targets.size();
+      snapSideToOpposite(sideA, seam.loA, seam.hiA, sideB, arcs, footpoints,
+        closeDistance, targets);
+      snapSideToOpposite(sideB, seam.loB, seam.hiB, sideA, arcs, footpoints,
+        closeDistance, targets);
+      if (targets.size() > before) snapped.push(seam);
+    });
+
+    // Mouth pairs win over footpoint midpoints so both tips land on one point.
+    var seamsByPair = indexSeamsByArcPair(seams);
+    seeds.forEach(function(seed) {
+      if (!(seed.distance > 0)) return;
+      var group = seamsByPair.get(arcPairKey(seed.a.arc, seed.b.arc));
+      if (!group || !seamContainsSeed(group, seed)) return;
+      var mid = [(seed.a.x + seed.b.x) / 2, (seed.a.y + seed.b.y) / 2];
+      targets.set(seed.a.x, seed.a.y, mid);
+      targets.set(seed.b.x, seed.b.y, mid);
+    });
+
+    return applyTargets(arcs, targets) ? snapped : [];
+  }
+
+  // Snap the facing pair of vertices at each open end of a seam together, which
+  // closes the crack off there without disturbing the boundary between.
+  //
+  // An end counts as open when the two banks turn away from each other there. Where
+  // the crack carries on instead, into the next pair of arcs, pinching would divide
+  // one gap into a row of them -- each awarded separately, so the boundary would
+  // zigzag from bank to bank along a crack that should have been resolved whole.
+  //
+  // Returns the number of mouths pinched shut.
+  function pinchSeamMouths(seams, arcsById, arcs, nodes, footpoints, distance,
+      spherical) {
+    var data = arcs.getVertexData();
+    var targets = new CoordinateTargets();
+    var pinched = 0;
+
+    seams.forEach(function(seam) {
+      var sideA = arcsById[seam.arcA];
+      var sideB = arcsById[seam.arcB];
+      if (!sideA || !sideB) return;
+      [seam.loA, seam.hiA].forEach(function(kA, i) {
+        var outwardA = i === 0 ? -1 : 1;
+        var a = sideA[kA];
+        // The two runs were grown from the seed independently, so they need not end
+        // opposite each other; the nearest vertex within the facing run is the one
+        // to close against.
+        var kB = nearestVertexInRange(a, sideB, seam.loB, seam.hiB, distance,
+          spherical);
+        if (kB < 0) return;
+        var outwardB = kB - seam.loB < seam.hiB - kB ? -1 : 1;
+        if (!endIsOpen(sideA, seam.arcA, kA, outwardA, sideB, arcs, nodes,
+              footpoints, distance) &&
+            !endIsOpen(sideB, seam.arcB, kB, outwardB, sideA, arcs, nodes,
+              footpoints, distance)) {
+          return;
+        }
+        var b = sideB[kB];
+        var mid = [(a.x + b.x) / 2, (a.y + b.y) / 2];
+        var before = targets.size();
+        targets.set(data.xx[a.i], data.yy[a.i], mid);
+        targets.set(data.xx[b.i], data.yy[b.i], mid);
+        if (targets.size() > before) pinched++;
+      });
+    });
+
+    return applyTargets(arcs, targets) ? pinched : 0;
+  }
+
+  // True if the boundary has left the facing arc behind by the vertex just past
+  // @k, so that the crack ends there.
+  //
+  // Where the arc itself ends at @k, the question is what carries on past the node:
+  // an arc continuing along the crack keeps its next vertex within tolerance of the
+  // facing bank, whereas one turning away from the crack -- the coverage boundary at
+  // the crack's mouth, say -- does not. A crack whose banks are split into several
+  // arcs is walked as several seams, and this is what keeps their inner ends from
+  // being taken for mouths.
+  function endIsOpen(side, arcId, k, outward, other, arcs, nodes, footpoints,
+      distance) {
+    var next = k + outward;
+    if (next >= 0 && next < side.length) {
+      return !footpoints.closestPoint(side[next].x, side[next].y, other, distance);
+    }
+    var entering = outward > 0 ? arcId : ~arcId;
+    var connected = nodes.getConnectedArcs(entering);
+    for (var i = 0; i < connected.length; i++) {
+      // Connected ids lead into the node, so the vertex adjacent to it is the last
+      // but one along each.
+      var v = arcs.getVertex(connected[i], -2);
+      if (footpoints.closestPoint(v.x, v.y, other, distance)) return false;
+    }
+    return true;
+  }
+
+  // Index of the vertex in @side[lo..hi] nearest @vertex, or -1 if the nearest is
+  // further off than @maxDist or already coincides with it. A coinciding pair marks
+  // a tip where the two banks already meet, which needs no pinching.
+  function nearestVertexInRange(vertex, side, lo, hi, maxDist, spherical) {
+    var best = -1;
+    var bestDist = Infinity;
+    for (var k = lo; k <= hi; k++) {
+      var d = spherical ?
+        fastLonLatDistance(vertex.x, vertex.y, side[k].x, side[k].y) :
+        distance2D$1(vertex.x, vertex.y, side[k].x, side[k].y);
+      if (d < bestDist) {
+        bestDist = d;
+        best = k;
+      }
+    }
+    if (best < 0 || !(bestDist > 0) || bestDist > maxDist) return -1;
+    return best;
+  }
+
+  // Move every occurrence of a selected coordinate, including coincident arc
+  // endpoints, so existing nodes remain connected. Coordinates that were not
+  // selected are untouched. Returns false if there was nothing to move.
+  function applyTargets(arcs, targets) {
+    if (targets.size() === 0) return false;
+    var data = arcs.getVertexData();
+    for (var i = 0; i < data.xx.length; i++) {
+      var target = targets.get(data.xx[i], data.yy[i]);
+      if (target) {
+        data.xx[i] = target[0];
+        data.yy[i] = target[1];
+      }
+    }
+    arcs.updateVertexData(data.nn, data.xx, data.yy, data.zz);
+    return true;
+  }
+
+  // Replacement coordinates, looked up by exact x/y. Keyed by x in a Map, with a
+  // short bucket per x, because the lookup runs once per vertex in the whole arc
+  // table: building a string key for each of those is slower than the seam
+  // detection that precedes it.
+  function CoordinateTargets() {
+    var byX = new Map();
+    var count = 0;
+
+    this.set = function(x, y, target) {
+      var bucket = byX.get(x);
+      if (!bucket) {
+        bucket = [];
+        byX.set(x, bucket);
+      }
+      for (var i = 0; i < bucket.length; i++) {
+        if (bucket[i].y === y) {
+          bucket[i].target = target;
+          return;
+        }
+      }
+      bucket.push({y: y, target: target});
+      count++;
+    };
+
+    this.get = function(x, y) {
+      var bucket = byX.get(x);
+      if (!bucket) return null;
+      for (var i = 0; i < bucket.length; i++) {
+        if (bucket[i].y === y) return bucket[i].target;
+      }
+      return null;
+    };
+
+    this.size = function() { return count; };
+  }
+
+  function seamContainsSeed(seams, seed) {
+    return seams.some(function(seam) {
+      var aOnA = seed.a.arc === seam.arcA &&
+        seed.a.k >= seam.loA && seed.a.k <= seam.hiA;
+      var aOnB = seed.a.arc === seam.arcB &&
+        seed.a.k >= seam.loB && seed.a.k <= seam.hiB;
+      var bOnA = seed.b.arc === seam.arcA &&
+        seed.b.k >= seam.loA && seed.b.k <= seam.hiA;
+      var bOnB = seed.b.arc === seam.arcB &&
+        seed.b.k >= seam.loB && seed.b.k <= seam.hiB;
+      return (aOnA && bOnB) || (aOnB && bOnA);
+    });
+  }
+
+  function snapSideToOpposite(side, lo, hi, other, arcs, footpoints, closeDistance,
+      targets) {
+    var data = arcs.getVertexData();
+    for (var k = lo; k <= hi; k++) {
+      var v = side[k];
+      var foot = footpoints.closestPoint(v.x, v.y, other, closeDistance);
+      if (!foot || !(foot.distance > 0)) continue;
+      var mid = [(v.x + foot.x) / 2, (v.y + foot.y) / 2];
+      targets.set(data.xx[v.i], data.yy[v.i], mid);
+    }
+  }
+
+  // Nearest-point queries against an arc, indexing each arc once rather than
+  // scanning it per query.
+  //
+  // Growing a seam tests every vertex along one arc against the whole of the
+  // facing arc, and snapping repeats that for the vertices it accepted, so a scan
+  // per query costs the product of the two arcs' lengths. That is unnoticeable
+  // where a mosaic's arcs run between neighboring junctions a few vertices apart,
+  // but a detailed boundary is one arc of thousands of vertices, and a mosaic of
+  // those presents thousands of seams to walk: enough for the same repair to run
+  // for many minutes.
+  //
+  // The index is built from live coordinates, and seam snapping moves coordinates
+  // only once every seam has been measured, so one instance serves a whole pass
+  // over a layer and must not outlive it.
+  function ArcFootpoints(arcs, spherical) {
+    var data = arcs.getVertexData();
+    var indexes = new Map();
+
+    function getIndex(side) {
+      if (!indexes.has(side)) {
+        indexes.set(side, side.length > 1 ? buildIndex(side) : null);
+      }
+      return indexes.get(side);
+    }
+
+    function buildIndex(side) {
+      var index = new Flatbush(side.length - 1);
+      for (var i = 0; i + 1 < side.length; i++) {
+        var a = side[i].i, b = side[i + 1].i;
+        index.add(
+          Math.min(data.xx[a], data.xx[b]), Math.min(data.yy[a], data.yy[b]),
+          Math.max(data.xx[a], data.xx[b]), Math.max(data.yy[a], data.yy[b]));
+      }
+      index.finish();
+      return index;
+    }
+
+    // The nearest point on @side within @maxDist of (x, y), with that distance, or
+    // null if the arc stays clear of it. A segment within @maxDist has its nearest
+    // point inside the query box, so its own bounding box meets that box: no
+    // segment near enough is missed. Nothing beyond @maxDist is reported, which the
+    // callers discarded anyway.
+    this.closestPoint = function(x, y, side, maxDist) {
+      var index = getIndex(side);
+      if (!index) return null;
+      var padX = getCoordinatePad(maxDist, y, spherical, true);
+      var padY = getCoordinatePad(maxDist, y, spherical, false);
+      var ids = index.search(x - padX, y - padY, x + padX, y + padY);
+      var bestD2 = Infinity, bestX = 0, bestY = 0;
+      for (var k = 0; k < ids.length; k++) {
+        var i = ids[k];
+        var ax = data.xx[side[i].i], ay = data.yy[side[i].i];
+        var dx = data.xx[side[i + 1].i] - ax, dy = data.yy[side[i + 1].i] - ay;
+        var len2 = dx * dx + dy * dy;
+        var t = len2 > 0 ? ((x - ax) * dx + (y - ay) * dy) / len2 : 0;
+        if (t < 0) t = 0;
+        if (t > 1) t = 1;
+        var fx = ax + t * dx, fy = ay + t * dy;
+        var d2 = (x - fx) * (x - fx) + (y - fy) * (y - fy);
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          bestX = fx;
+          bestY = fy;
+        }
+      }
+      if (bestD2 === Infinity) return null;
+      var distance = spherical ?
+        fastLonLatDistance(x, y, bestX, bestY) :
+        distance2D$1(x, y, bestX, bestY);
+      if (!isFinite(distance) || distance > maxDist) return null;
+      return {x: bestX, y: bestY, distance: distance};
+    };
+  }
+
+  var MIN_GAP_OWNERS = 3;
+  var WIDTH_FACTOR = 4;
+
+
+  // Split enclosed sliver gaps that border three or more features along the lines
+  // midway between their neighbors' boundaries. The existing mosaic assignment can
+  // then distribute the resulting pieces among those features instead of handing
+  // the entire long gap to one owner.
+  //
+  // Only the boundaries of the gaps being repaired are examined, so the cost
+  // scales with those gaps rather than with the full mosaic.
+  // Returns a layer of cut lines added to the dataset.
+  function partitionPolygonMosaicGaps(lyr, dataset, nodes, opts) {
+    if (!lyr.shapes || lyr.shapes.length < MIN_GAP_OWNERS) return false;
+    var mosaicIndex = new MosaicIndex(lyr, nodes, {flat: true});
+    var sliverOpts = utils.extend({}, opts);
+    if (sliverOpts.gap_width == null) {
+      if (sliverOpts.gap_fill_area != null || sliverOpts.min_gap_area != null ||
+          sliverOpts.min_area != null || sliverOpts.sliver_control != null) {
+        if (sliverOpts.gap_fill_area == null && sliverOpts.min_gap_area == null &&
+            sliverOpts.min_area == null) {
+          sliverOpts.gap_fill_area = 'auto';
+        }
+      } else {
+        sliverOpts.gap_width = 'auto';
+      }
+    }
+    var filter = getSliverFilter(lyr, dataset, sliverOpts).filter;
+    var gaps = mosaicIndex.getUnusedTileData(filter).filter(function(gap) {
+      return countOwners(gap.boundary) >= MIN_GAP_OWNERS;
+    });
+    if (gaps.length === 0) return false;
+
+    var minWidth = getMinDivisibleGapWidth(lyr, nodes.arcs);
+    var cuts = [];
+    var partitioned = 0;
+    gaps.forEach(function(gap) {
+      var result = buildGapPartitionCuts(gap, nodes.arcs, minWidth);
+      if (!result) return;
+      var before = cuts.length;
+      result.lines.forEach(function(line) {
+        if (line.length < 2) return;
+        cuts.push(line);
+      });
+      if (cuts.length > before) partitioned++;
+    });
+    if (cuts.length === 0) return false;
+
+    // Both mutations below have to be announced before either happens: undo
+    // captures the dataset's arc collection and layer list together, and it needs
+    // the originals -- the collection this replaces, and a layer list without the
+    // temporary layer added here. Restoring the arc coordinates alone would leave
+    // the dataset pointing at the merged collection, with layer shapes referring to
+    // arc ids from the original one.
+    noteDatasetWillChange(dataset, {operation: 'partitionGaps', unit: 'arcs'});
+    var firstCutArc = dataset.arcs.size();
+    dataset.arcs = mergeArcs([dataset.arcs, new ArcCollection(cuts)]);
+    // Keep cut arcs in a temporary line layer while addIntersectionCuts() nodes
+    // them against the gap boundary. The caller removes this layer before polygon
+    // cleaning and passes its updated arc ids to the mosaic node filter.
+    var cutLayer = {
+      geometry_type: 'polyline',
+      shapes: cuts.map(function(line, i) {
+        return [[firstCutArc + i]];
+      })
+    };
+    dataset.layers.push(cutLayer);
+    markDatasetChanged(dataset, {operation: 'partitionGaps', unit: 'arcs'});
+    verbose(utils.format('Partitioned %s multi-feature interior gap%s',
+      partitioned, utils.pluralSuffix(partitioned)));
+    return cutLayer;
+  }
+
+  function countOwners(boundary) {
+    var owners = {};
+    boundary.forEach(function(o) { owners[o.shapeId] = true; });
+    return Object.keys(owners).length;
+  }
+
+  // Divide a gap along the centerlines between the boundary runs that face each
+  // other across it.
+  //
+  // The gap's boundary is a cyclic sequence of arcs, each owned by one adjacent
+  // feature, so it decomposes into one run per owner. The dividing line between
+  // two runs is the locus of points equidistant from both; taking the midpoint
+  // between each run's vertices and its footpoint on the other run gives a line
+  // that bends wherever either bank bends, and between two consecutive bends both
+  // banks are straight, where the exact bisector is straight as well.
+  //
+  // Cost and output size track the boundary's own vertex count, so a gap that is
+  // long and hairline costs no more than a compact one. (A sampled Voronoi medial
+  // axis cannot make that promise: its circumcenters are only meaningful when the
+  // sample spacing is finer than the channel is wide, so the work it takes grows
+  // with the gap's length-to-width ratio.)
+  function buildGapPartitionCuts(gap, arcs, minWidth) {
+    var runs = getOwnerRuns(gap.boundary);
+    if (runs.length < MIN_GAP_OWNERS) return null;
+    var ring = gap.tile[0];
+    // Both measures must be planar even when the source CRS is geographic: the
+    // cuts are built in source-coordinate space.
+    var area = Math.abs(geom.getPlanarPathArea(ring, arcs));
+    var perimeter = geom.getPlanarPathPerimeter(ring, arcs);
+    if (!(area > 0) || !(perimeter > 0)) return null;
+    // For a long narrow polygon, 2A/P approximates its width.
+    var gapWidth = area / perimeter * 2;
+    if (gapWidth < minWidth) return null;
+    // A modest multiplier gives facing banks enough reach where the gap is locally
+    // wider, e.g. at a junction.
+    var width = gapWidth * WIDTH_FACTOR;
+    var ringPoints = getPathPoints(ring, arcs);
+    var ringIndex = new SegmentIndex(ringPoints);
+    var banks = runs.map(function(run) {
+      return makeBank(getRunPoints(run.arcIds, arcs));
+    });
+    var lines = [];
+    for (var i = 0; i < banks.length; i++) {
+      for (var j = i + 1; j < banks.length; j++) {
+        var line = buildCenterlineBetweenBanks(banks[i], banks[j], width, ringIndex,
+          collectEndAnchors(banks, i, j, width));
+        if (line.length >= 2) lines.push(line);
+      }
+    }
+    if (lines.length === 0) return null;
+    return {lines: anchorCutLines(lines, width, ringPoints)};
+  }
+
+  function makeBank(points) {
+    return {
+      points: points,
+      index: points.length > 1 ? new SegmentIndex(points) : null
+    };
+  }
+
+  // Make a set of centerlines divide the gap: every line has to reach the gap's
+  // boundary at each end, either directly or through a shared junction with other
+  // lines, or the mosaic treats it as a dangling arc and ignores it.
+  //
+  // A line ending on a vertex of the boundary is already joined to it, that vertex
+  // being a node of the mosaic. Anywhere else, including a point part way along a
+  // boundary segment, the line has to be projected past the boundary to cross it:
+  // starting an extension on the boundary rather than crossing it creates no node
+  // at all, and the cut is ignored.
+  function anchorCutLines(lines, width, ringPoints) {
+    var ringVertices = new Set(ringPoints.map(function(p) {
+      return p[0] + '|' + p[1];
+    }));
+    var ends = [];
+    lines.forEach(function(line, lineId) {
+      [line[0], line[line.length - 1]].forEach(function(point, side) {
+        ends.push({
+          lineId: lineId,
+          side: side,
+          point: point,
+          onBoundary: ringVertices.has(point[0] + '|' + point[1])
+        });
+      });
+    });
+    var connectors = [];
+    var joined = new Uint8Array(ends.length);
+    clusterCutEnds(ends, width * 3).forEach(function(cluster) {
+      var hub = [0, 0];
+      cluster.forEach(function(i) {
+        hub[0] += ends[i].point[0];
+        hub[1] += ends[i].point[1];
+      });
+      hub[0] /= cluster.length;
+      hub[1] /= cluster.length;
+      cluster.forEach(function(i) {
+        joined[i] = 1;
+        connectors.push([ends[i].point, hub]);
+      });
+    });
+    var anchored = lines.map(function(line, lineId) {
+      var out = line.concat();
+      ends.forEach(function(end, i) {
+        if (end.lineId !== lineId || joined[i] || end.onBoundary) return;
+        var inward = end.side ? out[out.length - 2] : out[1];
+        var beyond = projectPast$1(end.point, inward, width);
+        if (!beyond) return;
+        if (end.side) out.push(beyond);
+        else out.unshift(beyond);
+      });
+      return out;
+    });
+    return anchored.concat(connectors);
+  }
+
+  // Group line ends that meet in the interior of the gap, where three or more
+  // centerlines converge on the point equidistant from three boundary runs. Ends
+  // already on the boundary are not candidates, and neither is a pair of ends
+  // from the same line.
+  function clusterCutEnds(ends, maxDist) {
+    var used = new Uint8Array(ends.length);
+    var clusters = [];
+    ends.forEach(function(end, i) {
+      if (used[i] || end.onBoundary) return;
+      var cluster = [];
+      var stack = [i];
+      used[i] = 1;
+      while (stack.length) {
+        var id = stack.pop();
+        cluster.push(id);
+        ends.forEach(function(other, j) {
+          if (used[j] || other.onBoundary || other.lineId === ends[id].lineId) return;
+          if (geom.distance2D(ends[id].point[0], ends[id].point[1],
+            other.point[0], other.point[1]) <= maxDist) {
+            used[j] = 1;
+            stack.push(j);
+          }
+        });
+      }
+      var lineIds = {};
+      cluster.forEach(function(id) { lineIds[ends[id].lineId] = true; });
+      if (Object.keys(lineIds).length >= MIN_GAP_OWNERS) clusters.push(cluster);
+    });
+    return clusters;
+  }
+
+  // One run per owner, in ring order. The ring is cyclic, so a run split across
+  // the array ends is rejoined.
+  function getOwnerRuns(boundary) {
+    var runs = [];
+    boundary.forEach(function(o) {
+      var last = runs[runs.length - 1];
+      if (last && last.shapeId === o.shapeId) {
+        last.arcIds.push(o.arcId);
+      } else {
+        runs.push({shapeId: o.shapeId, arcIds: [o.arcId]});
+      }
+    });
+    if (runs.length > 2 && runs[0].shapeId === runs[runs.length - 1].shapeId) {
+      runs[0].arcIds = runs.pop().arcIds.concat(runs[0].arcIds);
+    }
+    return runs;
+  }
+
+  function getPathPoints(ids, arcs) {
+    var points = [];
+    var iter = arcs.getShapeIter(ids);
+    while (iter.hasNext()) {
+      points.push([iter.x, iter.y]);
+    }
+    return points;
+  }
+
+  function getRunPoints(arcIds, arcs) {
+    var points = [];
+    arcIds.forEach(function(arcId) {
+      var iter = arcs.getArcIter(arcId);
+      while (iter.hasNext()) {
+        var last = points[points.length - 1];
+        // consecutive arcs share their joining vertex
+        if (!last || last[0] !== iter.x || last[1] !== iter.y) {
+          points.push([iter.x, iter.y]);
+        }
+      }
+    });
+    return points;
+  }
+
+  function buildCenterlineBetweenBanks(bankA, bankB, maxDist, ringIndex, anchors) {
+    var events = [];
+    // Each vertex contributes a midpoint, positioned along bank A so that
+    // contributions from both banks interleave in one order.
+    bankA.points.forEach(function(p, i) {
+      var mid = crossGapMidpoint(p, bankB, maxDist, ringIndex);
+      if (mid) events.push({pos: i, point: mid.point});
+    });
+    bankB.points.forEach(function(p, i) {
+      var mid = crossGapMidpoint(p, bankA, maxDist, ringIndex);
+      if (mid) events.push({pos: mid.pos, point: mid.point});
+    });
+    anchors.forEach(function(event) { events.push(event); });
+    events.sort(function(a, b) { return a.pos - b.pos; });
+    var points = [];
+    events.forEach(function(o) {
+      var last = points[points.length - 1];
+      if (!last || last[0] !== o.point[0] || last[1] !== o.point[1]) {
+        points.push(o.point);
+      }
+    });
+    return points;
+  }
+
+  // Where the centerline between two boundary runs meets the ends of the gap.
+  // Ordered outside bank A's own vertex positions, so they bracket the midpoints
+  // between the two banks.
+  //
+  // Midpoints alone do not reach the ends: approaching one, a vertex's nearest point
+  // on the facing bank swings round towards the end itself, and the midpoints stop
+  // describing the middle of the gap. Taking the ends from the boundary is both
+  // exact and what makes the cut divide the gap, since a cut has to reach the
+  // boundary to have any effect.
+  function collectEndAnchors(banks, i, j, maxDist) {
+    var points = banks[i].points;
+    var out = [];
+    // walking the boundary each way round from bank A: A's last vertex leads
+    // forwards, its first vertex backwards
+    [[j, points.length], [i, -1]].forEach(function(o) {
+      var between = runsBetween(banks, o[0] === j ? i : j, o[0]);
+      var point = null;
+      if (between.length === 0) {
+        // The two runs meet, pinching the gap shut, and their shared node is
+        // equidistant from both.
+        point = o[1] < 0 ? points[0] : points[points.length - 1];
+      } else if (between.length === 1 && pathLength(between[0].points) <= maxDist) {
+        // A single run short enough to be a cap rather than a third bank: the gap
+        // ends across it, midway along.
+        point = midpointOfPath(between[0].points);
+      }
+      if (point) out.push({pos: o[1], point: point});
+    });
+    return out;
+  }
+
+  // The runs lying between two others, walking the boundary forwards.
+  function runsBetween(banks, from, to) {
+    var out = [];
+    for (var k = (from + 1) % banks.length; k !== to; k = (k + 1) % banks.length) {
+      out.push(banks[k]);
+    }
+    return out;
+  }
+
+  function pathLength(points) {
+    var len = 0;
+    for (var i = 1; i < points.length; i++) {
+      len += geom.distance2D(points[i - 1][0], points[i - 1][1],
+        points[i][0], points[i][1]);
+    }
+    return len;
+  }
+
+  function midpointOfPath(points) {
+    var half = pathLength(points) / 2;
+    var walked = 0;
+    for (var i = 1; i < points.length; i++) {
+      var seg = geom.distance2D(points[i - 1][0], points[i - 1][1],
+        points[i][0], points[i][1]);
+      if (walked + seg >= half) {
+        var t = seg > 0 ? (half - walked) / seg : 0;
+        return [
+          points[i - 1][0] + (points[i][0] - points[i - 1][0]) * t,
+          points[i - 1][1] + (points[i][1] - points[i - 1][1]) * t
+        ];
+      }
+      walked += seg;
+    }
+    return points[points.length - 1];
+  }
+
+  // The midpoint between a vertex of one boundary run and its footpoint on
+  // another, where the two runs face each other across the gap.
+  //
+  // Two runs can instead meet at a node and carry on along the same side of the
+  // gap. Those produce midpoints too, but ones lying on the boundary rather than
+  // between two banks, and a cut along them shaves a hairline strip off one feature
+  // to award it to another -- the very artifact partitioning exists to avoid. So a
+  // midpoint counts only if it lies inside the gap, clear of the boundary by an
+  // amount comparable to the separation it came from.
+  function crossGapMidpoint(point, otherBank, maxDist, ringIndex) {
+    if (!otherBank.index) return null;
+    var foot = otherBank.index.closestPoint(point[0], point[1], maxDist);
+    if (!foot || !(foot.distSq > 0)) return null;
+    var mid = [(point[0] + foot.x) / 2, (point[1] + foot.y) / 2];
+    // Half the separation is what a midpoint between facing banks has. A quarter
+    // allows for a gap that narrows, bringing a third stretch of its boundary
+    // closer to the midpoint than the banks it came from.
+    if (ringIndex.hasSegmentWithin(mid[0], mid[1], Math.sqrt(foot.distSq) / 4)) {
+      return null;
+    }
+    // Two runs can also face each other across a feature, in a gap that bends back
+    // on itself.
+    if (!ringIndex.containsPoint(mid[0], mid[1])) return null;
+    return {point: mid, pos: foot.pos};
+  }
+
+  // The vertex tests above run once per boundary vertex, and the boundary of a long
+  // gap in detailed data carries thousands of them, so each test has to examine a
+  // bounded number of segments rather than the whole path. @points is an open
+  // polyline, or a closed ring for containsPoint().
+  function SegmentIndex(points) {
+    var n = points.length - 1;
+    var index = new Flatbush(n);
+    var xmax = -Infinity;
+    for (var i = 0; i < n; i++) {
+      var ax = points[i][0], ay = points[i][1];
+      var bx = points[i + 1][0], by = points[i + 1][1];
+      index.add(Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by));
+      if (ax > xmax) xmax = ax;
+      if (bx > xmax) xmax = bx;
+    }
+    index.finish();
+
+    // Nearest point on the path within @maxDist, with its position along the path
+    // (segment index plus the fraction into that segment) so that midpoints from
+    // either bank can be ordered on a common parameter. A segment within @maxDist
+    // of the point has its nearest point inside the query box, so its own bounding
+    // box meets that box: nothing near enough is missed.
+    this.closestPoint = function(x, y, maxDist) {
+      var ids = index.search(x - maxDist, y - maxDist, x + maxDist, y + maxDist);
+      var maxSq = maxDist * maxDist;
+      var best = null;
+      for (var k = 0; k < ids.length; k++) {
+        var i = ids[k];
+        var ax = points[i][0], ay = points[i][1];
+        var dx = points[i + 1][0] - ax, dy = points[i + 1][1] - ay;
+        var len2 = dx * dx + dy * dy;
+        var t = len2 > 0 ? ((x - ax) * dx + (y - ay) * dy) / len2 : 0;
+        if (t < 0) t = 0;
+        if (t > 1) t = 1;
+        var fx = ax + t * dx, fy = ay + t * dy;
+        var distSq = (x - fx) * (x - fx) + (y - fy) * (y - fy);
+        if (distSq <= maxSq && (!best || distSq < best.distSq)) {
+          best = {x: fx, y: fy, distSq: distSq, pos: i + t};
+        }
+      }
+      return best;
+    };
+
+    this.hasSegmentWithin = function(x, y, dist) {
+      var ids = index.search(x - dist, y - dist, x + dist, y + dist);
+      var distSq = dist * dist;
+      for (var k = 0; k < ids.length; k++) {
+        var i = ids[k];
+        if (geom.pointSegDistSq2(x, y, points[i][0], points[i][1],
+            points[i + 1][0], points[i + 1][1]) < distSq) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    // Crossings of the ray running right from the point: odd means inside. A point
+    // on the ring counts as inside, as the linear test this replaces had it.
+    this.containsPoint = function(x, y) {
+      var ids = index.search(x, y, xmax, y);
+      var inside = false;
+      for (var k = 0; k < ids.length; k++) {
+        var i = ids[k];
+        var ay = points[i][1], by = points[i + 1][1];
+        if (ay > y === by > y) continue;
+        var ax = points[i][0], bx = points[i + 1][0];
+        if (ax + (y - ay) / (by - ay) * (bx - ax) > x) inside = !inside;
+      }
+      return inside;
+    };
+  }
+
+  // The narrowest gap worth dividing, in coordinate units: the automatic
+  // gap-width, one hundredth of the median distance between vertices.
+  //
+  // Dividing a gap is only an improvement while the gap has a width worth
+  // dividing. Awarding a whole gap to one feature moves that feature's boundary
+  // across to the far bank, by the width of the gap; dividing it instead gives
+  // every neighbor a strip of its own, and the boundary between two strips runs
+  // half the gap's width from the bank it was cut from, out and back. Wide gap:
+  // the first is a visible displacement and the second is a fair division. Gap a
+  // few millimeters wide: the first is imperceptible, and the second decorates
+  // several features with hairline slivers, which is worse for having more of them.
+  //
+  // A layer's median segment length is the scale at which its boundaries were
+  // drawn, so the same fraction of it that serves as the default gap-width -- what
+  // mapshaper already treats as too narrow to be intended -- marks where dividing
+  // stops being worth it. This is deliberately independent of the gap-width in
+  // effect: raising that to fill wider gaps should not coarsen the data's own scale.
+  function getMinDivisibleGapWidth(lyr, arcs) {
+    var width = getMedianPolygonSegmentLength(lyr, arcs) *
+      GAP_WIDTH_SEGMENT_FRACTION;
+    // That median comes back in meters for geographic coordinates, whereas cuts
+    // are built in the source coordinate space. Converting it back with the same
+    // test it was measured under keeps the two in step.
+    return arcs.isPlanar() ? width : metersToDegrees(width);
+  }
+
+  function projectPast$1(from, toward, distance) {
+    var dx = from[0] - toward[0];
+    var dy = from[1] - toward[1];
+    var len = Math.sqrt(dx * dx + dy * dy);
+    if (!(len > 0)) return null;
+    return [
+      from[0] + dx / len * distance,
+      from[1] + dy / len * distance
+    ];
+  }
+
   cmd.cleanLayers = cleanLayers;
 
   function cleanLayers(layers, dataset, optsArg) {
@@ -22521,6 +23988,27 @@
     var deepClean = !opts.only_arcs;
     var pathClean = utils.some(layers, layerHasPaths);
     var nodes;
+    // Collapsing duplicate boundaries runs unconditionally, and only ever merges
+    // banks that differ by floating-point rounding. Left in place, such a seam
+    // becomes an enclosed sliver that gap filling awards to one neighbor, giving
+    // that feature a zero-width spike along the shared border.
+    if (pathClean && dataset.arcs) {
+      profileStart('collapseDuplicateBoundaries');
+      noteArcsWillChange(dataset.arcs, {operation: 'clean-closeGaps'});
+      var polygonLayers = layers.filter(function(lyr) {
+        return lyr.geometry_type == 'polygon';
+      });
+      polygonLayers.forEach(function(lyr) {
+        noteLayerWillChange(lyr, {operation: 'clean-closeGaps', unit: 'arc-ids'});
+      });
+      if (collapseDuplicateBoundaries(layers, dataset)) {
+        markArcsChanged(dataset.arcs, {operation: 'clean-closeGaps'});
+        polygonLayers.forEach(function(lyr) {
+          markLayerChanged(lyr, {operation: 'clean-closeGaps', unit: 'arc-ids'});
+        });
+      }
+      profileEnd('collapseDuplicateBoundaries');
+    }
     if (opts.debug) {
       addIntersectionCuts(dataset, opts);
       profileEnd('cleanLayers');
@@ -22538,9 +24026,49 @@
           nodes = addIntersectionCuts(dataset, opts);
         }
         if (lyr.geometry_type == 'polygon') {
+          // Pinching the mouths of cracks that open to the outside encloses them,
+          // so that the passes below fill or divide them like any other gap. It
+          // comes first for that reason, and only the pinched vertices move.
+          if (opts.close_outer_gaps) {
+            profileStart('pinchOuterCrackMouths');
+            noteArcsWillChange(dataset.arcs, {operation: 'clean-pinchGapMouths'});
+            noteLayerWillChange(lyr,
+              {operation: 'clean-pinchGapMouths', unit: 'arc-ids'});
+            if (pinchOuterCrackMouths(lyr, dataset, nodes, opts)) {
+              markArcsChanged(dataset.arcs, {operation: 'clean-pinchGapMouths'});
+              markLayerChanged(lyr,
+                {operation: 'clean-pinchGapMouths', unit: 'arc-ids'});
+              // A pinched pair only touches: the cutter turns each touch into a
+              // node, which is what makes the crack a tile of the mosaic. Undo
+              // already holds everything this re-cut changes, captured above.
+              withActiveUndoTransaction(null, function() {
+                nodes = addIntersectionCuts(dataset, opts);
+              });
+            }
+            profileEnd('pinchOuterCrackMouths');
+          }
+          delete opts._mosaic_cut_arcs;
+          profileStart('partitionPolygonMosaicGaps');
+          noteArcsWillChange(dataset.arcs, {operation: 'clean-partitionGaps'});
+          var cutLayer = partitionPolygonMosaicGaps(lyr, dataset, nodes, opts);
+          if (cutLayer) {
+            markArcsChanged(dataset.arcs, {operation: 'clean-partitionGaps'});
+            // The arc collection the partition just installed is a throwaway: undo
+            // puts back the collection this command started with, which the
+            // partition captured. Capturing this one too would store a second copy
+            // of the arc table to no purpose. Every layer baseline the re-cut needs
+            // was captured by the addIntersectionCuts() call above.
+            withActiveUndoTransaction(null, function() {
+              nodes = addIntersectionCuts(dataset, opts);
+            });
+            opts._mosaic_cut_arcs = collectArcIds(cutLayer.shapes);
+            dataset.layers.splice(dataset.layers.indexOf(cutLayer), 1);
+          }
+          profileEnd('partitionPolygonMosaicGaps');
           profileStart('cleanPolygonLayerGeometry');
           cleanPolygonLayerGeometry(lyr, dataset, opts);
           profileEnd('cleanPolygonLayerGeometry');
+          delete opts._mosaic_cut_arcs;
         } else if (lyr.geometry_type == 'polyline') {
           profileStart('cleanPolylineLayerGeometry');
           cleanPolylineLayerGeometry(lyr, dataset);
@@ -22568,13 +24096,37 @@
 
   function cleanPolygonLayerGeometry(lyr, dataset, opts) {
     // clean polygons by apply the 'dissolve2' function to each feature
-    opts = Object.assign({gap_fill_area: 'auto'}, opts);
+    opts = withDefaultGapWidth(opts);
     var groups = lyr.shapes.map(function(shp, i) {
       return [i];
     });
     noteLayerWillChange(lyr, {operation: 'cleanPolygonLayerGeometry', unit: 'shapes'});
     lyr.shapes = dissolvePolygonGroups2(groups, lyr, dataset, opts);
     markLayerChanged(lyr, {operation: 'cleanPolygonLayerGeometry', unit: 'shapes'});
+  }
+
+  function withDefaultGapWidth(opts) {
+    opts = Object.assign({}, opts);
+    if (opts.gap_width != null) return opts;
+    // Legacy area/sliver options: keep the historical gap_fill_area=auto default.
+    if (opts.gap_fill_area != null || opts.min_gap_area != null ||
+        opts.min_area != null || opts.sliver_control != null) {
+      if (opts.gap_fill_area == null && opts.min_gap_area == null &&
+          opts.min_area == null) {
+        opts.gap_fill_area = 'auto';
+      }
+      return opts;
+    }
+    opts.gap_width = 'auto';
+    return opts;
+  }
+
+  function collectArcIds(shapes) {
+    var ids = {};
+    traversePaths(shapes, function(o) {
+      ids[o.arcId < 0 ? ~o.arcId : o.arcId] = true;
+    });
+    return ids;
   }
 
   // Remove duplicate points from multipoint geometries
@@ -31872,11 +33424,25 @@ ${svg}
       var featureLength = bb.readUint32(offset);
       bb.setPosition(offset);
       var feature = Feature.getSizePrefixedRootAsFeature(bb);
-      geojsonFeature = fromFeature(id++, feature, headerMeta);
+      geojsonFeature = readGeoJSONFeature(feature, headerMeta, id++);
       delete geojsonFeature.id;
       offset += SIZE_PREFIX_LEN + featureLength;
       return geojsonFeature;
     };
+  }
+
+  // The geometry field of a FlatGeobuf Feature is optional; fromFeature() assumes
+  // it is present, so features without one are converted here.
+  function readGeoJSONFeature(feature, headerMeta, id) {
+    if (feature.geometry() === null) {
+      return {
+        type: 'Feature',
+        id: id,
+        geometry: null,
+        properties: parseProperties$1(feature, headerMeta.columns)
+      };
+    }
+    return fromFeature(id, feature, headerMeta);
   }
 
   function buildHeaderWithCRS(headerMeta, crsMeta) {
@@ -31923,24 +33489,31 @@ ${svg}
   function encodeCollection(source, columns, forcedType) {
     var headerMeta = null;
     var sink = null;
+    // Null-geometry features encountered before the collection's geometry type is
+    // known, and therefore before the header can be written.
+    var deferred = [];
     for (var i = 0; i < source.length; i++) {
       var feature = source.getFeature(i);
+      var properties = normalizeProperties(feature.properties, columns);
+      if (!feature.geometry) {
+        // A feature's geometry can go missing during export -- e.g. a path that
+        // collapses to a single point at the output coordinate precision -- and a
+        // layer can also contain null shapes to begin with. Write a record with
+        // no geometry, matching what the GeoJSON and Shapefile exporters do.
+        // Such a feature says nothing about the collection's geometry type, so it
+        // must not make a homogeneous layer look mixed.
+        var nullFeature = buildNullGeometryFeature(properties, columns);
+        if (sink) {
+          sink.append(nullFeature);
+        } else {
+          deferred.push(nullFeature);
+        }
+        continue;
+      }
       var type = GeometryType[feature.geometry.type] || GeometryType.Unknown;
       if (!headerMeta) {
-        headerMeta = {
-          geometryType: forcedType === null ? type : forcedType,
-          columns: columns,
-          envelope: null,
-          featuresCount: source.length,
-          indexNodeSize: 0,
-          crs: null,
-          title: null,
-          description: null,
-          metadata: null
-        };
-        sink = new ByteSink(magicbytes.length + estimateEncodedBytes(source));
-        sink.append(magicbytes);
-        sink.append(buildHeader(headerMeta));
+        headerMeta = getEncodedHeaderMeta(forcedType === null ? type : forcedType, columns, source.length);
+        sink = initSink(source, headerMeta, deferred);
       } else if (forcedType === null && type != headerMeta.geometryType) {
         return null;
       }
@@ -31948,9 +33521,64 @@ ${svg}
         parseGC(feature.geometry) :
         parseGeometry(feature.geometry);
       omitRedundantGeometryType(geometry, headerMeta.geometryType);
-      sink.append(buildFeature(geometry, normalizeProperties(feature.properties, columns), headerMeta));
+      sink.append(buildFeature(geometry, properties, headerMeta));
+    }
+    if (!sink) {
+      // No feature had a geometry, so the collection has no geometry type.
+      headerMeta = getEncodedHeaderMeta(forcedType === null ? GeometryType.Unknown : forcedType,
+        columns, source.length);
+      sink = initSink(source, headerMeta, deferred);
     }
     return sink.toBytes();
+  }
+
+  function getEncodedHeaderMeta(geometryType, columns, featuresCount) {
+    return {
+      geometryType: geometryType,
+      columns: columns,
+      envelope: null,
+      featuresCount: featuresCount,
+      indexNodeSize: 0,
+      crs: null,
+      title: null,
+      description: null,
+      metadata: null
+    };
+  }
+
+  function initSink(source, headerMeta, deferredFeatures) {
+    var sink = new ByteSink(magicbytes.length + estimateEncodedBytes(source));
+    sink.append(magicbytes);
+    sink.append(buildHeader(headerMeta));
+    for (var i = 0; i < deferredFeatures.length; i++) {
+      sink.append(deferredFeatures[i]);
+    }
+    return sink;
+  }
+
+  // Encodes a feature with attributes but no geometry, which FlatGeobuf supports
+  // by omitting the Feature table's optional geometry field. buildFeature() always
+  // writes a geometry, so the properties are encoded with it and then re-emitted:
+  // property values are written in a typed binary layout that is better read from
+  // one implementation than copied.
+  function buildNullGeometryFeature(properties, columns) {
+    var meta = {columns: columns};
+    var withGeometry = buildFeature({xy: [], type: GeometryType.Unknown}, properties, meta);
+    var bb = new ByteBuffer(withGeometry);
+    var propertyBytes = Feature.getSizePrefixedRootAsFeature(bb).propertiesArray();
+    var builder = new Builder();
+    // Features are concatenated in the file and read in place, so every feature
+    // buffer has to leave the next one 8-byte aligned or reading a Float64 array
+    // of coordinates from it throws. Buffers holding coordinates are padded to a
+    // multiple of 8 because of those arrays; a feature with only property bytes
+    // needs the alignment requested explicitly.
+    builder.prep(8, 0);
+    var propertiesOffset = propertyBytes && propertyBytes.length > 0 ?
+      Feature.createPropertiesVector(builder, propertyBytes) : 0;
+    Feature.startFeature(builder);
+    if (propertiesOffset) Feature.addProperties(builder, propertiesOffset);
+    builder.finishSizePrefixed(Feature.endFeature(builder));
+    return builder.asUint8Array();
   }
 
   // Encoding the first feature is the only sample available before the buffer
@@ -36724,11 +38352,15 @@ ${svg}
         },
         minGapAreaOpt = {
           old_alias: 'min-gap-area',
-          describe: 'threshold for filling gaps, e.g. 1.5km2 (default is small)',
+          describe: '(deprecated) use gap-width= instead',
           type: 'area'
         },
+        gapWidthOpt = {
+          describe: 'fill gaps narrower than this width, e.g. 2m (default is automatic)',
+          type: 'distance'
+        },
         sliverControlOpt = {
-          describe: 'boost gap-fill-area of slivers (0-1, default is 1)',
+          describe: '(deprecated) use gap-width= instead',
           type: 'number'
         },
         calcOpt = {
@@ -37456,6 +39088,11 @@ ${svg}
 
     parser.command('clean')
       .describe('fixes geometry issues, such as polygon overlaps and gaps')
+      .option('close-outer-gaps', {
+        describe: 'close cracks that open to the outside of the mosaic',
+        type: 'flag'
+      })
+      .option('gap-width', gapWidthOpt)
       .option('gap-fill-area', minGapAreaOpt)
       .option('sliver-control', sliverControlOpt)
       .option('snap-interval', snapIntervalOpt)
@@ -37655,8 +39292,9 @@ ${svg}
         type: 'flag',
         describe: '[points] use 2D math to find centroids of latlong points'
       })
+      .option('gap-width', gapWidthOpt)
       .option('gap-fill-area', {
-        describe: '[polygons] threshold for filling gaps, e.g. 1.5km2',
+        describe: '[polygons] (deprecated) use gap-width= instead',
         type: 'area'
       })
       .option('sliver-control', sliverControlOpt)
@@ -37685,8 +39323,9 @@ ${svg}
       .option('calc', calcOpt)
       .option('sum-fields', sumFieldsOpt)
       .option('copy-fields', copyFieldsOpt)
+      .option('gap-width', gapWidthOpt)
       .option('gap-fill-area', {
-        describe: 'threshold for filling gaps, e.g. 1.5km2',
+        describe: '(deprecated) use gap-width= instead',
         type: 'area'
       })
       .option('sliver-control', sliverControlOpt)
@@ -45853,10 +47492,10 @@ ${svg}
   }
 
   function isClosedPath$1(arr) {
-    return isArrayOfPoints(arr) && arr.length > 3 && samePoint$1(arr[0], arr[arr.length - 1]);
+    return isArrayOfPoints(arr) && arr.length > 3 && samePoint$2(arr[0], arr[arr.length - 1]);
   }
 
-  function samePoint$1(a, b) {
+  function samePoint$2(a, b) {
     return a[0] == b[0] && a[1] == b[1];
   }
 
@@ -48205,12 +49844,12 @@ ${svg}
     return arr[arr.length - 1];
   }
 
-  function samePoint(a, b) {
+  function samePoint$1(a, b) {
     return a && b && a[0] === b[0] && a[1] === b[1];
   }
 
   function isClosedPath(arr) {
-    return samePoint(arr[0], lastEl(arr));
+    return samePoint$1(arr[0], lastEl(arr));
   }
 
   // remove likely rounding errors
@@ -48371,7 +50010,7 @@ ${svg}
       if (!nextPart) {
         return null;
       }
-      if (samePoint(ring[0], nextPart[0])) {
+      if (samePoint$1(ring[0], nextPart[0])) {
         // done!
         ring.push(ring[0]); // close the ring
         return ring;
@@ -48420,7 +50059,7 @@ ${svg}
 
   function findPartStartingAt(parts, firstPoint) {
     for (var i=0; i<parts.length; i++) {
-      if (samePoint(parts[i][0], firstPoint)) {
+      if (samePoint$1(parts[i][0], firstPoint)) {
         return parts[i];
       }
     }
@@ -48444,7 +50083,7 @@ ${svg}
     var part = [];
     var firstPoint = path[0];
     var lastPoint = lastEl(path);
-    var closed = samePoint(firstPoint, lastPoint);
+    var closed = samePoint$1(firstPoint, lastPoint);
     var p, pp, y;
     for (var i=0, n=path.length; i<n; i++) {
       p = path[i];
@@ -48812,6 +50451,16 @@ ${svg}
 
   var POLAR_BUFFER_MARGIN_DEGREES$1 = 1e-4;
 
+  // Distance at which to place the vertices of a round join whose chords span
+  // stepAngle degrees, so that the chord MIDPOINTS -- not the vertices -- lie on
+  // the offset circle of radius dist. The join then brackets the true arc instead
+  // of being inscribed in it (see makeInscribedRoundJoin). The correction grows
+  // with the step angle, so a gentle bend is barely moved and a sharp corner gets
+  // the full ~0.5% of dist (at the default 8 segments/quadrant).
+  function circumscribedJoinDist(dist, stepAngle) {
+    return dist / Math.cos(stepAngle / 2 / R2D$8);
+  }
+
 
   // Returns a function for generating GeoJSON MultiPolygon geometries
   function getPolylineBufferMaker(dataset, opts) {
@@ -48821,6 +50470,7 @@ ${svg}
     var getOffsetPoint = getOffsetFunction(crs, opts);
     var roundJoinSegsPerQuadrant = opts.quad_segs >= 2 ? opts.quad_segs : 8;
     var roundJoinSegAngle = 90 / roundJoinSegsPerQuadrant;
+    var circumscribeJoins = !!opts.circumscribe_joins; // see makeInscribedRoundJoin
     // Max arc step (degrees) for the coarse concave bridge (makeCoarseConcaveJoin),
     // the optional low-resolution alternative to makeConcaveJoin in
     // traceCleanOffsetSide. Larger = fewer points = faster dissolve. NOTE: a
@@ -49994,14 +51644,36 @@ ${svg}
         [getOffsetPoint(x, y, startDir + 180, dist)];
     }
 
-    // Inscribed round join: vertices on the offset arc at equal angle steps,
-    // each at the true offset distance (geodesic or planar).
+    // Round join: an equal-angle-step polygonal approximation of the arc between
+    // the incoming and outgoing offset edges, replacing the incoming edge's end
+    // (p2Prev) and the outgoing edge's start (p1).
+    //
+    // Inscribed (default): vertices at the true offset distance, stepping from the
+    // incoming perpendicular round to the outgoing one. Because its chords cut the
+    // corner, the join lies INSIDE the true circular offset, falling short of it by
+    // up to one sagitta (~0.5% of dist at the default 8 segments/quadrant).
+    //
+    // Circumscribed (circumscribe_joins): the same vertices, moved out to
+    // circumscribedJoinDist so the chords span the offset circle instead of cutting
+    // inside it. The LAST vertex stays at the true distance because the outgoing
+    // straight edge attaches there: moving it radially outward would carry that edge
+    // outward too, and since it also seeds the elbow joins of the segments that
+    // follow, the bias propagates into a collar of offset-vs-source overshoot along
+    // the whole outline -- which the fill-gaps mask cannot tell from a real gap fill
+    // (its coast test tolerance is itself calibrated to the join sagitta). Leaving
+    // that one vertex on the circle costs some accuracy: the final chord still dips
+    // inside by about half a sagitta, so a gap tip whose closure happens to fall on
+    // that chord is still short by ~0.25% of dist. Raise quad-segs to shrink it.
     function makeInscribedRoundJoin(cx, cy, startBearing, arcAngle, dist) {
       var pointCount = Math.max(1, Math.round(arcAngle / roundJoinSegAngle));
       var stepAngle = arcAngle / pointCount;
       var points = [];
-      for (var i = 1; i <= pointCount; i++) {
-        points.push(getOffsetPoint(cx, cy, startBearing + stepAngle * i, dist));
+      var i;
+      var outerDist = circumscribeJoins ?
+        circumscribedJoinDist(dist, stepAngle) : dist;
+      for (i = 1; i <= pointCount; i++) {
+        points.push(getOffsetPoint(cx, cy, startBearing + stepAngle * i,
+          i == pointCount ? dist : outerDist));
       }
       return points;
     }
@@ -50610,8 +52282,22 @@ ${svg}
       if (filterOpts.skipShape && filterOpts.skipShape(srcShape, srcArcs)) return bufShape;
       var intervalPct = simplifyFn ? simplifyFn(distance) / distance : 0;
       return filterOutlineArtifactHolesFromShape(bufShape, bufArcs, srcShape,
-        srcArcs, distance, intervalPct, sagPct, oneSided, sideOpts, spherical);
+        srcArcs, distance, intervalPct, sagPct, oneSided, sideOpts, spherical,
+        filterOpts.coverageIndex || null);
     });
+  }
+
+  // True if some other output feature covers the inside of this hole, making it
+  // that feature's territory rather than an artifact of this one's
+  // construction. @index is a PathIndex over every output shape: a hole is
+  // outside its own feature by definition, so an enclosed probe can only be
+  // another feature's.
+  function holeIsNeighborTerritory(path, arcs, index) {
+    var probes = getHoleInteriorProbes(getProjectedRingPoints(path, arcs, false));
+    for (var i = 0; i < probes.length; i++) {
+      if (index.pointIsEnclosed(probes[i])) return true;
+    }
+    return false;
   }
 
   // Remove artifact rings left by dissolving the self-intersecting outline rings
@@ -50623,8 +52309,12 @@ ${svg}
   // that its entire region lies inside the true buffer, and kept otherwise.
   // Filters one buffer shape (one source feature's dissolved outline); returns
   // the filtered shape, or null if nothing survives.
+  // @coverageIndex: optional PathIndex over every output shape; a hole another
+  // feature covers is kept whatever the distance test says. See the topological
+  // polygon buffer, whose holes can be a neighbour's territory.
   function filterOutlineArtifactHolesFromShape(bufShape, bufArcs, srcShape,
-      srcArcs, distance, intervalPct, sagPct, oneSided, sideOpts, spherical) {
+      srcArcs, distance, intervalPct, sagPct, oneSided, sideOpts, spherical,
+      coverageIndex) {
     var sourceSegments = null;
     var sourceParts = null;
     var shape2 = (bufShape || []).filter(function(path) {
@@ -50637,6 +52327,9 @@ ${svg}
         return false;
       }
       if (!isHole) return true;
+      if (coverageIndex && holeIsNeighborTerritory(path, bufArcs, coverageIndex)) {
+        return true;
+      }
       if (oneSided) {
         if (!sourceParts) {
           sourceParts = getSourcePathParts(srcShape, srcArcs, spherical);
@@ -52767,6 +54460,43 @@ ${svg}
   // floor/maxSpacing ratio at which small mosaics already sample cleanly.
   var FLOOR_DISTANCE_FRACTION = 0.1;
 
+  // Soft cap on the number of entries in the boundary-segment grid, used to floor
+  // the cell size (see buildSegmentGrid). The cell otherwise tracks the buffer
+  // distance alone, so a small distance on a large input gives cells far shorter
+  // than a single boundary segment and the index grows in inverse proportion to
+  // the distance: a nationwide mosaic buffered at 1m spans ~1e7 cells, which costs
+  // hundreds of megabytes and seconds of build time before any distance is
+  // measured. A wider cell is always correct -- the 3x3 query window only requires
+  // cell >= reach -- it just puts more segments in each bucket, so the budget
+  // trades index size against bucket scan length. This value keeps the average
+  // bucket near one segment on a nationwide mosaic, so the queries stay as cheap as
+  // they are at large buffer distances.
+  var GRID_INSERTION_BUDGET = 5e5;
+
+  // Rungs of the widening box search in treeGapAtPoint, and the factor between
+  // them: four rungs a factor of 16 apart, so the search starts at 1/4096 of the
+  // reach and climbs to it in three more steps. The step is coarse deliberately.
+  // The rungs cost a geometric series dominated by the last, so a query that has
+  // to climb the whole ladder pays only a few percent more than one that jumps
+  // straight to the top, while a short ladder keeps the fixed per-search cost
+  // down. Both numbers are fixed, and the last rung is always the full reach,
+  // which is what bounds the query: it makes at most LADDER_RUNGS searches
+  // whatever the input, and cannot widen past the reach.
+  var LADDER_RUNGS = 4;
+  var LADDER_STEP = 16;
+  var LADDER_BASE = Math.pow(LADDER_STEP, LADDER_RUNGS - 1);
+
+  // Window size (segments in the 3x3 cell neighborhood) above which gapAtPoint
+  // asks the tree instead of scanning. A scan rejects a segment belonging to the
+  // query point's own feature in a couple of nanoseconds, so a window of a few
+  // thousand still costs about what one tree query does -- that equivalence is
+  // what the threshold marks, and below it the scan wins on fixed costs alone.
+  // Purely a speed tradeoff: the two paths return the same distance, so this can
+  // be retuned freely. Measured on two county mosaics, scanning up to this size
+  // left the cheapest cases at their original speed while still handing over
+  // early enough to keep the widest buffers off the scan's quadratic path.
+  var WINDOW_SCAN_LIMIT = 3000;
+
   // Soft target total site count. coarsen scales the gap-proportional spacing up
   // until the predicted total falls under this, keeping the Delaunay bounded on
   // dense shared-border mosaics while leaving sparse inputs at coarsen=1 (fully
@@ -52793,10 +54523,18 @@ ${svg}
     profileStart('medial:assembleChains');
     var chains = assembleChains(medial.segments, medial.coords);
     profileEnd('medial:assembleChains');
+    profileStart('medial:recenter');
+    chains = chains.map(function(chain) {
+      return recenterMedialChain(chain, sites.grid);
+    });
+    profileEnd('medial:recenter');
     if (opts.smooth) {
       profileStart('medial:smooth');
       chains = chains.map(function(chain) {
-        return smoothMedialChain(chain, sites.grid);
+        // Smoothing uses one kernel width for the whole chain (see
+        // smoothMedialChain), so on a channel whose width varies it can bow the
+        // line out of the narrow stretches; re-center again to pull it back.
+        return recenterMedialChain(smoothMedialChain(chain, sites.grid), sites.grid);
       });
       profileEnd('medial:smooth');
     }
@@ -52814,7 +54552,9 @@ ${svg}
     for (var di = 0; di < coordDistances.length; di++) {
       if (coordDistances[di] > extendDist) extendDist = coordDistances[di];
     }
-    if (extendDist > 0) {
+    // Local gap partitioning joins multi-owner junctions before extending only
+    // the remaining outer endpoints; it opts out of this blanket extension.
+    if (extendDist > 0 && !opts.no_extend) {
       chains = chains.map(function(chain) {
         return extendChainEndpoints(chain, extendDist);
       });
@@ -53036,6 +54776,150 @@ ${svg}
     return Math.sqrt(best);
   }
 
+  // A medial vertex counts as off-center when its distance to the nearer bank
+  // falls below this fraction of its distance to the opposite bank (1 = exactly
+  // centered). Where a channel narrows past the site spacing the sampled Voronoi
+  // can no longer resolve it: the triangles spanning the neck are slivers whose
+  // circumcenters land on, or beyond, one bank, so the assembled chain zigzags
+  // from side to side instead of running down the middle. Finer sampling cannot
+  // cure this -- a channel that pinches to a point has zero width while the
+  // spacing has a floor (see spacingFromGap) -- so the geometry is corrected
+  // afterwards instead. 0.5 leaves the well-sampled interior (measured balance
+  // ~0.9) untouched and catches the zigzag (~0.1 and below).
+  var MEDIAL_BALANCE_TOLERANCE = 0.5;
+
+  // Pull medial vertices that are off-center, or have slipped inside a source
+  // polygon, back onto the local centerline: each is replaced by the midpoint of
+  // its nearest footpoint on either bank. That midpoint is equidistant from the two
+  // banks by construction and lies between them, so it stays inside the channel
+  // however narrow it gets; where the channel pinches shut both footpoints converge
+  // on the neck and the line passes straight through it rather than bouncing off
+  // the sides.
+  //
+  // Valid vertices are left exactly as sampled, so a well-resolved channel keeps
+  // its true Voronoi geometry. Chain endpoints are also left alone: they sit
+  // outside the overlap on purpose (hull rays, junction ends) so the cut-line can
+  // reach the enclosing boundary, and re-centering them would pull the cut back
+  // inside the tile it has to span.
+  function recenterMedialChain(points, ctx) {
+    if (!ctx || points.length < 3) return points;
+    points = straightenChainTails(points, ctx);
+    if (points.length < 3) return points;
+    var out = [points[0]];
+    for (var i = 1; i < points.length - 1; i++) {
+      var p = recenteredVertex(ctx, points[i]);
+      // Successive off-center vertices can re-center onto the same neck point;
+      // keep one copy so the chain has no zero-length segments.
+      if (!samePoint(p, out[out.length - 1])) out.push(p);
+    }
+    var last = points[points.length - 1];
+    if (!samePoint(last, out[out.length - 1])) out.push(last);
+    return out.length >= 2 ? out : points;
+  }
+
+  // Straighten the runs of vertices at each end of a chain that lie inside a
+  // source polygon. Such a vertex cannot be a medial point (its distance to that
+  // polygon's boundary would be 0), and it cannot be re-centered either: these
+  // runs trail past the mouth of a gap, where the banks converge into a border the
+  // medial construction deliberately does not see (a shared arc partitions any
+  // overlap by itself, so collectCandidateArcPaths prunes it), leaving no channel
+  // to center them in. They are not dropped, because a chain has to poke out past
+  // the gap it divides to node against the enclosing boundary (see
+  // extendChainEndpoints): the run is collapsed to one straight segment, which
+  // keeps the chain's reach and loses only its wandering.
+  function straightenChainTails(points, ctx) {
+    var last = points.length - 1;
+    var lo = 0, hi = last;
+    while (lo < hi && insideAnyPolygon(ctx, points[lo])) lo++;
+    while (hi > lo && insideAnyPolygon(ctx, points[hi])) hi--;
+    if (hi - lo < 1) return points; // no interior vertex survives: leave it alone
+    if (lo === 0 && hi === last) return points;
+    var out = points.slice(lo, hi + 1);
+    if (lo > 0) out.unshift(points[0]);
+    if (hi < last) out.push(points[last]);
+    return out;
+  }
+
+  function insideAnyPolygon(ctx, p) {
+    var near = nearestSegment(ctx, p[0], p[1], -1);
+    return near.id !== -1 && insideOwnerPolygon(ctx.seg, near.id, p[0], p[1]);
+  }
+
+  // @p re-centered between its two nearest banks, or @p itself when it is already
+  // a valid centerline point or only one feature is in range.
+  var footA = [0, 0], footB = [0, 0]; // scratch, not retained
+  function recenteredVertex(ctx, p) {
+    var near = nearestSegment(ctx, p[0], p[1], -1);
+    if (near.id === -1) return p;
+    var far = nearestSegment(ctx, p[0], p[1], ctx.seg.feat[near.id]);
+    if (far.id === -1) return p;
+    // Only a pair of banks within their combined buffer reach forms a channel this
+    // vertex could be the centerline of. Past the mouth of a gap the opposite bank
+    // can be arbitrarily far away, and pulling the vertex to the midpoint of that
+    // pair would move it hundreds of metres off any boundary.
+    if (far.dist > ctx.seg.reach[near.id] + ctx.seg.reach[far.id]) return p;
+    var offCenter = near.dist < far.dist * MEDIAL_BALANCE_TOLERANCE;
+    if (!offCenter && !insideOwnerPolygon(ctx.seg, near.id, p[0], p[1])) return p;
+    segmentFoot(ctx.seg, near.id, p[0], p[1], footA);
+    segmentFoot(ctx.seg, far.id, p[0], p[1], footB);
+    return [(footA[0] + footB[0]) / 2, (footA[1] + footB[1]) / 2];
+  }
+
+  // True when (x, y) lies on the interior side of indexed segment @s, i.e. inside
+  // the feature that owns it. Source rings are traversed with the polygon interior
+  // on their right, and seg.side records whether the stored segment direction
+  // matches its owner's traversal, so the sign of the cross product places the
+  // point. Judged against the point's nearest segment, this is the test that
+  // catches a medial vertex thrown out of a pinching gap into a neighbouring
+  // polygon -- distance cannot: such a vertex is a channel width behind one bank
+  // and two channel widths from the other, the same ratio as a merely off-center
+  // point still inside the channel. A true medial vertex is never inside a source
+  // polygon (its distance to that polygon's boundary would be 0).
+  function insideOwnerPolygon(seg, s, x, y) {
+    var dx = seg.x1[s] - seg.x0[s], dy = seg.y1[s] - seg.y0[s];
+    var cross = dx * (y - seg.y0[s]) - dy * (x - seg.x0[s]);
+    return cross * seg.side[s] < 0;
+  }
+
+  // The nearest indexed source segment to (x, y), skipping segments owned by
+  // @excludeFeat (-1 excludes nothing). Probes the 3x3 grid-cell neighborhood
+  // (cell == max reach). id is -1 when the window holds no eligible segment.
+  function nearestSegment(ctx, x, y, excludeFeat) {
+    var seg = ctx.seg;
+    var cx = ctx.colOf(x), cy = ctx.rowOf(y);
+    var bestId = -1, best = Infinity;
+    for (var gx = cx - 1; gx <= cx + 1; gx++) {
+      for (var gy = cy - 1; gy <= cy + 1; gy++) {
+        var bucket = ctx.grid.get(ctx.cellKey(gx, gy));
+        if (!bucket) continue;
+        for (var b = 0; b < bucket.length; b++) {
+          var s = bucket[b];
+          if (seg.feat[s] === excludeFeat) continue;
+          var d2 = pointSegDistSq2(x, y, seg.x0[s], seg.y0[s], seg.x1[s], seg.y1[s]);
+          if (d2 < best) { best = d2; bestId = s; }
+        }
+      }
+    }
+    return {id: bestId, dist: Math.sqrt(best)};
+  }
+
+  // Closest point to (x, y) on indexed segment @s, clamped to its endpoints,
+  // written into @out.
+  function segmentFoot(seg, s, x, y, out) {
+    var ax = seg.x0[s], ay = seg.y0[s];
+    var dx = seg.x1[s] - ax, dy = seg.y1[s] - ay;
+    var len2 = dx * dx + dy * dy;
+    var t = len2 > 0 ? ((x - ax) * dx + (y - ay) * dy) / len2 : 0;
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
+    out[0] = ax + t * dx;
+    out[1] = ay + t * dy;
+  }
+
+  function samePoint(a, b) {
+    return a[0] === b[0] && a[1] === b[1];
+  }
+
   // Boundary sample spacing as a fraction of the local gap width: smaller gives a
   // smoother medial axis (more sites) in narrow channels. 0.5 keeps the spacing
   // at most half the gap, so a channel of width w has at least two samples per
@@ -53083,7 +54967,12 @@ ${svg}
       if (f === -1 && r === -1) continue; // arc not used by a buffered feature
       if (f !== -1 && r !== -1) continue; // shared interior border -- not a gap
       var pts = arcCoords(arcs, i);
-      if (pts.length >= 2) paths.push({owner: f !== -1 ? f : r, points: pts});
+      // forward records whether the owner traverses the arc in the stored
+      // direction, which is what fixes the interior side of its segments (see
+      // insideOwnerPolygon).
+      if (pts.length >= 2) {
+        paths.push({owner: f !== -1 ? f : r, points: pts, forward: f !== -1});
+      }
     }
     return paths;
   }
@@ -53136,8 +55025,15 @@ ${svg}
     // in a single pass, then we densify once.
     var grid = buildSegmentGrid$1(verts, coordDistances);
     var gaps = computeVertexGaps(grid, verts, coordDistances);
-    var coarsen = fitCoarsen(verts, gaps, coordDistances, spacingFloor);
-    var sites = densifyVertices(verts, gaps, coordDistances, spacingFloor, coarsen);
+    // No contested channel anywhere: every vertex is either out of reach of every
+    // other feature (open coast) or within the touching threshold of one (where the
+    // source boundary already partitions). densify + Delaunay would only allocate
+    // sites that keptSites then discards, so stop here. Single-feature inputs and
+    // mosaics whose features are all farther than a buffer-diameter apart take this
+    // path; a mosaic with even one real gap continues.
+    if (!hasContestedGap(gaps, maxDistance)) return null;
+    var coarsen = fitCoarsen(verts, gaps, coordDistances, spacingFloor, grid);
+    var sites = densifyVertices(verts, gaps, coordDistances, spacingFloor, coarsen, grid);
     // Triangulate only the sites bordering a real gap. Its medial segments come
     // exclusively from cross-feature edges, and the well-shaped triangles that
     // bridge a gap have their apex within reach too (a far apex makes a thin
@@ -53154,65 +55050,232 @@ ${svg}
 
   // Bucket every boundary segment into a uniform grid so the nearest cross-feature
   // segment to an arbitrary point can be found by probing its 3x3 cell
-  // neighborhood. The cell equals the maximum reach (sum of the two largest buffer
-  // distances), so any in-reach segment is guaranteed to fall in that 3x3 window.
-  // Returns null when there is no positive reach. Reused for both the per-vertex
-  // gap (drives adaptive sampling) and the per-site keep test (gapAtPoint).
+  // neighborhood. The cell is at least the maximum reach (sum of the two largest
+  // buffer distances), so any in-reach segment is guaranteed to fall in that 3x3
+  // window. Returns null when there is no positive reach. Reused for both the
+  // per-vertex gap (drives adaptive sampling) and the per-site keep test
+  // (gapAtPoint).
   function buildSegmentGrid$1(verts, coordDistances) {
     var paths = verts.paths;
     var maxDist = 0;
     for (var d = 0; d < coordDistances.length; d++) {
       if (coordDistances[d] > maxDist) maxDist = coordDistances[d];
     }
-    var cell = 2 * maxDist; // upper bound on any pair's reach
-    if (!(cell > 0)) return null;
+    var reach = 2 * maxDist; // upper bound on any pair's reach
+    if (!(reach > 0)) return null;
     var xmin = Infinity, ymin = Infinity, ymax = -Infinity;
+    var totalLen = 0;
     paths.forEach(function(path) {
       var pts = path.points;
       for (var i = 0; i < pts.length; i++) {
         if (pts[i][0] < xmin) xmin = pts[i][0];
         if (pts[i][1] < ymin) ymin = pts[i][1];
         if (pts[i][1] > ymax) ymax = pts[i][1];
+        if (i > 0) {
+          var sdx = pts[i][0] - pts[i - 1][0];
+          var sdy = pts[i][1] - pts[i - 1][1];
+          totalLen += Math.sqrt(sdx * sdx + sdy * sdy);
+        }
       }
     });
+    // A segment occupies about len/cell cells, so the whole index is about
+    // totalLen/cell entries; widening the cell to fit the budget bounds it (see
+    // GRID_INSERTION_BUDGET). The reach is the floor, not the target: a cell
+    // narrower than the reach would break the 3x3 query window.
+    var cell = Math.max(reach, totalLen / GRID_INSERTION_BUDGET);
     // +1 cell index shift keeps probed -1 neighbors non-negative; rowSpan packs
     // (col, row) into a collision-free integer key.
     var rowSpan = Math.floor((ymax - ymin) / cell) + 3;
     function cellKey(cx, cy) { return (cx + 1) * rowSpan + (cy + 1); }
     function colOf(x) { return Math.floor((x - xmin) / cell); }
     function rowOf(y) { return Math.floor((y - ymin) / cell); }
-    var seg = {x0: [], y0: [], x1: [], y1: [], feat: [], reach: []};
+    var seg = {x0: [], y0: [], x1: [], y1: [], feat: [], reach: [], side: []};
     var grid = new Map();
+
+    // Index a segment into every cell it crosses, column by column: within one
+    // column the segment covers a single y-range (it is a straight line clipped to
+    // that column's x-range), so the exact row span is two floor()s. This costs
+    // O(len/cell) entries, where stamping the segment's bounding box instead costs
+    // O((len/cell)^2) for a diagonal segment -- on a nationwide input buffered by a
+    // few meters that quadratic term ran to ~1e9 entries and exceeded the runtime's
+    // maximum Map size.
+    function addSegment(ax, ay, bx, by, idx) {
+      if (ax > bx) {
+        var tx = ax; ax = bx; bx = tx;
+        var ty = ay; ay = by; by = ty;
+      }
+      var dx = bx - ax, dy = by - ay;
+      var cxa = colOf(ax), cxb = colOf(bx);
+      for (var gx = cxa; gx <= cxb; gx++) {
+        var yLo = ay, yHi = by;
+        if (dx > 0) {
+          // clip the segment to this column and take the y-range of the piece
+          var xLo = Math.max(ax, xmin + gx * cell);
+          var xHi = Math.min(bx, xmin + (gx + 1) * cell);
+          yLo = ay + dy * (xLo - ax) / dx;
+          yHi = ay + dy * (xHi - ax) / dx;
+        }
+        var gya = rowOf(Math.min(yLo, yHi));
+        var gyb = rowOf(Math.max(yLo, yHi));
+        for (var gy = gya; gy <= gyb; gy++) {
+          var key = cellKey(gx, gy);
+          var bucket = grid.get(key);
+          if (bucket) bucket.push(idx); else grid.set(key, [idx]);
+        }
+      }
+    }
+
     paths.forEach(function(path) {
       var pts = path.points;
       var feat = path.owner;
-      var reach = coordDistances[feat];
+      var featReach = coordDistances[feat];
+      var side = path.forward === false ? -1 : 1;
       for (var k = 0; k + 1 < pts.length; k++) {
         var ax = pts[k][0], ay = pts[k][1], bx = pts[k + 1][0], by = pts[k + 1][1];
         var idx = seg.feat.length;
         seg.x0.push(ax); seg.y0.push(ay); seg.x1.push(bx); seg.y1.push(by);
-        seg.feat.push(feat); seg.reach.push(reach);
-        var cxa = colOf(Math.min(ax, bx)), cxb = colOf(Math.max(ax, bx));
-        var cya = rowOf(Math.min(ay, by)), cyb = rowOf(Math.max(ay, by));
-        for (var gx = cxa; gx <= cxb; gx++) {
-          for (var gy = cya; gy <= cyb; gy++) {
-            var key = cellKey(gx, gy);
-            var bucket = grid.get(key);
-            if (bucket) bucket.push(idx); else grid.set(key, [idx]);
-          }
-        }
+        seg.feat.push(feat); seg.reach.push(featReach); seg.side.push(side);
+        addSegment(ax, ay, bx, by, idx);
       }
     });
-    return {seg: seg, grid: grid, cellKey: cellKey, colOf: colOf, rowOf: rowOf};
+    return {seg: seg, grid: grid, cellKey: cellKey, colOf: colOf, rowOf: rowOf,
+      index: buildSegmentTree(seg), maxReach: maxDist};
+  }
+
+  // R-tree over the same segments, used only by gapAtPoint and only where the
+  // grid's query window has grown expensive (see there). The grid remains the
+  // index of record: it answers every other probe in this file.
+  function buildSegmentTree(seg) {
+    var n = seg.feat.length;
+    if (n === 0) return null;
+    var index = new Flatbush(n);
+    for (var i = 0; i < n; i++) {
+      var x0 = seg.x0[i], x1 = seg.x1[i], y0 = seg.y0[i], y1 = seg.y1[i];
+      index.add(Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1));
+    }
+    index.finish();
+    return index;
   }
 
   // The channel width at (x, y): distance to the nearest different-feature segment
   // within their combined reach, or Infinity if none. Works for any point, not
   // just original vertices, so a long edge whose endpoints are out of reach but
   // whose middle crosses a gap is still measured correctly at the interior sites.
+  // Answered from whichever index is cheaper here. Both return the same number,
+  // so the choice is a speed decision only: the window scan costs one pass over
+  // the segments in the point's grid cells, which is nothing on a sparse
+  // neighborhood but grows as the square of the buffer distance (the cell is
+  // floored at the reach), while the tree search does not grow that way but pays
+  // fixed costs on every call.
   function gapAtPoint(ctx, x, y, feat, reachF) {
-    return nearestCrossFeatureSegmentDist(x, y, feat, reachF, ctx.seg, ctx.grid,
-      ctx.cellKey, ctx.colOf, ctx.rowOf, Infinity);
+    var n = collectWindow(ctx, x, y);
+    if (ctx.index && windowSize > WINDOW_SCAN_LIMIT) {
+      return treeGapAtPoint(ctx, x, y, feat, reachF);
+    }
+    return scanWindow(ctx.seg, n, x, y, feat, reachF, Infinity);
+  }
+
+  // Number of segments in the 3x3 cell window last collected by collectWindow.
+  var windowSize = 0;
+  // Scratch list of that window's buckets, reused across calls to keep the query
+  // allocation-free. Safe because a query never re-enters gapAtPoint: the buckets
+  // are consumed by scanWindow before anything else runs.
+  var windowBuckets = [];
+
+  // Gather the buckets of the 3x3 cell neighborhood around (x, y) into the
+  // scratch list, returning how many there are and setting windowSize to the
+  // total segment count. The cell is at least the maximum reach, so this window
+  // is guaranteed to hold every segment within reach of the point.
+  function collectWindow(ctx, x, y) {
+    var cx = ctx.colOf(x), cy = ctx.rowOf(y);
+    var n = 0;
+    windowSize = 0;
+    for (var gx = cx - 1; gx <= cx + 1; gx++) {
+      for (var gy = cy - 1; gy <= cy + 1; gy++) {
+        var bucket = ctx.grid.get(ctx.cellKey(gx, gy));
+        if (!bucket) continue;
+        windowBuckets[n++] = bucket;
+        windowSize += bucket.length;
+      }
+    }
+    return n;
+  }
+
+  // Exhaustive scan of the collected window: distance to the nearest
+  // different-feature segment within their combined reach, or @best if none is
+  // closer.
+  function scanWindow(seg, n, x, y, feat, reachF, best) {
+    for (var i = 0; i < n; i++) {
+      var bucket = windowBuckets[i];
+      for (var b = 0; b < bucket.length; b++) {
+        var s = bucket[b];
+        if (seg.feat[s] === feat) continue;
+        var reach = reachF + seg.reach[s];
+        var dsq = pointSegDistSq2(x, y, seg.x0[s], seg.y0[s], seg.x1[s], seg.y1[s]);
+        if (dsq <= reach * reach) {
+          var dist = Math.sqrt(dsq);
+          if (dist < best) best = dist;
+        }
+      }
+    }
+    return best;
+  }
+
+  // Same query answered from the R-tree, by widening a box search along a fixed
+  // ladder of radii until the answer it holds is provably the global one.
+  //
+  // The invariant that makes an intermediate rung conclusive: a box of half-width
+  // r contains the whole disc of radius r, so every segment closer than r to the
+  // point is among the hits. If the nearest in-reach hit is itself within r, no
+  // unreturned segment can beat it and the search can stop. Otherwise the answer
+  // might lie in the annulus beyond r and the next rung has to look.
+  //
+  // The ladder is what keeps the cost sane in both directions. Starting small
+  // makes the common case -- a point on one bank of a narrow gap, its neighbor a
+  // few meters away -- cost one search of a tiny box, independent of the buffer
+  // distance. Ending at the full reach makes the rare case -- a point with no
+  // feature anywhere near it, so nothing can be proven short of exhausting the
+  // reach -- cost the geometric sum of the rungs, a small multiple of going there
+  // directly. The step is coarse so that there are only a handful of rungs.
+  //
+  // A previous attempt used neighbors() to take the k nearest instead. It was
+  // much worse here, because a query that cannot find k in-reach candidates makes
+  // neighbors() heap-walk every leaf in the whole reach disc -- and points with
+  // no feature within reach are exactly what a coastline is made of.
+  function treeGapAtPoint(ctx, x, y, feat, reachF) {
+    var seg = ctx.seg;
+    var index = ctx.index;
+    // Nothing beyond the largest possible pair reach can pass the test below, so
+    // the ladder tops out there rather than searching the whole extent.
+    var maxDist = reachF + ctx.maxReach;
+    var filter = function(s) { return seg.feat[s] !== feat; };
+    var r = maxDist / LADDER_BASE;
+    for (var k = 0; k < LADDER_RUNGS - 1; k++) {
+      var best = nearestInBox(seg, index, x, y, r, reachF, filter);
+      if (best <= r) return best;
+      r *= LADDER_STEP;
+    }
+    // The top rung covers every segment that could be in reach at all, so its
+    // answer is final even when nothing was found.
+    return nearestInBox(seg, index, x, y, maxDist, reachF, filter);
+  }
+
+  // Distance from (x, y) to the nearest segment that passes @filter and lies
+  // within its pair reach, considering only segments whose bounding box meets the
+  // box of half-width @r. Infinity if there is none.
+  function nearestInBox(seg, index, x, y, r, reachF, filter) {
+    var ids = index.search(x - r, y - r, x + r, y + r, filter);
+    var best = Infinity;
+    for (var i = 0; i < ids.length; i++) {
+      var s = ids[i];
+      var reach = reachF + seg.reach[s];
+      var dsq = pointSegDistSq2(x, y, seg.x0[s], seg.y0[s], seg.x1[s], seg.y1[s]);
+      if (dsq <= reach * reach) {
+        var dist = Math.sqrt(dsq);
+        if (dist < best) best = dist;
+      }
+    }
+    return best;
   }
 
   // Local gap at each original vertex (drives adaptive sampling, see
@@ -53237,31 +55300,6 @@ ${svg}
     }
     profileEnd('medial:segmentGaps');
     return gaps;
-  }
-
-  // Distance from (vx, vy) (owned by @feat, reach @reachF) to the nearest
-  // different-feature segment within their combined reach, or @best if none is
-  // closer. Probes the 3x3 grid-cell neighborhood (cell == max reach).
-  function nearestCrossFeatureSegmentDist(vx, vy, feat, reachF, seg, grid, cellKey,
-      colOf, rowOf, best) {
-    var cx = colOf(vx), cy = rowOf(vy);
-    for (var gx = cx - 1; gx <= cx + 1; gx++) {
-      for (var gy = cy - 1; gy <= cy + 1; gy++) {
-        var bucket = grid.get(cellKey(gx, gy));
-        if (!bucket) continue;
-        for (var b = 0; b < bucket.length; b++) {
-          var s = bucket[b];
-          if (seg.feat[s] === feat) continue;
-          var reach = reachF + seg.reach[s];
-          var dsq = pointSegDistSq2(vx, vy, seg.x0[s], seg.y0[s], seg.x1[s], seg.y1[s]);
-          if (dsq <= reach * reach) {
-            var dist = Math.sqrt(dsq);
-            if (dist < best) best = dist;
-          }
-        }
-      }
-    }
-    return best;
   }
 
   // True when medial vertex c lies in the buffer overlap of features fp and fq:
@@ -53376,21 +55414,52 @@ ${svg}
     return {paths: layout, count: count};
   }
 
+  // True when any vertex borders a real gap: within reach of another feature, but
+  // farther than the touching threshold. Matching keptSites' keep rule, so when
+  // this is false every densified site would be discarded and there is nothing for
+  // the medial to cut.
+  function hasContestedGap(gaps, maxDistance) {
+    var touch = maxDistance * TOUCHING_GAP_FRACTION;
+    for (var i = 0; i < gaps.length; i++) {
+      if (isFinite(gaps[i]) && gaps[i] > touch) return true;
+    }
+    return false;
+  }
+
   // The spacing for a path segment: the tighter of its two endpoints' gap-derived
   // spacings (so a segment straddling a narrowing gap samples at the finer rate).
-  function segmentSpacing(path, k, gaps, maxSpacing, spacingFloor, coarsen) {
-    var sA = spacingFromGap(gaps[path.vids[k]], maxSpacing, spacingFloor, coarsen);
-    var sB = spacingFromGap(gaps[path.vids[k + 1]], maxSpacing, spacingFloor, coarsen);
-    return Math.min(sA, sB);
+  // Infinity means "do not densify" (see spacingFromGap). When both endpoints are
+  // open-coast but the segment is long enough that its middle could still pass
+  // within reach of another feature, the midpoint is probed via @ctx so a
+  // contested channel bounded by long unvertexed edges is not missed.
+  function segmentSpacing(path, k, gaps, maxSpacing, spacingFloor, coarsen, ctx) {
+    var gA = gaps[path.vids[k]], gB = gaps[path.vids[k + 1]];
+    var sA = spacingFromGap(gA, maxSpacing, spacingFloor, coarsen);
+    var sB = spacingFromGap(gB, maxSpacing, spacingFloor, coarsen);
+    var s = Math.min(sA, sB);
+    if (isFinite(s) || !ctx) return s;
+    // both endpoints open: only a long segment can hide a contested middle
+    // (shorter than the reach, either endpoint would have seen it)
+    var a = path.points[k], b = path.points[k + 1];
+    var dx = b[0] - a[0], dy = b[1] - a[1];
+    if (dx * dx + dy * dy <= 4 * maxSpacing * maxSpacing) return s;
+    var midGap = gapAtPoint(ctx, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2,
+      path.owner, maxSpacing);
+    return spacingFromGap(midGap, maxSpacing, spacingFloor, coarsen);
   }
 
   // Re-sample every candidate path: emit each original vertex (tagged with its
   // vid) plus interior points spaced by the local gap-derived spacing (see
   // segmentSpacing). Paths are open, so the last vertex has no following segment.
-  // Long edges are densified even where their endpoints are out of reach, so a
-  // contested middle is sampled; keptSites later prunes the points that turn out
-  // not to border a real gap.
-  function densifyVertices(verts, gaps, coordDistances, spacingFloor, coarsen) {
+  // Open-coast segments (both endpoints out of reach of every other feature) are
+  // not densified -- keptSites would discard those interior points, and densifying
+  // them at spacing = buffer distance is what used to emit tens of millions of
+  // sites along a nationwide coastline. A segment with one contested endpoint
+  // still densifies at that endpoint's rate, so a channel that pinches shut is
+  // sampled into its mouth. Long open-coast edges are midpoint-probed (see
+  // segmentSpacing) so a contested channel whose bounding edges lack a vertex
+  // within reach is still sampled.
+  function densifyVertices(verts, gaps, coordDistances, spacingFloor, coarsen, ctx) {
     var coords = [];
     var owner = [];
     var origin = []; // vid for original vertices, -1 for interpolated points
@@ -53404,10 +55473,11 @@ ${svg}
         origin.push(path.vids[k]);
         if (k + 1 >= m) continue; // open path: no segment past the last vertex
         var b = path.points[k + 1];
-        var s = segmentSpacing(path, k, gaps, maxSpacing, spacingFloor, coarsen);
+        var s = segmentSpacing(path, k, gaps, maxSpacing, spacingFloor, coarsen, ctx);
         var dx = b[0] - a[0], dy = b[1] - a[1];
         var len = Math.sqrt(dx * dx + dy * dy);
-        if (s > 0 && len > s) {
+        // s == Infinity for open-coast segments (see spacingFromGap): skip
+        if (s > 0 && isFinite(s) && len > s) {
           var steps = Math.floor(len / s);
           for (var t = 1; t <= steps; t++) {
             var f = t / (steps + 1);
@@ -53421,8 +55491,15 @@ ${svg}
     return {coords: coords, owner: owner, origin: origin};
   }
 
+  // Spacing used to densify a segment endpoint. Open coast (no other feature
+  // within reach) returns Infinity so densifyVertices emits no interior points --
+  // those sites cannot shape the medial and used to dominate the site count on
+  // large inputs. Touching/coincident borders keep the coarse buffer-distance
+  // spacing (the source boundary already partitions them; fine sampling would only
+  // flood the triangulation with collinear sites). Real gaps densify at a fraction
+  // of the local width, floored and capped.
   function spacingFromGap(gap, maxSpacing, spacingFloor, coarsen) {
-    if (!isFinite(gap)) return maxSpacing;
+    if (!isFinite(gap)) return Infinity;
     // A gap at or below the buffer's positional tolerance means the two features
     // effectively touch: there is no contested channel to run a medial down, and
     // the shared source boundary already partitions the overlap. Densifying it
@@ -53440,18 +55517,18 @@ ${svg}
   // interior points per segment). Pure counting, no Delaunay -- cheap enough to
   // binary-search coarsen against. Counts pre-keep sites (the densification work),
   // which is what coarsen actually bounds.
-  function predictSiteCount(verts, gaps, coordDistances, spacingFloor, coarsen) {
+  function predictSiteCount(verts, gaps, coordDistances, spacingFloor, coarsen, ctx) {
     var total = verts.count; // every original vertex is emitted
     verts.paths.forEach(function(path) {
       var maxSpacing = coordDistances[path.owner];
       var m = path.vids.length;
       for (var k = 0; k + 1 < m; k++) {
-        var s = segmentSpacing(path, k, gaps, maxSpacing, spacingFloor, coarsen);
+        var s = segmentSpacing(path, k, gaps, maxSpacing, spacingFloor, coarsen, ctx);
         var a = path.points[k];
         var b = path.points[k + 1];
         var dx = b[0] - a[0], dy = b[1] - a[1];
         var len = Math.sqrt(dx * dx + dy * dy);
-        if (s > 0 && len > s) total += Math.floor(len / s);
+        if (s > 0 && isFinite(s) && len > s) total += Math.floor(len / s);
       }
     });
     return total;
@@ -53461,17 +55538,17 @@ ${svg}
   // count decreases monotonically as coarsen grows (spacing widens), so binary
   // search converges; capped because near-coincident gaps (gap ~ 0) can't be
   // thinned by coarsen and are bounded by spacingFloor instead.
-  function fitCoarsen(verts, gaps, coordDistances, spacingFloor) {
-    if (predictSiteCount(verts, gaps, coordDistances, spacingFloor, 1) <= SITE_BUDGET) {
+  function fitCoarsen(verts, gaps, coordDistances, spacingFloor, ctx) {
+    if (predictSiteCount(verts, gaps, coordDistances, spacingFloor, 1, ctx) <= SITE_BUDGET) {
       return 1;
     }
     var lo = 1, hi = 1024;
-    if (predictSiteCount(verts, gaps, coordDistances, spacingFloor, hi) > SITE_BUDGET) {
+    if (predictSiteCount(verts, gaps, coordDistances, spacingFloor, hi, ctx) > SITE_BUDGET) {
       return hi; // even fully coarsened we can't fit; accept the floor-bounded count
     }
     for (var i = 0; i < 20; i++) {
       var mid = (lo + hi) / 2;
-      if (predictSiteCount(verts, gaps, coordDistances, spacingFloor, mid) > SITE_BUDGET) {
+      if (predictSiteCount(verts, gaps, coordDistances, spacingFloor, mid, ctx) > SITE_BUDGET) {
         lo = mid;
       } else {
         hi = mid;
@@ -54692,6 +56769,15 @@ ${svg}
     }
     var output = buildPolygonBufferOutput(lyr, dataset, opts);
     var dataset2 = importGeoJSON(output.geojson, {type: 'polygon'});
+    // A buffer is in the same CRS as its input, and the GeoJSON round trip above
+    // does not carry one. Say so, because a caller that buffers this result again
+    // has to parse a distance against it -- fill-gaps does exactly that when it
+    // erodes the union of the dilated features. Without this, such a distance can
+    // only be resolved for a lat-long input, where getDatasetCrsInfo guesses
+    // wgs84 from the coordinate bounds; on projected input there is nothing to
+    // guess from and the buffer failed with 'Unable to convert kilometers to
+    // unknown coordinates'.
+    setDatasetCrsInfo(dataset2, getDatasetCrsInfo(dataset));
     if (spherical) {
       splitAntimeridianBufferDataset(dataset2);
       if (output.dissolveAfterSplit) {
@@ -54703,7 +56789,21 @@ ${svg}
         lyr, dataset, opts, spherical, {
           skipShape: function(shape, arcs) {
             return shapeHasFillInsideHole(shape, arcs);
-          }
+          },
+          // Under the topological path a hole is often a tile withheld from this
+          // feature because it is a neighbour's territory (see
+          // getTopologicalBufferTileIds). The distance test cannot tell those from
+          // dissolve artifacts -- both lie inside this feature's own buffer -- so
+          // it deleted them, giving this feature ground another feature also
+          // claims. It got worse as the radius grew, since a bigger buffer leaves
+          // a shallower ring behind: across 3108 US counties it double-covered
+          // 7.6km2 at R=500m and 507km2 at R=5km, mostly Virginia's independent
+          // cities inside the counties enclosing them, and on 01_thin_gap_detail2
+          // at 5km it consumed one of the two features outright. Holes that no
+          // other feature covers are still the filter's to judge.
+          coverageIndex: opts.topological ?
+            new PathIndex(dataset2.layers[0].shapes.filter(Boolean), dataset2.arcs) :
+            null
         });
     }
     cullSubTolerancePolygonArtifacts(dataset2, lyr, dataset, opts);
@@ -54878,17 +56978,30 @@ ${svg}
     // Mouth-gating mask: closing of the land by the mouth radius r (dilate by r,
     // union, erode by r). Built separately from the fill dilation because the
     // mouth threshold stays at the mouth size while the fill reaches further.
+    // Two settings keep the dilation from falling short at the tips of a hairline
+    // gap, which is where the mouth of the fill ends up: whatever the dilation fails
+    // to bridge there is left as a residual indentation at the mouth, in proportion
+    // to r, and no later stage can recover it.
+    //   - circumscribe_joins: the round joins are otherwise inscribed in the true
+    //     circular offset and fall a join sagitta short of it (~0.5% of r at the
+    //     default 8 segments/quadrant). See makeInscribedRoundJoin: the correction
+    //     costs no vertices, in contrast to raising quad-segs, whose cost is linear
+    //     in vertices through every stage below (dilate, union, erode, mask).
+    //   - tolerance 0: the default pre-simplification budget is 1% of the radius,
+    //     several times a hairline gap's width, so it smooths away the very tips
+    //     being bridged (and undoes the join correction with them). Skipping it
+    //     costs only a few percent here, since the joins dominate the vertex count.
     var dilatedAtR = makePolygonBuffer(lyr, dataset,
-      Object.assign({}, baseOpts, {radius: mouthRadius, topological: false}));
+      Object.assign({}, baseOpts, {radius: mouthRadius, topological: false,
+        circumscribe_joins: true, tolerance: 0}));
     var union = unionBufferDataset(dilatedAtR, baseOpts);
     if (!union || !union.arcs) return dilated;
     // tolerance: 0 disables the buffer's Douglas-Peucker pre-simplification for the
     // erosion. Pre-simplifying before an INWARD offset can push a simplified concave
     // vertex past its neighbours and self-intersect the eroded ring; on a large,
     // dense outline (e.g. a whole-country coastline) the dissolve then keeps the
-    // wrong side and the ring collapses, wiping the gap-fill extent. The dilation
-    // stays pre-simplified (outward offsets don't fold this way) so only the fragile
-    // erode pays the full-resolution cost.
+    // wrong side and the ring collapses, wiping the gap-fill extent. (The dilation
+    // skips pre-simplification for its own reason -- see above.)
     var closing = makePolygonBuffer(union.layers[0], union,
       Object.assign({}, baseOpts, {radius: '-' + mouthRadius, topological: false,
         tolerance: 0}));
@@ -54976,8 +57089,12 @@ ${svg}
   // clears the arc/mouth tortuosity clause despite little depth. Requiring the patch
   // depth to reach this fraction of the mouth radius drops both while keeping real
   // inlets (which run far deeper than their mouth radius; on the Columbia the kept
-  // gaps reach depth/r >= 1.3, the shallow scallops only ~0.2).
-  var INLET_MIN_ABS_DEPTH = 0.3;   // min patch depth as a fraction of the mouth radius
+  // gaps reach depth/r >= 1.3, the shallow scallops only ~0.2). The margin matters,
+  // because a coast-hugging strip only a few dozen metres thick can still measure a
+  // large depth: depth is taken from the mouth CHORD, and that chord cuts straight
+  // across whatever bay the strip follows. Those strips land around depth/r ~0.3, so
+  // the floor sits above them rather than on them.
+  var INLET_MIN_ABS_DEPTH = 0.4;   // min patch depth as a fraction of the mouth radius
 
   // Island-bridge classification of a fill that joins >= 2 source parts, one small
   // (see bridgesSmallIsland). Two independent signatures mark an island bridge:
@@ -55135,9 +57252,14 @@ ${svg}
     var islandDataset = importGeoJSON(
       {type: 'GeometryCollection', geometries: islandGeoms}, {type: 'polygon'});
     setDatasetCrsInfo(islandDataset, crsInfo);
+    // circumscribe_joins matches the closing's dilation (see makeGapFillPolygonBuffer):
+    // this buffer has to cancel the island's mouth-radius reach, so if it grew a join
+    // sagitta less than that dilation did, a hairline of bridge would survive the
+    // erase and reconnect the island.
     var islandBuf = makePolygonBuffer(islandDataset.layers[0], islandDataset,
       Object.assign({}, opts, {fill_gaps: false, max_widening: null,
-        radius: mouthRadiusStr, topological: false, no_replace: true}));
+        radius: mouthRadiusStr, topological: false, no_replace: true,
+        circumscribe_joins: true}));
     if (!islandBuf || !islandBuf.arcs) return;
     var bridgeDataset = importGeoJSON(
       {type: 'GeometryCollection', geometries: bridgeGeoms}, {type: 'polygon'});
@@ -55413,6 +57535,10 @@ ${svg}
     if (coords.length === 0) return null;
     var unionDataset = getBufferDataset(coords);
     if (!unionDataset.arcs) return null;
+    // getBufferDataset builds from bare coordinates, so carry the CRS across:
+    // fill-gaps buffers this union again to erode it, and that needs a CRS to
+    // resolve a distance given in real-world units.
+    setDatasetCrsInfo(unionDataset, getDatasetCrsInfo(dataset));
     dissolveBufferDataset2(unionDataset, Object.assign({}, opts, {winding_fill: false}));
     return unionDataset;
   }
@@ -56193,22 +58319,22 @@ ${svg}
     var sourceIdIndex = getIdLookup(sourceIds);
     var bufferIdIndex = getIdToFeatureIdLookup(bufferIds);
     var sourceAreas = getSourceShapeAreas(shapes, sourceArcs);
-    var sourceInteriorPoints = getSourceInteriorPoints(shapes, sourceArcs);
     var ownerCtx = createTileOwnerContext(shapes, sourceArcs, sourceAreas,
       mosaicIndex.nodes.arcs);
     profileStart('topo:assignTiles');
     var result = shapes.map(function(shape, i) {
       var distance = distances[i];
-      var tileIds, geom;
+      var tileIds;
       if (!distance || !shape) return null;
       tileIds = getTopologicalBufferTileIds(sourceIds[i], bufferIds[i],
         i, mosaicIndex, sourceIdIndex, bufferIdIndex, ownerCtx);
-      geom = getTileIdsGeometry(tileIds, mosaicIndex, pathfind);
-      // Preserve holes that coincide with another feature's source territory (a
-      // tile excluded to prevent buffer overlap, see getTopologicalBufferTileIds);
-      // the single-shape artifact/sliver heuristics would otherwise fill them.
-      return removePositiveBufferArtifactHoles(geom, shape, sourceArcs, distance,
-        {points: sourceInteriorPoints, featureId: i});
+      // No artifact-hole filtering here. Every hole in this geometry is a tile
+      // withheld from this feature on purpose (see getTopologicalBufferTileIds),
+      // so there is nothing for a single-shape heuristic to clean up and it can
+      // only do harm: the interior-point territory test it used to run missed the
+      // holes it could not sample, and filling those handed a neighbour's ground
+      // to this feature -- 18.6 km2 of it across 3108 US counties at R=5km.
+      return getTileIdsGeometry(tileIds, mosaicIndex, pathfind);
     });
     profileEnd('topo:assignTiles');
     return result;
@@ -56427,22 +58553,6 @@ ${svg}
     });
   }
 
-  // One interior point per positive ring-group (part) of every source shape,
-  // tagged with its feature id. A multipart source contributes a point for each
-  // detached part (e.g. a small island ring), so the topological hole filter can
-  // recognize a neighbor's territory even when it is one part of a multipolygon.
-  function getSourceInteriorPoints(shapes, arcs) {
-    var points = [];
-    shapes.forEach(function(shape, featureId) {
-      if (!shape) return;
-      getPolygonRingGroupShapes(shape, arcs).forEach(function(group) {
-        var p = findAnchorPoint(group, arcs);
-        if (p) points.push({x: p.x, y: p.y, featureId: featureId});
-      });
-    });
-    return points;
-  }
-
   function getIdLookup(ids) {
     var index = [];
     ids.forEach(function(id) {
@@ -56654,11 +58764,7 @@ ${svg}
     return false;
   }
 
-  // @territory (optional, topological pipeline only): {points, featureId} where
-  // points are source-part interior points tagged by feature id; a candidate hole
-  // enclosing another feature's point is that neighbor's territory (excluded to
-  // prevent overlap) and is always kept.
-  function removePositiveBufferArtifactHoles(geom, shape, arcs, distance, territory) {
+  function removePositiveBufferArtifactHoles(geom, shape, arcs, distance) {
     if (!geom) return null;
     // Nothing to filter unless the result actually has interior rings. Skip the
     // index build (filterArtifactHoles is itself a no-op on hole-free polygons,
@@ -56682,9 +58788,7 @@ ${svg}
       shapeIndex: buildShapeSegmentIndex(shape, arcs),
       pathIndex: shape && shape.length > 0 ? new PathIndex([shape], arcs) : null,
       holeIndex: sourceHoles.length > 0 ?
-        buildShapeSegmentIndex(sourceHoles.map(function(h) {return h[0];}), arcs) : null,
-      territoryPoints: territory ? territory.points : null,
-      featureId: territory ? territory.featureId : -1
+        buildShapeSegmentIndex(sourceHoles.map(function(h) {return h[0];}), arcs) : null
     };
     if (geom.type == 'Polygon') {
       geom.coordinates = filterArtifactHoles(geom.coordinates, minHoleArea, ctx);
@@ -56794,61 +58898,9 @@ ${svg}
   function filterArtifactHoles(polygon, minHoleArea, ctx) {
     if (polygon.length < 2) return polygon;
     return [polygon[0]].concat(polygon.slice(1).filter(function(ring) {
-      // A hole over another feature's source is real territory (kept regardless of
-      // size or how deep it sits in this feature's buffer); see getSourceInteriorPoints.
-      if (ringEnclosesOtherTerritory(ring, ctx)) return true;
       return Math.abs(getGeoJSONRingArea(ring)) > minHoleArea &&
         !positiveBufferHoleIsArtifact(ring, ctx);
     }));
-  }
-
-  function ringEnclosesOtherTerritory(ring, ctx) {
-    var points = ctx.territoryPoints;
-    if (!points) return false;
-    var bounds = getGeoJSONRingBounds(ring);
-    for (var i = 0; i < points.length; i++) {
-      if (points[i].featureId === ctx.featureId) continue;
-      if (!pointInGeoJSONRingBounds(points[i].x, points[i].y, bounds)) continue;
-      if (pointInGeoJSONRing(points[i].x, points[i].y, ring)) return true;
-    }
-    return false;
-  }
-
-  function getGeoJSONRingBounds(ring) {
-    var n = ring.length - 1; // skip duplicate closing vertex
-    if (n <= 0) n = ring.length;
-    var xmin = Infinity, ymin = Infinity, xmax = -Infinity, ymax = -Infinity;
-    var i, x, y;
-    for (i = 0; i < n; i++) {
-      x = ring[i][0];
-      y = ring[i][1];
-      if (x < xmin) xmin = x;
-      if (x > xmax) xmax = x;
-      if (y < ymin) ymin = y;
-      if (y > ymax) ymax = y;
-    }
-    return {xmin: xmin, ymin: ymin, xmax: xmax, ymax: ymax};
-  }
-
-  function pointInGeoJSONRingBounds(x, y, bounds) {
-    return x >= bounds.xmin && x <= bounds.xmax &&
-      y >= bounds.ymin && y <= bounds.ymax;
-  }
-
-  // Ray-casting point-in-ring test for a closed GeoJSON ring (array of [x, y],
-  // first == last). Boundary cases are irrelevant here: territory probe points are
-  // well inside their source part, far from any hole-ring edge.
-  function pointInGeoJSONRing(x, y, ring) {
-    var inside = false;
-    for (var i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-      var xi = ring[i][0], yi = ring[i][1];
-      var xj = ring[j][0], yj = ring[j][1];
-      if ((yi > y) !== (yj > y) &&
-          x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
-        inside = !inside;
-      }
-    }
-    return inside;
   }
 
   function positiveBufferHoleIsArtifact(ring, ctx) {
@@ -57753,7 +59805,7 @@ ${svg}
           debug('Short ring', coords);
           return;
         }
-        if (!samePoint(coords[0], lastEl(coords))) {
+        if (!samePoint$1(coords[0], lastEl(coords))) {
           error('Open polygon ring');
         }
         rings.push(coords); // accumulate rings
@@ -66130,7 +68182,7 @@ ${svg}
 
   // Options that require the topology-repair algorithm and are not supported
   // by the no-repair fast path.
-  var REPAIR_REQUIRED_OPTS = ['gap_fill_area', 'sliver_control', 'allow_overlaps'];
+  var REPAIR_REQUIRED_OPTS = ['gap_width', 'gap_fill_area', 'sliver_control', 'allow_overlaps'];
 
   // Sample size used to detect intersections in no-repair mode. Detection stops
   // after this many hits, so the warning message can include sample locations
@@ -75897,7 +77949,7 @@ ${svg}
     return name == 'rectangle' || name == 'rectangles' || name == 'filter' && opts.cleanup;
   }
 
-  var version = "0.7.52";
+  var version = "0.7.53";
 
   // Parse command line args into commands and run them
   // Function takes an optional Node-style callback. A Promise is returned if no callback is given.

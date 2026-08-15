@@ -13308,9 +13308,9 @@
       polygon_style: 'style polygons',
       labels: 'position labels',
       edit_points: 'add/drag points',
-      edit_lines: 'draw/edit polylines',
+      edit_lines: 'draw/edit lines',
       edit_polygons: 'draw/edit polygons',
-      snip_lines: 'snip polylines',
+      snip_lines: 'snip lines',
       vertices: 'edit vertices',
       selection: 'selection tool',
       ruler: 'measure distance',
@@ -23223,9 +23223,11 @@ GUI and setting the size and crop of SVG output.</p><div><input type="text" clas
     }
   }
 
-  function getDistanceDisplay(distanceMeters, unitHint) {
-    var unit = unitHint || (distanceMeters >= 1000 ? 'km' : 'm');
-    var value = unit == 'km' ? distanceMeters / 1000 : distanceMeters;
+  function getDistanceDisplay(distanceMeters) {
+    var unit = getDistanceUnit(distanceMeters);
+    var value = unit == 'km' && distanceMeters / 1000 ||
+      unit == 'm' && distanceMeters || unit == 'cm' && distanceMeters * 100 ||
+      unit == 'mm' && distanceMeters * 1000 || 0;
     return {
       value,
       unit,
@@ -23239,7 +23241,9 @@ GUI and setting the size and crop of SVG output.</p><div><input type="text" clas
   }
 
   function getDistanceUnit(distanceMeters) {
-    return distanceMeters >= 1000 ? 'km' : 'm';
+    return distanceMeters >= 1000 && 'km' ||
+      distanceMeters >= 0.1 && 'm' || distanceMeters >= 0.01 && 'cm' ||
+      distanceMeters > 0 && 'mm' || 'm';
   }
 
   function pointIsInLngLatRange(p) {
@@ -23283,7 +23287,8 @@ GUI and setting the size and crop of SVG output.</p><div><input type="text" clas
     if (value >= 100) return 0;
     if (value >= 10) return 1;
     if (value >= 1) return 2;
-    return 3;
+    if (value > 0) return 3;
+    return 1;
   }
 
   function lngLatToUnitVector(lng, lat) {
@@ -23761,11 +23766,10 @@ GUI and setting the size and crop of SVG output.</p><div><input type="text" clas
       var projectedMeters = isLatLng ? null : getProjectedPathDistanceMeters(path);
       var geographicMeters = getGeographicPathDistanceMeters(path);
       var displayedMeters = geographicMeters !== null ? geographicMeters : projectedMeters;
-      var unit = getDistanceUnit(displayedMeters || 0);
       return {
         projectedMeters,
         geographicMeters,
-        distanceLabel: displayedMeters === null ? null : getDistanceDisplay(displayedMeters, unit).label
+        distanceLabel: displayedMeters === null ? null : getDistanceDisplay(displayedMeters).label
       };
     }
 
