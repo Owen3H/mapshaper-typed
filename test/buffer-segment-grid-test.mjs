@@ -5,12 +5,14 @@ import {
 } from '../src/buffer/mapshaper-buffer-voronoi';
 import { pointSegDistSq2 } from '../src/geom/mapshaper-basic-geom';
 
-// The medial construction's boundary-segment grid answers "how far is the
-// nearest segment of another feature, within reach?" by scanning the query
-// point's 3x3 cell neighborhood. That is only correct if every cell a segment
-// crosses holds it, so these tests check the index against brute force, and
-// check that its size stays bounded when the buffer distance is much smaller
-// than a boundary segment (the case that used to exceed the maximum Map size).
+// The medial construction answers "how far is the nearest segment of another
+// feature, within reach?" from two indexes over the same segments: a uniform
+// grid scanned over the query point's 3x3 cell neighborhood, and an R-tree
+// searched over a widening box. Which one runs is a speed decision, so these
+// tests check both against brute force, check that the grid stays bounded when
+// the buffer distance is much smaller than a boundary segment (the case that
+// used to exceed the maximum Map size), and pin the cost against the buffer
+// distance (the axis the grid alone scaled quadratically on).
 
 function makeVerts(paths) {
   var count = 0;
@@ -40,6 +42,19 @@ function bruteGap(paths, coordDistances, x, y, feat) {
 function gridEntryCount(ctx) {
   var n = 0;
   ctx.grid.forEach(function(bucket) { n += bucket.length; });
+  return n;
+}
+
+// Segments in the 3x3 cell window around a point -- what gapAtPoint weighs when
+// deciding whether to scan the window or ask the tree.
+function windowLoad(ctx, x, y) {
+  var cx = ctx.colOf(x), cy = ctx.rowOf(y), n = 0;
+  for (var gx = cx - 1; gx <= cx + 1; gx++) {
+    for (var gy = cy - 1; gy <= cy + 1; gy++) {
+      var bucket = ctx.grid.get(ctx.cellKey(gx, gy));
+      if (bucket) n += bucket.length;
+    }
+  }
   return n;
 }
 
@@ -151,6 +166,94 @@ describe('mapshaper-buffer-voronoi.mjs segment grid', function () {
       var res = fuzz(23, 0.02, 1e6, 3e5);
       assert(res.inReach > 100, 'fuzz should find in-reach pairs, got ' + res.inReach);
       assert.equal(res.mismatches, 0);
+    });
+
+    // The two fuzz cases above stay under the window-scan threshold, so they
+    // only exercise the grid. This one packs enough segments around each query
+    // point to send it to the R-tree instead, which has to agree exactly: the
+    // index is chosen for speed alone and may never change the answer.
+    it('matches brute force on a crowded neighborhood, where the tree answers', function () {
+      var random = makeRandom(101);
+      var paths = [];
+      var coordDistances = [];
+      // 200 features x 60 segments in a 400-unit extent, with a reach wide
+      // enough that a query's cell window holds thousands of them.
+      for (var i = 0; i < 200; i++) {
+        var x = random() * 400;
+        var y = random() * 400;
+        var pts = [[x, y]];
+        for (var k = 0; k < 60; k++) {
+          x += (random() - 0.5) * 12;
+          y += (random() - 0.5) * 12;
+          pts.push([x, y]);
+        }
+        paths.push({owner: i, points: pts});
+        coordDistances.push(40);
+      }
+      var ctx = buildSegmentGrid(makeVerts(paths), coordDistances);
+      assert(windowLoad(ctx, 200, 200) > 3000,
+        'test needs a crowded window to reach the tree, got ' + windowLoad(ctx, 200, 200));
+      var mismatches = 0, inReach = 0;
+      for (var q = 0; q < 600; q++) {
+        var path = paths[Math.floor(random() * paths.length)];
+        var vertex = path.points[Math.floor(random() * path.points.length)];
+        var qx = vertex[0] + (random() - 0.5) * 80;
+        var qy = vertex[1] + (random() - 0.5) * 80;
+        var feat = path.owner;
+        var got = gapAtPoint(ctx, qx, qy, feat, coordDistances[feat]);
+        var want = bruteGap(paths, coordDistances, qx, qy, feat);
+        if (isFinite(want)) inReach++;
+        if (got !== want && Math.abs(got - want) > 1e-9) mismatches++;
+      }
+      assert(inReach > 300, 'fuzz should find in-reach pairs, got ' + inReach);
+      assert.equal(mismatches, 0);
+    });
+
+    // Cost axis. The query used to scan the whole 3x3 cell window, and the cell
+    // is floored at the reach, so widening the buffer distance grew the work
+    // per query as the square of the distance -- on a county mosaic that turned
+    // a 4-second command into one that ran for a quarter of an hour. The bound
+    // here is loose (the answer set genuinely does grow with the reach, just
+    // not quadratically) but the old behavior overshoots it by an order of
+    // magnitude: measured on this input, a 16x wider reach cost 79x more before
+    // and 5x more after.
+    it('query cost does not grow quadratically with the buffer distance', function () {
+      this.timeout(20000);
+      var random = makeRandom(5);
+      var paths = [];
+      for (var i = 0; i < 400; i++) {
+        var x = random() * 1000;
+        var y = random() * 1000;
+        var pts = [[x, y]];
+        for (var k = 0; k < 100; k++) {
+          x += (random() - 0.5) * 8;
+          y += (random() - 0.5) * 8;
+          pts.push([x, y]);
+        }
+        paths.push({owner: i, points: pts});
+      }
+      var verts = makeVerts(paths);
+      var queries = [];
+      for (var q = 0; q < 20000; q++) {
+        var path = paths[Math.floor(random() * paths.length)];
+        var vertex = path.points[Math.floor(random() * path.points.length)];
+        queries.push([vertex[0] + (random() - 0.5) * 20, vertex[1] + (random() - 0.5) * 20,
+          path.owner]);
+      }
+      function timeQueries(dist) {
+        var coordDistances = [];
+        for (var f = 0; f < paths.length; f++) coordDistances.push(dist);
+        var ctx = buildSegmentGrid(verts, coordDistances);
+        var t = Date.now();
+        for (var j = 0; j < queries.length; j++) {
+          gapAtPoint(ctx, queries[j][0], queries[j][1], queries[j][2], dist);
+        }
+        return Date.now() - t;
+      }
+      var narrow = Math.max(timeQueries(16), 20); // floor keeps the ratio stable
+      var wide = timeQueries(256);
+      assert(wide < narrow * 20,
+        'a 16x reach cost ' + (wide / narrow).toFixed(1) + 'x (' + narrow + 'ms -> ' + wide + 'ms)');
     });
   });
 });

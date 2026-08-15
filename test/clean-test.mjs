@@ -419,7 +419,7 @@ describe('mapshaper-clean.js', function () {
       // clear regression without being flaky on ordinary machines.
       it('close-outer-gaps stays fast on a national mosaic', async function() {
         this.timeout(10000);
-        var file = 'test/data/features/buffer/__01_thin_gap_polygons.json';
+        var file = 'test/data/features/buffer/__big/01_thin_gap_polygons.json';
         var t0 = Date.now();
         await api.applyCommands('-i ' + file + ' -clean close-outer-gaps -o out.json');
         var ms = Date.now() - t0;

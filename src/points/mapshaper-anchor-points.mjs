@@ -71,7 +71,13 @@ function findAnchorPoint2(shp, arcs) {
     // Look for even better fit close to best-fit point
     p2 = probeForBestAnchorPoint(shp, arcs, p.x - hstep / 2,
         p.x + hstep / 2, 2, weight);
-    if (p2.distance > p.distance) {
+    // The refinement can come back empty even though the coarse sweep did not,
+    // because it samples only two x-values inside a narrow band. On a ring that
+    // encloses no real area -- a collapsed sliver that runs out to a point and
+    // back along itself, which a polygon buffer readily produces -- a ray at
+    // either of those two can enclose no interval at all. The coarse result
+    // already in hand stands in that case.
+    if (p2 && p2.distance > p.distance) {
       p = p2;
     }
   }
@@ -140,16 +146,42 @@ function getAdjustedPoint(x, y, shp, arcs, vstep, weight) {
   return p;
 }
 
+// Ceiling on the vertical scan below, which is otherwise unbounded: the scan
+// walks its chord in steps of vstep, so it runs for roughly the shape's height
+// over vstep, and nothing constrains that ratio. A tall hairline sliver -- the
+// kind a buffer mosaic produces between two nearly-coincident arcs -- makes it
+// astronomical.
+//
+// Truncating is safe rather than free: the scan only replaces p when it finds a
+// strictly better point, so stopping early keeps the best point so far, which
+// is still inside the polygon -- but on a shape thin enough to need more steps
+// than this, that point can differ from the one an unbounded scan would reach
+// (measured on a 1.1m x 111km rectangle: same polygon, ~12% less clearance).
+// The ceiling does bind on real data -- two of the -clean fixtures reach
+// ~180,000 steps here -- yet cutting every scan off at 10,000 left all 744
+// buffer fixture cases byte-identical, because the long tail is usually a
+// plateau the scan walks without improving on.
+var MAX_SCAN_STEPS = 10000;
+
 // Try to find a better-fit point than @p by scanning vertically
 // Modify p in-place
 function scanForBetterPoint(p, shp, arcs, vstep, weight) {
   var x = p.x,
       y = p.y,
       dmax = p.distance,
-      d;
+      d, y2;
 
-  while (true) {
-    y += vstep;
+  for (var i = 0; i < MAX_SCAN_STEPS; i++) {
+    y2 = y + vstep;
+    // Stop when the step cannot move the point at all. vstep is the width of
+    // the probe band, and on a shape narrower than the floating-point spacing
+    // at its own coordinates that band collapses to nothing (see the
+    // refinement probe in findAnchorPoint2), leaving y + vstep === y. Every
+    // iteration would then retest the same point forever: a collapsed mosaic
+    // tile 20nm wide, at longitude -119, hung here indefinitely rather than
+    // merely running slowly.
+    if (y2 === y) break;
+    y = y2;
     d = geom.getPointToShapeDistance(x, y, shp, arcs) * weight(x, y);
     // overcome vary small local minima
     if (d > dmax * 0.90 && geom.testPointInPolygon(x, y, shp, arcs)) {

@@ -1,4 +1,5 @@
 import Delaunator from 'delaunator';
+import Flatbush from 'flatbush';
 import { smoothArcCoords } from '../smooth/mapshaper-smooth-algos';
 import { pointSegDistSq2 } from '../geom/mapshaper-basic-geom';
 import { findMedian } from '../utils/mapshaper-utils';
@@ -50,6 +51,30 @@ var FLOOR_DISTANCE_FRACTION = 0.1;
 // bucket near one segment on a nationwide mosaic, so the queries stay as cheap as
 // they are at large buffer distances.
 var GRID_INSERTION_BUDGET = 5e5;
+
+// Rungs of the widening box search in treeGapAtPoint, and the factor between
+// them: four rungs a factor of 16 apart, so the search starts at 1/4096 of the
+// reach and climbs to it in three more steps. The step is coarse deliberately.
+// The rungs cost a geometric series dominated by the last, so a query that has
+// to climb the whole ladder pays only a few percent more than one that jumps
+// straight to the top, while a short ladder keeps the fixed per-search cost
+// down. Both numbers are fixed, and the last rung is always the full reach,
+// which is what bounds the query: it makes at most LADDER_RUNGS searches
+// whatever the input, and cannot widen past the reach.
+var LADDER_RUNGS = 4;
+var LADDER_STEP = 16;
+var LADDER_BASE = Math.pow(LADDER_STEP, LADDER_RUNGS - 1);
+
+// Window size (segments in the 3x3 cell neighborhood) above which gapAtPoint
+// asks the tree instead of scanning. A scan rejects a segment belonging to the
+// query point's own feature in a couple of nanoseconds, so a window of a few
+// thousand still costs about what one tree query does -- that equivalence is
+// what the threshold marks, and below it the scan wins on fixed costs alone.
+// Purely a speed tradeoff: the two paths return the same distance, so this can
+// be retuned freely. Measured on two county mosaics, scanning up to this size
+// left the cheapest cases at their original speed while still handing over
+// early enough to keep the widest buffers off the scan's quadratic path.
+var WINDOW_SCAN_LIMIT = 3000;
 
 // Soft target total site count. coarsen scales the gap-proportional spacing up
 // until the predicted total falls under this, keeping the Delaunay bounded on
@@ -692,16 +717,144 @@ export function buildSegmentGrid(verts, coordDistances) {
       addSegment(ax, ay, bx, by, idx);
     }
   });
-  return {seg: seg, grid: grid, cellKey: cellKey, colOf: colOf, rowOf: rowOf};
+  return {seg: seg, grid: grid, cellKey: cellKey, colOf: colOf, rowOf: rowOf,
+    index: buildSegmentTree(seg), maxReach: maxDist};
+}
+
+// R-tree over the same segments, used only by gapAtPoint and only where the
+// grid's query window has grown expensive (see there). The grid remains the
+// index of record: it answers every other probe in this file.
+function buildSegmentTree(seg) {
+  var n = seg.feat.length;
+  if (n === 0) return null;
+  var index = new Flatbush(n);
+  for (var i = 0; i < n; i++) {
+    var x0 = seg.x0[i], x1 = seg.x1[i], y0 = seg.y0[i], y1 = seg.y1[i];
+    index.add(Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1));
+  }
+  index.finish();
+  return index;
 }
 
 // The channel width at (x, y): distance to the nearest different-feature segment
 // within their combined reach, or Infinity if none. Works for any point, not
 // just original vertices, so a long edge whose endpoints are out of reach but
 // whose middle crosses a gap is still measured correctly at the interior sites.
+// Answered from whichever index is cheaper here. Both return the same number,
+// so the choice is a speed decision only: the window scan costs one pass over
+// the segments in the point's grid cells, which is nothing on a sparse
+// neighborhood but grows as the square of the buffer distance (the cell is
+// floored at the reach), while the tree search does not grow that way but pays
+// fixed costs on every call.
 export function gapAtPoint(ctx, x, y, feat, reachF) {
-  return nearestCrossFeatureSegmentDist(x, y, feat, reachF, ctx.seg, ctx.grid,
-    ctx.cellKey, ctx.colOf, ctx.rowOf, Infinity);
+  var n = collectWindow(ctx, x, y);
+  if (ctx.index && windowSize > WINDOW_SCAN_LIMIT) {
+    return treeGapAtPoint(ctx, x, y, feat, reachF);
+  }
+  return scanWindow(ctx.seg, n, x, y, feat, reachF, Infinity);
+}
+
+// Number of segments in the 3x3 cell window last collected by collectWindow.
+var windowSize = 0;
+// Scratch list of that window's buckets, reused across calls to keep the query
+// allocation-free. Safe because a query never re-enters gapAtPoint: the buckets
+// are consumed by scanWindow before anything else runs.
+var windowBuckets = [];
+
+// Gather the buckets of the 3x3 cell neighborhood around (x, y) into the
+// scratch list, returning how many there are and setting windowSize to the
+// total segment count. The cell is at least the maximum reach, so this window
+// is guaranteed to hold every segment within reach of the point.
+function collectWindow(ctx, x, y) {
+  var cx = ctx.colOf(x), cy = ctx.rowOf(y);
+  var n = 0;
+  windowSize = 0;
+  for (var gx = cx - 1; gx <= cx + 1; gx++) {
+    for (var gy = cy - 1; gy <= cy + 1; gy++) {
+      var bucket = ctx.grid.get(ctx.cellKey(gx, gy));
+      if (!bucket) continue;
+      windowBuckets[n++] = bucket;
+      windowSize += bucket.length;
+    }
+  }
+  return n;
+}
+
+// Exhaustive scan of the collected window: distance to the nearest
+// different-feature segment within their combined reach, or @best if none is
+// closer.
+function scanWindow(seg, n, x, y, feat, reachF, best) {
+  for (var i = 0; i < n; i++) {
+    var bucket = windowBuckets[i];
+    for (var b = 0; b < bucket.length; b++) {
+      var s = bucket[b];
+      if (seg.feat[s] === feat) continue;
+      var reach = reachF + seg.reach[s];
+      var dsq = pointSegDistSq2(x, y, seg.x0[s], seg.y0[s], seg.x1[s], seg.y1[s]);
+      if (dsq <= reach * reach) {
+        var dist = Math.sqrt(dsq);
+        if (dist < best) best = dist;
+      }
+    }
+  }
+  return best;
+}
+
+// Same query answered from the R-tree, by widening a box search along a fixed
+// ladder of radii until the answer it holds is provably the global one.
+//
+// The invariant that makes an intermediate rung conclusive: a box of half-width
+// r contains the whole disc of radius r, so every segment closer than r to the
+// point is among the hits. If the nearest in-reach hit is itself within r, no
+// unreturned segment can beat it and the search can stop. Otherwise the answer
+// might lie in the annulus beyond r and the next rung has to look.
+//
+// The ladder is what keeps the cost sane in both directions. Starting small
+// makes the common case -- a point on one bank of a narrow gap, its neighbor a
+// few meters away -- cost one search of a tiny box, independent of the buffer
+// distance. Ending at the full reach makes the rare case -- a point with no
+// feature anywhere near it, so nothing can be proven short of exhausting the
+// reach -- cost the geometric sum of the rungs, a small multiple of going there
+// directly. The step is coarse so that there are only a handful of rungs.
+//
+// A previous attempt used neighbors() to take the k nearest instead. It was
+// much worse here, because a query that cannot find k in-reach candidates makes
+// neighbors() heap-walk every leaf in the whole reach disc -- and points with
+// no feature within reach are exactly what a coastline is made of.
+function treeGapAtPoint(ctx, x, y, feat, reachF) {
+  var seg = ctx.seg;
+  var index = ctx.index;
+  // Nothing beyond the largest possible pair reach can pass the test below, so
+  // the ladder tops out there rather than searching the whole extent.
+  var maxDist = reachF + ctx.maxReach;
+  var filter = function(s) { return seg.feat[s] !== feat; };
+  var r = maxDist / LADDER_BASE;
+  for (var k = 0; k < LADDER_RUNGS - 1; k++) {
+    var best = nearestInBox(seg, index, x, y, r, reachF, filter);
+    if (best <= r) return best;
+    r *= LADDER_STEP;
+  }
+  // The top rung covers every segment that could be in reach at all, so its
+  // answer is final even when nothing was found.
+  return nearestInBox(seg, index, x, y, maxDist, reachF, filter);
+}
+
+// Distance from (x, y) to the nearest segment that passes @filter and lies
+// within its pair reach, considering only segments whose bounding box meets the
+// box of half-width @r. Infinity if there is none.
+function nearestInBox(seg, index, x, y, r, reachF, filter) {
+  var ids = index.search(x - r, y - r, x + r, y + r, filter);
+  var best = Infinity;
+  for (var i = 0; i < ids.length; i++) {
+    var s = ids[i];
+    var reach = reachF + seg.reach[s];
+    var dsq = pointSegDistSq2(x, y, seg.x0[s], seg.y0[s], seg.x1[s], seg.y1[s]);
+    if (dsq <= reach * reach) {
+      var dist = Math.sqrt(dsq);
+      if (dist < best) best = dist;
+    }
+  }
+  return best;
 }
 
 // Local gap at each original vertex (drives adaptive sampling, see
@@ -726,31 +879,6 @@ function computeVertexGaps(ctx, verts, coordDistances) {
   }
   profileEnd('medial:segmentGaps');
   return gaps;
-}
-
-// Distance from (vx, vy) (owned by @feat, reach @reachF) to the nearest
-// different-feature segment within their combined reach, or @best if none is
-// closer. Probes the 3x3 grid-cell neighborhood (cell == max reach).
-function nearestCrossFeatureSegmentDist(vx, vy, feat, reachF, seg, grid, cellKey,
-    colOf, rowOf, best) {
-  var cx = colOf(vx), cy = rowOf(vy);
-  for (var gx = cx - 1; gx <= cx + 1; gx++) {
-    for (var gy = cy - 1; gy <= cy + 1; gy++) {
-      var bucket = grid.get(cellKey(gx, gy));
-      if (!bucket) continue;
-      for (var b = 0; b < bucket.length; b++) {
-        var s = bucket[b];
-        if (seg.feat[s] === feat) continue;
-        var reach = reachF + seg.reach[s];
-        var dsq = pointSegDistSq2(vx, vy, seg.x0[s], seg.y0[s], seg.x1[s], seg.y1[s]);
-        if (dsq <= reach * reach) {
-          var dist = Math.sqrt(dsq);
-          if (dist < best) best = dist;
-        }
-      }
-    }
-  }
-  return best;
 }
 
 // True when medial vertex c lies in the buffer overlap of features fp and fq:
