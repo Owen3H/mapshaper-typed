@@ -155,8 +155,9 @@ export default [{
   onwarn: onMainWarn,
   output: [{
     strict: false,
-    format: 'iife',
+    format: 'umd',
+    name: 'mapshaper',
     file: 'mapshaper.js'
   }],
   plugins: [onBundle, nodeResolve(), json()]
-}];
+},];

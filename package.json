@@ -1,6 +1,7 @@
 {
-  "name": "mapshaper-ts",
+  "name": "mapshaper-typed",
   "version": "0.7.53",
+  "private": true,
   "description": "A tool for editing geospatial data for mapping and GIS.",
   "author": "Owen3H",
   "keywords": [
