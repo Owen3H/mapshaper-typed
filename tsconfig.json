@@ -9,7 +9,7 @@
 		"moduleResolution": "NodeNext",
 		"target": "ES2022",
 		"rootDir": "src",
-		"outDir": "bin/types",
+		"outDir": "types",
 		"skipLibCheck": true
 	}
 }

@@ -21,7 +21,7 @@
   "engines": {
     "node": ">=20.11.0"
   },
-  "typings": "./bin/types/index.d.mts",
+  "typings": "./types/index.d.mts",
   "scripts": {
     "test": "mocha --require test/mocha-hooks.mjs test",
     "types": "tsc -p tsconfig.json",
