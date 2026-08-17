@@ -1,5 +1,5 @@
-import { enableLogging } from './utils/mapshaper-logging';
-import { runCommands, applyCommands, runCommandsXL } from './cli/mapshaper-run-commands';
+import { enableLogging, disableLogging } from './utils/mapshaper-logging.mjs';
+import { runCommands, applyCommands, runCommandsXL } from './cli/mapshaper-run-commands.mjs';
 
 import cmd from './mapshaper-cmd';
 import internal from './mapshaper-internal';
@@ -12,7 +12,8 @@ var api = {
   runCommands,
   applyCommands,
   runCommandsXL,
-  enableLogging
+  enableLogging,
+  disableLogging
 };
 
 // Add some namespaces, for easier testability and
