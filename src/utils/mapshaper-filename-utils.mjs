@@ -1,4 +1,3 @@
-
 import utils from '../utils/mapshaper-utils';
 
 function getPathSep(path) {

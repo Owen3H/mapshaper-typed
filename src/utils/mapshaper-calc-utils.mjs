@@ -1,4 +1,3 @@
-
 export function getMode(values) {
   var data = getModeData(values);
   return data.modes[0];

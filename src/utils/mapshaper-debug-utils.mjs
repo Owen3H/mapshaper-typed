@@ -1,24 +1,8 @@
-import {
-  getArcEndpointCoords
-} from '../paths/mapshaper-vertex-utils';
-import {
-  forEachArcId
-} from '../paths/mapshaper-path-utils';
-import {
-  forEachShapePart
-} from '../paths/mapshaper-shape-utils';
-import {
-  findArcIdFromVertexId
-} from '../paths/mapshaper-arc-utils';
-import {
-  error, debug, message
-} from '../utils/mapshaper-logging';
+import { getArcEndpointCoords } from '../paths/mapshaper-vertex-utils';
+import { forEachShapePart } from '../paths/mapshaper-shape-utils';
+import { findArcIdFromVertexId } from '../paths/mapshaper-arc-utils';
+import {  error, debug, message } from '../utils/mapshaper-logging';
 import GeoJSON from '../geojson/geojson-export';
-
-export function findShapesContainingArc(arcId, lyr) {
-
-
-}
 
 export function debugConnectedArcs(ids, arcs) {
   var colors = ['orange', 'blue', 'green', 'red', 'magenta', 'grey'];
@@ -51,7 +35,6 @@ export function debugDuplicatePathfinderSegments(nodeX, nodeY, i, j, arcs) {
   console.log(segStr);
 
 }
-
 
 export function checkRings(lyr, arcs) {
   lyr.shapes.forEach(function(shp) {
