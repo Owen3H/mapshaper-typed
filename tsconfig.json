@@ -1,5 +1,5 @@
 {
-    "include": ["src/mapshaper.mjs"],
+	"include": ["src/index.mts"],
 	"compilerOptions": {
 		"allowJs": true,
 		"checkJs": false,
@@ -8,7 +8,8 @@
 		"module": "NodeNext",
 		"moduleResolution": "NodeNext",
 		"target": "ES2022",
-		"outDir": "types",
+		"rootDir": "src",
+		"outDir": "bin/types",
 		"skipLibCheck": true
 	}
 }
