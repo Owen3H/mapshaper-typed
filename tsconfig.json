@@ -1,0 +1,14 @@
+{
+    "include": ["src/mapshaper.mjs"],
+	"compilerOptions": {
+		"allowJs": true,
+		"checkJs": false,
+		"declaration": true,
+		"emitDeclarationOnly": true,
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"target": "ES2022",
+		"outDir": "types",
+		"skipLibCheck": true
+	}
+}
